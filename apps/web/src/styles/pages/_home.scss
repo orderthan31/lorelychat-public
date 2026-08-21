@@ -1,0 +1,76 @@
+/* Home dashboard, recommendation rails, and legacy list surfaces. */
+.home-dashboard { display: grid; gap: 20px; }
+.home-hero { display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--border); padding: 4px 0 16px; background: transparent; }
+.home-hero div { display: grid; gap: 4px; min-width: 0; }
+.home-hero strong { color: var(--foreground); font-size: 20px; letter-spacing: -.035em; }
+.home-hero span, .recommend-card small, .home-quick-card small, .empty-recommend-card small { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.recommend-rail { display: grid; gap: 8px; }
+.recommend-rail-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--foreground); }
+.recommend-scroll { width: 100%; overflow-x: auto; padding: 2px 1px 8px; scroll-snap-type: x proximity; }
+.recommend-marquee-track { display: flex; gap: 10px; width: max-content; }
+.recommend-scroll.is-looping,
+.recommend-scroll.is-marquee { overflow-x: auto; overflow-y: hidden; }
+.recommend-scroll.is-marquee .recommend-marquee-track { animation: recommendMarqueeRight 38s linear infinite; }
+.recommend-scroll.is-marquee:hover .recommend-marquee-track,
+.recommend-scroll.is-marquee:active .recommend-marquee-track,
+.recommend-scroll.is-marquee:focus-within .recommend-marquee-track { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) { .recommend-scroll.is-marquee .recommend-marquee-track { animation: none; } }
+
+.recommend-card, .empty-recommend-card, .home-quick-card { flex: 0 0 min(72vw, 236px); border: 1px solid var(--border); border-radius: 12px; background: var(--card); color: var(--foreground); box-shadow: var(--shadow-surface); }
+.recommend-card { display: grid; gap: 9px; padding: 9px; text-align: left; scroll-snap-align: start; }
+.recommend-card img { width: 100%; height: 132px; object-fit: cover; border-radius: 8px; background: var(--surface-muted); }
+.character-recommend-card { grid-template-rows: 132px minmax(54px, auto); }
+.character-recommend-card img { height: 132px; object-position: center top; }
+.room-recommend-card { grid-template-rows: 132px minmax(54px, auto); align-content: start; }
+.room-thumbnail-wrap { position: relative; display: block; width: 100%; height: 132px; overflow: hidden; border-radius: 8px; background: var(--surface-muted); }
+.room-thumbnail-wrap > img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }
+.room-thumbnail-default { display: grid !important; width: 100%; height: 132px; min-width: 0; place-items: center; overflow: hidden; border: 1px solid color-mix(in srgb, var(--primary) 12%, var(--border)); border-radius: 8px; background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--primary) 13%, var(--card)) 0, var(--surface-muted) 72%); }
+.room-thumbnail-wrap > .room-thumbnail-default { height: 100%; }
+.room-thumbnail-default > img { width: 64px !important; height: 64px !important; padding: 0 !important; border-radius: 16px; background: transparent; object-fit: contain !important; object-position: center; box-shadow: 0 10px 28px color-mix(in srgb, var(--primary) 18%, transparent); }
+.room-participant-stack { position: absolute; right: 8px; bottom: 8px; display: flex !important; align-items: center; justify-content: flex-end; gap: 0; z-index: 2; overflow: visible !important; -webkit-line-clamp: initial !important; }
+.room-participant-stack img,
+.room-participant-more { width: 32px !important; height: 32px !important; min-width: 32px; border-radius: 999px !important; border: 2px solid var(--card); object-fit: cover; background: var(--primary); color: var(--primary-foreground); box-shadow: none; }
+.room-participant-stack img + img,
+.room-participant-more { margin-left: -8px; }
+.room-participant-more { display: inline-grid; place-items: center; font-size: 11px; font-weight: 800; }
+.recommend-card span, .empty-recommend-card, .home-quick-card { display: grid; gap: 4px; min-width: 0; }
+.recommend-card strong, .empty-recommend-card strong, .home-quick-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recommend-card small { display: -webkit-box; min-height: 32px; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.empty-recommend-card, .home-quick-card { padding: 14px; text-align: left; }
+.home-quick-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.home-quick-card { min-height: 86px; }
+
+.conversation-thumbnail-editor { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 12px; align-items: center; border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--card); }
+.conversation-thumbnail-preview { width: 104px; height: 78px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-muted); display: grid; place-items: center; overflow: hidden; color: var(--muted); font-size: 12px; font-weight: 700; }
+.conversation-thumbnail-preview img { width: 100%; height: 100%; object-fit: cover; }
+.avatar-upload-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; align-items: center; }
+.avatar-upload-row > * { min-width: 0; }
+.avatar-upload-row input[type="file"] { width: 100%; min-width: 0; max-width: 100%; }
+.avatar-upload-preview { width: 64px; height: 64px; border-radius: 10px; object-fit: cover; border: 1px solid var(--line); background: var(--surface-muted); }
+
+.list-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; margin: 0 0 12px; }
+.category-tabs { display: flex; gap: 7px; overflow-x: auto; padding: 0 0 10px; margin: -2px 0 12px; scrollbar-width: thin; }
+.category-tabs button { flex: 0 0 auto; width: auto; min-height: 36px; padding: 8px 12px; border-radius: 999px; font-size: 13px; }
+.category-tabs button.active { background: var(--primary-soft); color: var(--primary); border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--border)); }
+.pager { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); font-size: 13px; margin-top: 12px; }
+
+.card-list { display: grid; align-items: stretch; gap: 10px; }
+.list-card { position: relative; width: 100%; min-height: 104px; height: 100%; text-align: left; border-radius: 12px; background: var(--card); color: var(--text); border: 1px solid var(--border); display: grid; gap: 5px; white-space: normal; padding: 14px; overflow: hidden; box-shadow: var(--shadow-surface); transition: border-color .15s ease, background .15s ease; }
+.list-card:hover { border-color: color-mix(in srgb, var(--primary) 42%, var(--border)); background: var(--panel-2); }
+.list-card strong { font-size: 15px; line-height: 1.3; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-card span { color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.list-card small { color: var(--muted-foreground); font-size: 11px; }
+.character-list-card { grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 12px; }
+.character-card-avatar { width: 64px; height: 64px; border-radius: 10px; object-fit: cover; background: var(--surface-muted); border: 1px solid var(--border); box-shadow: none; }
+.list-card-content { min-width: 0; display: grid !important; gap: 4px; color: inherit !important; overflow: visible !important; -webkit-line-clamp: initial !important; }
+.world-list-card { grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 12px; }
+.conversation-list-thumbnail { width: 64px; height: 64px; border-radius: 10px; object-fit: cover; border: 1px solid var(--border); background: var(--surface-muted); flex: 0 0 auto; }
+
+.form-action-row { display: flex; justify-content: stretch; gap: 10px; flex-wrap: nowrap; border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
+.form-action-row > button { flex: 1 1 0; width: 100%; min-width: 0; min-height: 44px; font-weight: 800; }
+.conversation-title-row { display: flex !important; gap: 10px; align-items: center; width: 100%; min-width: 0; overflow: visible !important; -webkit-line-clamp: initial !important; }
+.conversation-card-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+
+@media (min-width: 720px) {
+  .recommend-card, .empty-recommend-card, .home-quick-card { flex-basis: 230px; }
+}

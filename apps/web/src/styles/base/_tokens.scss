@@ -1,0 +1,84 @@
+/* CSS custom properties and design tokens. */
+:root {
+  color-scheme: light;
+  --bg: #f5f5f6;
+  --panel: #ffffff;
+  --panel-2: #fafafa;
+  --surface-muted: #f0f1f3;
+  --text: #202126;
+  --foreground: #202126;
+  --muted: #62646d;
+  --muted-foreground: #777a84;
+  --line: #e1e2e6;
+  --border: #e1e2e6;
+  --primary: #e45161;
+  --primary-foreground: #ffffff;
+  --primary-soft: #fcecef;
+  --accent: #e45161;
+  --accent-2: #5975df;
+  --secondary: #eceef2;
+  --card: #ffffff;
+  --surface-glow: transparent;
+  --danger: #e5484d;
+  --success: #16a34a;
+  --warning: #f5a524;
+  --info: #4f8cff;
+  --locale-control-font-size: 0.875rem;
+  --locale-control-line-height: 1.3;
+  --locale-label-letter-spacing: -0.012em;
+  --locale-card-title-size: 1.25rem;
+  --touch-target: 44px;
+  --radius-surface: 14px;
+  --radius-control: 10px;
+  --shadow-surface: 0 1px 2px rgba(15, 23, 42, .06);
+}
+
+:root[lang='en'] {
+  --locale-control-font-size: 0.8125rem;
+  --locale-control-line-height: 1.35;
+  --locale-label-letter-spacing: -0.018em;
+  --locale-card-title-size: 1.1875rem;
+}
+
+:root[lang='ja'] {
+  --locale-control-font-size: 0.8375rem;
+  --locale-control-line-height: 1.5;
+  --locale-label-letter-spacing: -0.008em;
+  --locale-card-title-size: 1.1875rem;
+}
+
+.locale-control-label {
+  min-block-size: var(--touch-target);
+  font-size: var(--locale-control-font-size);
+  line-height: var(--locale-control-line-height);
+  letter-spacing: var(--locale-label-letter-spacing);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.locale-card-title {
+  font-size: var(--locale-card-title-size);
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+:root[lang='ja'] .locale-control-label,
+:root[lang='ja'] .locale-card-title,
+:root[lang='ja'] .locale-copy {
+  word-break: normal;
+  overflow-wrap: anywhere;
+  line-break: strict;
+}
+
+@media (max-width: 380px) {
+  :root[lang='en'] {
+    --locale-control-font-size: 0.775rem;
+    --locale-card-title-size: 1.125rem;
+  }
+
+  :root[lang='ja'] {
+    --locale-control-font-size: 0.8rem;
+    --locale-card-title-size: 1.125rem;
+  }
+}

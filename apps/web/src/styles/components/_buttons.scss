@@ -1,0 +1,3 @@
+/* Native button reset only. Product button styling lives in the Button atom or JSX utilities. */
+button { width: auto; border: 0; background: transparent; color: inherit; font-family: inherit; cursor: pointer; white-space: nowrap; }
+button:disabled { opacity: .72; cursor: not-allowed; }

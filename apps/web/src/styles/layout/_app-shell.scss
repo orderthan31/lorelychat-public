@@ -1,0 +1,22 @@
+/* App shell, panels, status surfaces, grid helpers, and page animation. */
+.app-bar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 58px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(12px); overflow: hidden; }
+.app-title { min-width: 0; display: grid; gap: 2px; }
+.app-title h1 { min-width: 0; margin: 0; overflow: hidden; color: var(--foreground); font-size: 16px; font-weight: 800; line-height: 1.2; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
+.app-title h1 strong { color: inherit; font: inherit; letter-spacing: inherit; }
+.app-title small { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.server-health { justify-self: end; display: inline-flex; align-items: center; justify-content: center; gap: 7px; width: 104px; min-width: 0; height: 32px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--muted); font-size: 12px; font-weight: 750; }
+.server-health-copy { display: inline-flex; align-items: center; gap: 5px; }
+.server-health-dot { width: 8px; height: 8px; border-radius: 999px; background: #64748b; box-shadow: 0 0 0 4px rgba(100,116,139,.12); }
+.server-health.ok .server-health-dot { background: #22c55e; box-shadow: 0 0 0 4px rgba(34,197,94,.12); }
+.server-health.bad { color: #fecaca; border-color: rgba(220,38,38,.32); background: rgba(127,29,29,.18); }
+.server-health.bad .server-health-dot { background: var(--danger); box-shadow: 0 0 0 4px rgba(220,38,38,.14); }
+.shell { width: min(100%, 1180px); margin: 0 auto; padding: 16px 14px 92px; }
+.panel { margin-bottom: 12px; min-width: 0; }
+.chat-shell { border: 1px solid var(--line); background: var(--card); border-radius: var(--radius-surface); box-shadow: var(--shadow-surface); }
+.dot { flex: 0 0 auto; width: 11px; height: 11px; border-radius: 999px; background: #666; box-shadow: 0 0 0 5px rgba(255,255,255,.05); }
+.dot.ok { background: var(--accent-2); }
+.dot.bad { background: var(--danger); }
+.grid.two, .grid.three { gap: 12px; margin-bottom: 12px; }
+.grid.compact { margin-bottom: 12px; }
+.page { animation: pageIn 120ms ease-out; }
+.stack { display: grid; gap: 12px; }

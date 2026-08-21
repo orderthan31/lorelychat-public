@@ -1,0 +1,9 @@
+/* Type scale and base prose elements. */
+.text-display { font-size: clamp(30px, 6vw, 48px); line-height: 1.02; letter-spacing: -0.055em; font-weight: 800; }
+.text-lg { font-size: 20px; line-height: 1.28; letter-spacing: -0.035em; font-weight: 750; }
+.text-md { font-size: 15px; line-height: 1.42; letter-spacing: -0.02em; font-weight: 700; }
+.text-sm { font-size: 13px; line-height: 1.45; letter-spacing: -0.012em; font-weight: 500; }
+h1 { margin: 0; font-size: clamp(30px, 6vw, 48px); line-height: 1.02; letter-spacing: -.055em; font-weight: 800; }
+h2 { margin: 0; font-size: 22px; line-height: 1.25; letter-spacing: -.035em; font-weight: 760; }
+h3 { margin: 0; font-size: 16px; line-height: 1.35; color: var(--foreground); font-weight: 720; }
+p { margin: 0; color: var(--muted); }

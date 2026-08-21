@@ -1,0 +1,39 @@
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+@import "tailwindcss";
+@import "tw-animate-css";
+@custom-variant dark (&:where(.theme-dark, .theme-dark *));
+
+@theme {
+  --color-background: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-surface-muted: var(--surface-muted);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-card: var(--card);
+  --color-card-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent-2);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-destructive: var(--danger);
+  --radius-card: .875rem;
+}
+
+@import "./styles/base/_tokens.scss";
+@import "./styles/base/_reset.scss";
+@import "./styles/base/_typography.scss";
+@import "./styles/base/_keyframes.scss";
+@import "./styles/layout/_app-shell.scss";
+@import "./styles/components/_forms.scss";
+@import "./styles/components/_buttons.scss";
+@import "./styles/components/_drawer.scss";
+@import "./styles/pages/_home.scss";
+@import "./styles/pages/_chat.scss";
+@import "./styles/pages/_features.scss";
+@import "./styles/themes/_light.scss";
+@import "./styles/themes/_dark.scss";

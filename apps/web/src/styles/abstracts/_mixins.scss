@@ -1,0 +1,13 @@
+/* Shared Sass mixins. Keep reusable layout/typography patterns here. */
+@mixin truncate-one-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@mixin round-control($size) {
+  width: $size;
+  min-height: $size;
+  padding: 0;
+  border-radius: 999px;
+}

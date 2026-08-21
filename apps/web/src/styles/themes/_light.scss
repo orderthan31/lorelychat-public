@@ -1,0 +1,103 @@
+/* Light theme: neutral canvas and flat surfaces. Brand color is reserved for state and emphasis. */
+.command-ui-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.command-ui-guide pre {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow-x: auto;
+  background: #f7f7f8;
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+body { background: var(--bg); color: var(--text); }
+.app-bar { background: color-mix(in srgb, var(--bg) 94%, transparent); border-bottom-color: var(--line); box-shadow: none; }
+.app-title strong,
+.drawer-brand,
+.chat-title-block h2,
+.context-summary,
+.avatar-character-info p,
+.card-preview-grid p { color: var(--text); }
+p,
+.app-title small,
+.list-card span,
+.list-card small,
+.chat-title-block p,
+.context-muted,
+.card-preview-hero span,
+.card-preview-hero small,
+.textarea-meta,
+.battle-control-compact-summary,
+.battle-control-hint,
+.text-editor-head small,
+.text-editor-foot span { color: var(--muted); }
+
+.server-health,
+.server-health.ok { background: var(--card); color: var(--text); border-color: var(--line); box-shadow: none; }
+.server-health.ok .server-health-dot,
+.dot.ok { background: #28a96b; box-shadow: 0 0 0 3px rgba(40,169,107,.12); }
+
+.drawer-close,
+.chat-header-button,
+.composer .chat-settings-button,
+.composer .composer-expand-button,
+.textarea-expand-button,
+.battle-control-fab,
+.message-select-toggle,
+.theme-toggle { background: var(--card); color: var(--foreground); border: 1px solid var(--border); box-shadow: none; }
+.chat-header-button:hover { background: var(--surface-muted); color: var(--primary); border-color: color-mix(in srgb, var(--primary) 30%, var(--border)); }
+
+.context-drawer,
+.avatar-preview-card,
+.card-preview-modal,
+.text-editor-card,
+.chat-settings-popover,
+.battle-control-popover,
+.bubble-action-menu,
+.danger-confirm-popup { background: var(--card); color: var(--text); border-color: var(--line); box-shadow: 0 16px 48px rgba(15,23,42,.14); }
+.drawer-backdrop,
+.context-drawer-backdrop,
+.text-editor-backdrop,
+.avatar-modal { background: rgba(32,33,38,.32); }
+.drawer-nav button.active,
+.category-tabs button.active,
+.drawer-tab-bar button.active,
+.battle-control-fab.active,
+.message-select-toggle.selected { background: var(--primary-soft); color: var(--primary); border-color: color-mix(in srgb, var(--primary) 34%, var(--border)); }
+.drawer-tab-bar { background: var(--card); border-bottom-color: var(--line); }
+
+.character-card-avatar,
+.avatar-upload-preview,
+.card-preview-avatar { border-color: var(--border); background: var(--surface-muted); box-shadow: none; }
+
+.chat-shell { background: var(--card); }
+.chat-header,
+.composer,
+.battle-control-dock { background: var(--card); border-color: var(--line); }
+.chat-thread { background: var(--panel-2); }
+.bubble { border-color: var(--line); box-shadow: 0 1px 2px rgba(15,23,42,.06); }
+.bubble.left { background: var(--card); color: var(--text); }
+.bubble.right { background: var(--primary); color: #fff; }
+.bubble.center,
+.bubble.center.system,
+.bubble.center.storytelling { background: var(--surface-muted); color: var(--muted); }
+.bubble.system { background: #eef3ff; border-color: #cfdbfa; color: #315caa; }
+.bubble.storytelling { background: var(--primary-soft); border-color: #f3ccd3; color: #93414d; }
+.bubble-name,
+.context-section h3,
+.card-preview-grid h3,
+.avatar-character-info h3 { color: var(--primary); }
+.memory-tag { background: var(--primary-soft); color: var(--primary); }
+.context-summary { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+
+.command-autocomplete { background: var(--card); border-color: var(--border); box-shadow: 0 16px 48px rgba(15,23,42,.16); backdrop-filter: none; }
+.command-autocomplete-item { background: var(--panel-2); color: var(--text); }
+.command-autocomplete-item:hover,
+.command-autocomplete-item:focus-visible { border-color: color-mix(in srgb, var(--primary) 34%, var(--border)); background: var(--primary-soft); }
+
+.theme-toggle { width: 40px; min-height: 40px; padding: 0; border-radius: 10px; color: var(--primary); }
+.brand-logo-horizontal { display: block; width: min(178px, 100%); height: 44px; object-fit: contain; object-position: left center; border-radius: 0; background: transparent; box-shadow: none; }
+.drawer-brand { min-width: 0; flex: 1 1 auto; }
