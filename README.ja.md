@@ -103,7 +103,7 @@ LLM_MOCK=false
 docker compose up -d --force-recreate api
 ```
 
-UIから登録したプロバイダーキーの原文は`/secrets/provider_secrets.json`に平文のJSON値として保存され、データベースからは不透明な参照IDで参照されます。このファイルはPOSIXファイルシステムではmode `0600`で作成されますが、Lorechat自体は暗号化しません。GitリポジトリやDockerイメージには含まれません。必要に応じてホスト側のディスク暗号化とアクセス制御を使用してください。
+UI で保存したプロバイダーキーは `/secrets/provider_secrets.json` に平文の JSON 値として保存され、データベースからは内容を示さない ID で参照されます。このファイルは POSIX ファイルシステムではモード `0600` で作成されますが、Lorechat 自体は暗号化しません。Git にコミットされたり、Docker イメージに組み込まれたりすることはありません。脅威モデル上必要な場合は、ホスト側のディスク暗号化とアクセス制御を使用してください。
 
 Docker内の`127.0.0.1`はAPIコンテナ自身を指します。Dockerホスト上のOpenAI互換サーバーに接続する場合は、`.env.example`の例にある`host.docker.internal`を使用します。
 
@@ -136,7 +136,7 @@ Composeは、コンテナ内の`DATABASE_URL`、`UPLOAD_ROOT`、`LOG_DIR`、`PRO
 
 保護境界なしで`LORECHAT_BIND_ADDRESS=0.0.0.0`へ変更しないでください。プロバイダーキー、SQLite DB、会話、プロンプト、アップロード、ログは機密データとして扱ってください。
 
-詳しくは[SECURITY.md](SECURITY.ja.md)を参照してください。
+詳しくは[セキュリティポリシー](SECURITY.ja.md)を参照してください。
 
 ## リポジトリ構成
 
@@ -144,7 +144,7 @@ Composeは、コンテナ内の`DATABASE_URL`、`UPLOAD_ROOT`、`LOG_DIR`、`PRO
 apps/web/        React + Vite Webクライアント
 apps/api/        FastAPI + SQLModel API
 apps/api/seeds/  公開用の合成デモデータ
-deploy/          Nginx reverse proxy設定
+deploy/          Nginx リバースプロキシ設定
 docs/            アーキテクチャ・設定・セルフホストガイド
 docker-compose.yml
 ```
@@ -211,4 +211,4 @@ Copyright 2026 orderthan31.
 
 ## コントリビューション
 
-セキュリティ報告とバグ報告は歓迎します。Contributor/relicensing agreementが公開されるまでは、コードコントリビューションを受け付けません。詳しくは[CONTRIBUTING.md](CONTRIBUTING.ja.md)を参照してください。
+セキュリティ報告とバグ報告を歓迎します。コントリビューター契約または再ライセンス契約が公開されるまで、コードのコントリビューションは受け付けません。詳しくは[コントリビューションポリシー](CONTRIBUTING.ja.md)を参照してください。

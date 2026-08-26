@@ -2,7 +2,7 @@
 
 [한국어](README.md) | [English](README.en.md) | [日本語](README.ja.md)
 
-Lorechat은 캐릭터와 세계관을 직접 만들고, 그 설정을 이어가며 대화하는 **셀프 호스팅 캐릭터 채팅 프로젝트**입니다. React 웹 클라이언트와 FastAPI 백엔드를 Docker Compose 하나로 실행할 수 있으며, 휴대폰에서도 편하게 사용할 수 있도록 모바일 화면을 우선해 구성했습니다.
+Lorechat은 캐릭터를 만들고 세계관을 정의해 대화를 이어 갈 수 있는 **모바일 우선 셀프 호스팅 캐릭터 채팅 런타임**입니다. 이 모노레포는 React 웹 클라이언트와 FastAPI 백엔드를 하나의 Docker Compose 배포로 제공합니다.
 
 처음 설치할 때는 별도의 API key가 없어도 괜찮습니다. 기본으로 제공하는 mock 모드와 합성 demo 데이터로 화면과 대화 흐름을 먼저 살펴본 뒤, 필요할 때 원하는 LLM provider를 연결하면 됩니다.
 
@@ -109,9 +109,9 @@ LLM_MOCK=false
 docker compose up -d --force-recreate api
 ```
 
-UI에서 입력한 provider key 원문은 `/secrets/provider_secrets.json`에 평문 JSON으로 저장됩니다. DB에는 key 자체가 아니라 opaque reference ID만 들어갑니다. 이 파일은 POSIX 파일시스템에서 mode `0600`으로 생성되지만, Lorechat이 파일 내용을 따로 암호화하지는 않습니다. Git 저장소나 Docker 이미지에는 포함되지 않으므로 host disk encryption과 접근 제어가 필요하다면 운영 환경에서 함께 설정해 주세요.
+UI에서 저장한 프로바이더 키는 `/secrets/provider_secrets.json`에 평문 JSON 값으로 저장되며, 데이터베이스에서는 불투명 ID로 참조합니다. 이 파일은 POSIX 파일시스템에서 mode `0600`으로 생성되지만 Lorechat이 직접 암호화하지는 않습니다. Git 저장소나 Docker 이미지에는 포함되지 않습니다. 위협 모델상 필요하다면 호스트 디스크 암호화와 접근 제어를 함께 사용하세요.
 
-Docker 컨테이너 안에서 `127.0.0.1`은 host가 아니라 API 컨테이너 자신을 가리킵니다. host에서 실행 중인 OpenAI-compatible 서버를 연결하려면 기본 예시에 있는 `host.docker.internal`을 사용하세요.
+Docker 컨테이너 안에서 `127.0.0.1`은 호스트가 아니라 API 컨테이너 자체를 가리킵니다. 호스트에서 실행 중인 OpenAI-compatible 서버를 연결하려면 기본 예시에 있는 `host.docker.internal`을 사용하세요.
 
 설정값을 더 자세히 보고 싶다면 [Provider 설정](docs/providers.ko.md)과 [환경 설정](docs/configuration.ko.md)을 참고하면 됩니다.
 
@@ -142,7 +142,7 @@ Compose는 컨테이너 내부의 `DATABASE_URL`, `UPLOAD_ROOT`, `LOG_DIR`, `PRO
 
 별도의 보호 장치 없이 `LORECHAT_BIND_ADDRESS=0.0.0.0`으로 바꾸지 마세요. provider key, SQLite DB, 대화, 프롬프트, 업로드, 로그는 모두 민감 데이터로 다뤄야 합니다.
 
-보안과 관련된 자세한 내용은 [SECURITY.md](SECURITY.ko.md)에 정리되어 있습니다.
+보안과 관련된 자세한 내용은 [보안 정책](SECURITY.ko.md)에 정리되어 있습니다.
 
 ## 저장소 둘러보기
 
@@ -201,7 +201,7 @@ docker compose up -d --wait
 
 ## 개인정보와 외부 서비스
 
-Lorechat이 기본으로 사용하는 SQLite DB와 업로드 파일은 로컬 Docker volume에 저장됩니다. `LLM_MOCK=true` 상태에서는 채팅과 압축을 위해 외부 LLM을 호출하지 않습니다. 다만 TTS 등 따로 활성화한 기능은 외부 서비스를 사용할 수 있습니다.
+런타임 데이터는 기본적으로 로컬 Docker 볼륨에 저장됩니다. `LLM_MOCK=true` 상태에서는 채팅과 압축을 위해 외부 LLM을 호출하지 않습니다. 다만 TTS 등 따로 활성화한 기능은 외부 서비스를 사용할 수 있습니다.
 
 실제 LLM provider를 선택하면 응답 생성에 필요한 prompt와 대화 맥락이 해당 provider로 전송됩니다. 기본 Compose에서는 외부 memory read/write가 꺼져 있지만, 커스텀 배포에서 활성화하면 선택한 메모리 정보가 host 밖으로 전송될 수 있습니다.
 
@@ -211,10 +211,10 @@ Lorechat이 기본으로 사용하는 SQLite DB와 업로드 파일은 로컬 Do
 
 Copyright 2026 orderthan31.
 
-Lorechat은 [PolyForm Noncommercial License 1.0.0](docs/license.ko.md)에 따라 제공됩니다. 이 저장소는 상업적 사용 권한을 부여하지 않습니다. 상업적 이용, 유료 서비스, 재판매, 상업적 호스팅 또는 기업 업무 이용에는 licensor의 별도 서면 허가가 필요합니다.
+Lorechat은 [PolyForm Noncommercial License 1.0.0](docs/license.ko.md)에 따라 제공됩니다. 이 저장소는 상업적 사용 권한을 부여하지 않습니다. 상업적 이용, 유료 서비스 제공, 재판매, 상업적 호스팅 또는 업무상 이용에는 라이선스 제공자의 별도 서면 허가가 필요합니다.
 
 이 제한 때문에 Lorechat은 OSI 정의의 오픈소스가 아니라 **source-available 프로젝트**입니다.
 
 ## 기여와 문의
 
-보안 제보와 bug report는 환영합니다. Contributor/relicensing agreement가 공개되기 전까지 code contribution은 받지 않습니다. 자세한 내용은 [CONTRIBUTING.md](CONTRIBUTING.ko.md)를 참고해 주세요.
+보안 제보와 버그 제보는 환영합니다. 기여자 계약 또는 재라이선스 계약이 공개되기 전까지 코드 기여는 받지 않습니다. 자세한 내용은 [기여 정책](CONTRIBUTING.ko.md)을 참고해 주세요.
