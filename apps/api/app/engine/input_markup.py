@@ -42,8 +42,8 @@ def find_closing_action_marker(text: str, cursor: int, marker: Literal["*"]) -> 
     return -1
 
 
-def parse_babechat_input_markup(raw: str) -> ParsedInputMarkup:
-    """Split BabeChat-style input into dialogue and situation/action text.
+def parse_input_markup(raw: str) -> ParsedInputMarkup:
+    """Split Lorechat composer input into dialogue and action text.
 
     Paired single asterisks mark narration/action: ``*walks closer* hello``.
     Double asterisks are ignored so markdown-style bold text is not treated as

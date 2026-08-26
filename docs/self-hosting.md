@@ -37,7 +37,7 @@ The important volumes are data, uploads, logs, and secrets. Use your host backup
 
 Do not expose the default deployment directly to the internet. Preferred options:
 
-1. private VPN/Tailscale-style network, or
+1. private VPN or private mesh network, or
 2. authenticated TLS reverse proxy with request-size and timeout controls.
 
 Only after that boundary is ready should you change:

@@ -3,7 +3,7 @@ export type RenderPart = {
   text: string;
 };
 
-export type ParsedBabeMarkup = {
+export type ParsedInputMarkup = {
   dialogue: string;
   action: string;
   hadMarkup: boolean;
@@ -41,7 +41,7 @@ function findClosingActionMarker(text: string, cursor: number, marker: '*'): num
   return -1;
 }
 
-export function parseBabeChatInputMarkup(raw: unknown): ParsedBabeMarkup {
+export function parseInputMarkup(raw: unknown): ParsedInputMarkup {
   const text = String(raw || '');
   const dialogueParts: string[] = [];
   const actionParts: string[] = [];

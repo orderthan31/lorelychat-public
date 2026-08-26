@@ -46,7 +46,7 @@ import { assetUrlFor, avatarUrlFor } from '../utils/assets';
 import { normalizeCharacterForApi } from '../utils/character';
 import { genreModeLabel, normalizeGenreMode } from '../utils/genre';
 import { pageCount } from '../utils/pagination';
-import { arrayToLines, compactText, linesToArray, parseBabeChatInputMarkup, parseTagInput, safeJsonParse, tagText } from '../utils/text';
+import { arrayToLines, compactText, linesToArray, parseInputMarkup, parseTagInput, safeJsonParse, tagText } from '../utils/text';
 import {
   API_BASE,
   BUBBLE_REVEAL_DELAY_MS,
@@ -1072,7 +1072,7 @@ export function App() {
       return;
     }
     const selected = speakerId || USER_ID;
-    const parsed = parseBabeChatInputMarkup(compose.trim());
+    const parsed = parseInputMarkup(compose.trim());
     const content = parsed.hadMarkup ? parsed.dialogue : compose.trim();
     const action = parsed.hadMarkup ? parsed.action : '';
     if (!content.trim() && !action.trim()) return;

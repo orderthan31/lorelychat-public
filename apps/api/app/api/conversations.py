@@ -11,7 +11,7 @@ from app.db.models import CharacterMemory, Conversation, ConversationParticipant
 from app.db.session import engine, get_session
 from app.engine.character_runtime import CharacterRuntime, CharacterRuntimeError
 from app.engine.llm_client import LLMClient, LLMUnavailableError
-from app.engine.input_markup import parse_babechat_input_markup
+from app.engine.input_markup import parse_input_markup
 from app.schemas.conversations import (
     CharacterMemoryCreate,
     CharacterMemoryRead,
@@ -522,7 +522,7 @@ def get_battle_state(conversation_id: str, session: Session = Depends(get_sessio
     return battle_ledger_service.get_battle_state(session, conversation)
 
 def normalize_incoming_message(payload: MessageCreate) -> MessageCreate:
-    parsed = parse_babechat_input_markup(payload.content)
+    parsed = parse_input_markup(payload.content)
     if not parsed.had_markup:
         return payload
     action_parts = [part for part in [payload.action, parsed.action] if part]
