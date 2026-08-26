@@ -5,7 +5,7 @@
 Lorechatは、キャラクターや世界観を作成して会話できる**セルフホスト型・モバイルファーストのキャラクターチャットランタイム**です。このモノレポにはReact WebクライアントとFastAPIバックエンドが含まれ、単一のDocker Compose構成として提供されます。
 
 > **ライセンスについて**
-> Lorechatは、OSI承認のオープンソースではなく、**ソースアベイラブルソフトウェア**です。個人利用を含む許可された非商用目的には、[PolyForm Noncommercial License 1.0.0](LICENSE)が適用されます。ライセンサーによる別途の書面許可がない限り、商用利用はできません。
+> Lorechatは、OSI承認のオープンソースではなく、**ソースアベイラブルソフトウェア**です。個人利用を含む許可された非商用目的には、[PolyForm Noncommercial License 1.0.0](docs/license.ja.md)が適用されます。ライセンサーによる別途の書面許可がない限り、商用利用はできません。
 
 ## 主な機能
 
@@ -107,7 +107,7 @@ UIから登録したプロバイダーキーの原文は`/secrets/provider_secre
 
 Docker内の`127.0.0.1`はAPIコンテナ自身を指します。Dockerホスト上のOpenAI互換サーバーに接続する場合は、`.env.example`の例にある`host.docker.internal`を使用します。
 
-詳しくは[プロバイダー設定](docs/providers.md)と[環境設定](docs/configuration.md)を参照してください。
+詳しくは[プロバイダー設定](docs/providers.ja.md)と[環境設定](docs/configuration.ja.md)を参照してください。
 
 ## 主な環境変数
 
@@ -136,7 +136,7 @@ Composeは、コンテナ内の`DATABASE_URL`、`UPLOAD_ROOT`、`LOG_DIR`、`PRO
 
 保護境界なしで`LORECHAT_BIND_ADDRESS=0.0.0.0`へ変更しないでください。プロバイダーキー、SQLite DB、会話、プロンプト、アップロード、ログは機密データとして扱ってください。
 
-詳しくは[SECURITY.md](SECURITY.md)を参照してください。
+詳しくは[SECURITY.md](SECURITY.ja.md)を参照してください。
 
 ## リポジトリ構成
 
@@ -186,12 +186,12 @@ docker compose up -d --wait
 
 ## ドキュメント
 
-- [アーキテクチャ](docs/architecture.md)
-- [環境設定](docs/configuration.md)
-- [プロバイダー設定](docs/providers.md)
-- [セルフホスティング](docs/self-hosting.md)
-- [セキュリティポリシー](SECURITY.md)
-- [コントリビューションポリシー](CONTRIBUTING.md)
+- [アーキテクチャ](docs/architecture.ja.md)
+- [環境設定](docs/configuration.ja.md)
+- [プロバイダー設定](docs/providers.ja.md)
+- [セルフホスティング](docs/self-hosting.ja.md)
+- [セキュリティポリシー](SECURITY.ja.md)
+- [コントリビューションポリシー](CONTRIBUTING.ja.md)
 
 ## プライバシーと外部サービス
 
@@ -205,10 +205,10 @@ docker compose up -d --wait
 
 Copyright 2026 orderthan31.
 
-[PolyForm Noncommercial License 1.0.0](LICENSE)に基づいて提供されます。このリポジトリは商用利用権を付与しません。商用利用、有料サービス、再販売、商用ホスティング、または業務利用には、ライセンサーによる別途の書面許可が必要です。
+[PolyForm Noncommercial License 1.0.0](docs/license.ja.md)に基づいて提供されます。このリポジトリは商用利用権を付与しません。商用利用、有料サービス、再販売、商用ホスティング、または業務利用には、ライセンサーによる別途の書面許可が必要です。
 
 この制限により、LorechatはOSI定義のオープンソースではなく、**ソースアベイラブルプロジェクト**です。
 
 ## コントリビューション
 
-セキュリティ報告とバグ報告は歓迎します。Contributor/relicensing agreementが公開されるまでは、コードコントリビューションを受け付けません。詳しくは[CONTRIBUTING.md](CONTRIBUTING.md)を参照してください。
+セキュリティ報告とバグ報告は歓迎します。Contributor/relicensing agreementが公開されるまでは、コードコントリビューションを受け付けません。詳しくは[CONTRIBUTING.md](CONTRIBUTING.ja.md)を参照してください。

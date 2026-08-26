@@ -5,7 +5,7 @@
 Lorechat is a **self-hosted, mobile-first character chat runtime** for creating characters, defining worlds, and running conversations. This monorepo ships the React web client and FastAPI backend as one Docker Compose deployment.
 
 > **License notice**
-> Lorechat is **source-available software**, not OSI-approved open source. Personal use and other permitted noncommercial purposes are governed by the [PolyForm Noncommercial License 1.0.0](LICENSE). Commercial use is not permitted without separate written permission from the licensor.
+> Lorechat is **source-available software**, not OSI-approved open source. Personal use and other permitted noncommercial purposes are governed by the [PolyForm Noncommercial License 1.0.0](docs/license.md). Commercial use is not permitted without separate written permission from the licensor.
 
 ## Features
 
@@ -205,7 +205,7 @@ docker compose up -d --wait
 
 Copyright 2026 orderthan31.
 
-Lorechat is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). This repository does not grant commercial-use rights. Separate written permission from the licensor is required for commercial use, paid services, resale, commercial hosting, or business use.
+Lorechat is licensed under the [PolyForm Noncommercial License 1.0.0](docs/license.md). This repository does not grant commercial-use rights. Separate written permission from the licensor is required for commercial use, paid services, resale, commercial hosting, or business use.
 
 Because of this restriction, Lorechat is a **source-available project**, not open source under the OSI definition.
 

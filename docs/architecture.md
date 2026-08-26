@@ -1,5 +1,7 @@
 # Architecture
 
+[한국어](architecture.ko.md) | [English](architecture.md) | [日本語](architecture.ja.md)
+
 ## Runtime topology
 
 ```text

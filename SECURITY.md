@@ -1,5 +1,7 @@
 # Security Policy
 
+[한국어](SECURITY.ko.md) | [English](SECURITY.md) | [日本語](SECURITY.ja.md)
+
 ## Supported version
 
 Security fixes target the latest commit on the default branch after the repository is published.

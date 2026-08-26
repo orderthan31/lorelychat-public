@@ -20,8 +20,8 @@ export function CharacterCardPreviewModal({ character, onClose }: CharacterCardP
   const theme = useUiStore((state) => state.theme);
   const { locale, t } = useI18n();
   if (!character) return null;
-  return <div className="avatar-modal" role="dialog" aria-modal="true" onClick={onClose} data-modernized="캐릭터 카드 미리보기 shadcn primitive marker">
-    <Card className="card-preview-modal" onClick={(event) => event.stopPropagation()} data-modernized="캐릭터 카드 미리보기 shadcn modal card marker">
+  return <div className="avatar-modal" role="dialog" aria-modal="true" onClick={onClose} data-modernized="캐릭터 카드 미리보기 design-system primitive marker">
+    <Card className="card-preview-modal" onClick={(event) => event.stopPropagation()} data-modernized="캐릭터 카드 미리보기 design-system modal card marker">
       <CardHeader className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <CardTitle>{t('카드 미리보기')}</CardTitle>

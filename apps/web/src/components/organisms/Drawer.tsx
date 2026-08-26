@@ -51,7 +51,7 @@ export function Drawer({ route, open, navigate, close, backendOnline }: DrawerPr
   if (!open) return null;
   return <>
     <button type="button" aria-label={t('메뉴 닫기')} className="drawer-backdrop fixed inset-0 z-40 min-h-screen w-full rounded-none bg-foreground/30 p-0" onClick={close}></button>
-    <aside className="side-drawer open fixed left-0 top-0 z-50 grid h-screen w-[min(82vw,288px)] translate-x-0 grid-rows-[auto_1fr_auto] gap-4 border-r border-border bg-card p-3.5 text-foreground shadow-2xl shadow-foreground/20 backdrop-blur-xl transition-transform duration-150" data-modernized="메뉴 드로어 shadcn primitive marker">
+    <aside className="side-drawer open fixed left-0 top-0 z-50 grid h-screen w-[min(82vw,288px)] translate-x-0 grid-rows-[auto_1fr_auto] gap-4 border-r border-border bg-card p-3.5 text-foreground shadow-2xl shadow-foreground/20 backdrop-blur-xl transition-transform duration-150" data-modernized="메뉴 드로어 design-system primitive marker">
       <div className="drawer-head flex items-center justify-between gap-2.5">
         <div className="drawer-brand min-w-0 flex-1"><img className="brand-logo-horizontal" src={lorelyHorizontalLogoUrlForTheme(theme)} alt="Lorely Chat" /></div>
         <Button type="button" variant="ghost" size="icon" className="drawer-close" onClick={close} aria-label={t('메뉴 닫기')}><X size={18} /></Button>

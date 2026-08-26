@@ -1,5 +1,5 @@
 // Atomic design atoms: smallest reusable UI primitives.
-// The shadcn-style implementation files live here; this barrel is the canonical app-facing import layer.
+// The design-system-style implementation files live here; this barrel is the canonical app-facing import layer.
 export { AnimatedSettingsMark } from './animated-settings-mark';
 export type { AnimatedSettingsMarkProps } from './animated-settings-mark';
 export { Badge } from './badge';

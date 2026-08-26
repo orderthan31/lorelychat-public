@@ -1,5 +1,7 @@
 # Contributing
 
+[한국어](CONTRIBUTING.ko.md) | [English](CONTRIBUTING.md) | [日本語](CONTRIBUTING.ja.md)
+
 Thanks for helping improve Lorechat.
 
 ## Current contribution policy

@@ -38,7 +38,7 @@ export function CharacterAssetsView({
   deleteCharacterAsset,
   setDefaultCharacterAsset,
 }: CharacterAssetsViewProps) {
-  return <section className="panel page grid max-w-[min(1180px,calc(100vw-24px))] gap-3" data-modernized="에셋 갤러리 shadcn primitive marker">
+  return <section className="panel page grid max-w-[min(1180px,calc(100vw-24px))] gap-3" data-modernized="에셋 갤러리 design-system primitive marker">
 
     <CharacterAssetsPanel character={draft} assets={characterAssets} loading={characterAssetsLoading} saving={busy} draft={assetDraft} setDraft={setAssetDraft} onCreate={createCharacterAsset} onUpload={uploadCharacterAsset} onPatch={patchCharacterAsset} onDelete={deleteCharacterAsset} onDefault={setDefaultCharacterAsset} />
   </section>;

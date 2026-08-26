@@ -151,7 +151,7 @@ function ChatSettingsBubble({ open, setting, onChange, onSave, saving, onClose, 
   const { t } = useI18n();
   if (!open) return null;
   const imagesEnabled = renderImages !== false;
-  return <Card className="chat-settings-popover" role="dialog" aria-label={t('채팅 설정')} data-modernized="runtime 설정 shadcn primitive marker">
+  return <Card className="chat-settings-popover" role="dialog" aria-label={t('채팅 설정')} data-modernized="runtime 설정 design-system primitive marker">
     <CardHeader className="flex items-start justify-between gap-3">
       <CardTitle>{t('채팅 설정')}</CardTitle>
       <Button type="button" variant="ghost" size="icon" aria-label={t('채팅 설정 닫기')} onClick={onClose}>×</Button>

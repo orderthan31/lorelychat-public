@@ -59,7 +59,7 @@ export function CharacterDetailView({
   deleteCharacterAsset,
   setDefaultCharacterAsset,
 }: CharacterDetailViewProps) {
-  return <section className="panel page grid gap-3" data-modernized="캐릭터 상세 shadcn primitive marker">
+  return <section className="panel page grid gap-3" data-modernized="캐릭터 상세 design-system primitive marker">
     <CharacterForm draft={draft} setDraft={setDraft} onSave={saveCharacter} onDelete={deleteCharacter} saving={busy} isNew={route.page === 'characterNew'} speechPresets={speechPresets} applyPreset={applyPreset} onAvatarUpload={uploadAvatar} ttsVoices={ttsVoices} ttsModels={ttsModels} onTtsSample={playCharacterTtsSample} characterId={route.id} assets={characterAssets} assetsLoading={characterAssetsLoading} assetDraft={assetDraft} setAssetDraft={setAssetDraft} onCreateAsset={createCharacterAsset} onUploadAsset={uploadCharacterAsset} onPatchAsset={patchCharacterAsset} onDeleteAsset={deleteCharacterAsset} onDefaultAsset={setDefaultCharacterAsset} />
   </section>;
 }

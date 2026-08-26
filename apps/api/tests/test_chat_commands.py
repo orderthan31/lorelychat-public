@@ -76,12 +76,12 @@ def test_parse_chat_command_uses_enabled_command_metadata(session: Session):
     from app.services.chat_command_service import seed_default_chat_commands
     seed_default_chat_commands(session)
 
-    parsed = parse_chat_command(session, '!스케줄 내일 인기가요랑 NHK 일정 체크해줘')
+    parsed = parse_chat_command(session, '!스케줄 내일 인기가요랑 지역 방송사 일정 체크해줘')
 
     assert parsed is not None
     assert parsed.command.name == '스케줄'
-    assert parsed.args == '내일 인기가요랑 NHK 일정 체크해줘'
-    assert parsed.raw_content == '!스케줄 내일 인기가요랑 NHK 일정 체크해줘'
+    assert parsed.args == '내일 인기가요랑 지역 방송사 일정 체크해줘'
+    assert parsed.raw_content == '!스케줄 내일 인기가요랑 지역 방송사 일정 체크해줘'
 
 
 def test_user_bang_command_stores_clean_content_and_metadata(client, session: Session, monkeypatch):

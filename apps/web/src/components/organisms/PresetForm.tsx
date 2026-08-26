@@ -29,7 +29,7 @@ export type PresetFormProps = {
 export function PresetForm({ draft, setDraft, onSave, onDelete, saving, isNew }: PresetFormProps) {
   const { t } = useI18n();
   const update = (key: string, value: unknown) => setDraft((current) => ({ ...current, [key]: value }));
-  return <form className="stack" data-modernized="프리셋 폼 shadcn primitive marker" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
+  return <form className="stack" data-modernized="프리셋 폼 design-system primitive marker" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
     <div className="grid two compact"><Field label={t('프리셋 타입')}><Select value={draft.preset_type || 'speech_style'} onChange={(e) => update('preset_type', e.target.value)}><option value="speech_style">{t('캐릭터 말투')}</option></Select></Field><Field label={t('제목')}><Input value={draft.title || ''} onChange={(e) => update('title', e.target.value)} /></Field></div>
     <TextareaWithExpand label={t('내용')} rows={8} value={draft.content || ''} onChange={(value) => update('content', value)} placeholder={t('캐릭터 말투 프리셋 내용')} />
     <Field label={t('설명')}><Input value={draft.description || ''} onChange={(e) => update('description', e.target.value)} /></Field>

@@ -109,7 +109,7 @@ export function CharacterAssetsPanel({ character, assets = [], loading = false, 
     });
   };
   if (!character?.id) return null;
-  return <section className="grid gap-3.5" data-modernized="캐릭터 에셋 패널 shadcn primitive marker">
+  return <section className="grid gap-3.5" data-modernized="캐릭터 에셋 패널 design-system primitive marker">
     <FormSection
       title={`${character.name || t('캐릭터')} · ${t('에셋 갤러리')}`}
       action={<Button type="button" className="w-auto" onClick={() => setShowCreate((value) => !value)}>{t(showCreate ? '추가 닫기' : '+ 에셋 추가')}</Button>}

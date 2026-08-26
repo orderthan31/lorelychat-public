@@ -7,7 +7,7 @@ Lorechat은 캐릭터와 세계관을 직접 만들고, 그 설정을 이어가�
 처음 설치할 때는 별도의 API key가 없어도 괜찮습니다. 기본으로 제공하는 mock 모드와 합성 demo 데이터로 화면과 대화 흐름을 먼저 살펴본 뒤, 필요할 때 원하는 LLM provider를 연결하면 됩니다.
 
 > **라이선스를 먼저 확인해 주세요**
-> Lorechat은 OSI 승인 오픈소스가 아니라, 소스 코드를 공개한 **source-available 소프트웨어**입니다. 개인 사용을 포함한 허용된 비상업적 용도에는 [PolyForm Noncommercial License 1.0.0](LICENSE)이 적용됩니다. 별도의 서면 허가 없이 상업적으로 사용할 수 없습니다.
+> Lorechat은 OSI 승인 오픈소스가 아니라, 소스 코드를 공개한 **source-available 소프트웨어**입니다. 개인 사용을 포함한 허용된 비상업적 용도에는 [PolyForm Noncommercial License 1.0.0](docs/license.ko.md)이 적용됩니다. 별도의 서면 허가 없이 상업적으로 사용할 수 없습니다.
 
 ## 이런 기능을 제공합니다
 
@@ -113,7 +113,7 @@ UI에서 입력한 provider key 원문은 `/secrets/provider_secrets.json`에 �
 
 Docker 컨테이너 안에서 `127.0.0.1`은 host가 아니라 API 컨테이너 자신을 가리킵니다. host에서 실행 중인 OpenAI-compatible 서버를 연결하려면 기본 예시에 있는 `host.docker.internal`을 사용하세요.
 
-설정값을 더 자세히 보고 싶다면 [Provider 설정](docs/providers.md)과 [환경 설정](docs/configuration.md)을 참고하면 됩니다.
+설정값을 더 자세히 보고 싶다면 [Provider 설정](docs/providers.ko.md)과 [환경 설정](docs/configuration.ko.md)을 참고하면 됩니다.
 
 ## 자주 확인하는 환경 변수
 
@@ -142,7 +142,7 @@ Compose는 컨테이너 내부의 `DATABASE_URL`, `UPLOAD_ROOT`, `LOG_DIR`, `PRO
 
 별도의 보호 장치 없이 `LORECHAT_BIND_ADDRESS=0.0.0.0`으로 바꾸지 마세요. provider key, SQLite DB, 대화, 프롬프트, 업로드, 로그는 모두 민감 데이터로 다뤄야 합니다.
 
-보안과 관련된 자세한 내용은 [SECURITY.md](SECURITY.md)에 정리되어 있습니다.
+보안과 관련된 자세한 내용은 [SECURITY.md](SECURITY.ko.md)에 정리되어 있습니다.
 
 ## 저장소 둘러보기
 
@@ -192,12 +192,12 @@ docker compose up -d --wait
 
 ## 더 읽어보기
 
-- [아키텍처](docs/architecture.md)
-- [환경 설정](docs/configuration.md)
-- [Provider 설정](docs/providers.md)
-- [셀프 호스팅](docs/self-hosting.md)
-- [보안 정책](SECURITY.md)
-- [기여 정책](CONTRIBUTING.md)
+- [아키텍처](docs/architecture.ko.md)
+- [환경 설정](docs/configuration.ko.md)
+- [Provider 설정](docs/providers.ko.md)
+- [셀프 호스팅](docs/self-hosting.ko.md)
+- [보안 정책](SECURITY.ko.md)
+- [기여 정책](CONTRIBUTING.ko.md)
 
 ## 개인정보와 외부 서비스
 
@@ -211,10 +211,10 @@ Lorechat이 기본으로 사용하는 SQLite DB와 업로드 파일은 로컬 Do
 
 Copyright 2026 orderthan31.
 
-Lorechat은 [PolyForm Noncommercial License 1.0.0](LICENSE)에 따라 제공됩니다. 이 저장소는 상업적 사용 권한을 부여하지 않습니다. 상업적 이용, 유료 서비스, 재판매, 상업적 호스팅 또는 기업 업무 이용에는 licensor의 별도 서면 허가가 필요합니다.
+Lorechat은 [PolyForm Noncommercial License 1.0.0](docs/license.ko.md)에 따라 제공됩니다. 이 저장소는 상업적 사용 권한을 부여하지 않습니다. 상업적 이용, 유료 서비스, 재판매, 상업적 호스팅 또는 기업 업무 이용에는 licensor의 별도 서면 허가가 필요합니다.
 
 이 제한 때문에 Lorechat은 OSI 정의의 오픈소스가 아니라 **source-available 프로젝트**입니다.
 
 ## 기여와 문의
 
-보안 제보와 bug report는 환영합니다. Contributor/relicensing agreement가 공개되기 전까지 code contribution은 받지 않습니다. 자세한 내용은 [CONTRIBUTING.md](CONTRIBUTING.md)를 참고해 주세요.
+보안 제보와 bug report는 환영합니다. Contributor/relicensing agreement가 공개되기 전까지 code contribution은 받지 않습니다. 자세한 내용은 [CONTRIBUTING.md](CONTRIBUTING.ko.md)를 참고해 주세요.

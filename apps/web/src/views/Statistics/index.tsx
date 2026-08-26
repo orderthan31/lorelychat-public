@@ -110,7 +110,7 @@ export function StatisticsView({ conversations = [] }: StatisticsViewProps) {
 
   useEffect(() => { loadStats(); }, [query, selectedConversationId]);
 
-  return <section className="panel page grid gap-3 [&_[data-slot=card-description]]:text-foreground/80 [&_[data-slot=card-title]]:text-primary" data-modernized="통계 페이지 shadcn primitive marker">
+  return <section className="panel page grid gap-3 [&_[data-slot=card-description]]:text-foreground/80 [&_[data-slot=card-title]]:text-primary" data-modernized="통계 페이지 design-system primitive marker">
     <Card>
       <CardHeader>
         <CardTitle>{t('통계')}</CardTitle>

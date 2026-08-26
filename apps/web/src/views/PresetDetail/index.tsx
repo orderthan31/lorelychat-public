@@ -25,7 +25,7 @@ export type PresetDetailViewProps = {
 export function PresetDetailView({ route, presetDraft, setPresetDraft, characters = [], savePreset, deletePreset, busy = false, navigate }: PresetDetailViewProps) {
   const { locale, t } = useI18n();
   const isNew = route.page === 'presetNew';
-  return <section className="panel page grid gap-3" data-modernized="상세 편집 shadcn primitive marker">
+  return <section className="panel page grid gap-3" data-modernized="상세 편집 design-system primitive marker">
     <FormSection title={isNew ? t('새 프리셋 등록') : formatNamedAction(presetDraft.title || t('프리셋'), 'edit', locale)}>
       <PresetForm draft={presetDraft} setDraft={setPresetDraft} characters={characters} onSave={savePreset} onDelete={() => deletePreset(route.id)} saving={busy} isNew={isNew} />
     </FormSection>

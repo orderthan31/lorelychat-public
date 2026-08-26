@@ -1,5 +1,7 @@
 # Provider Configuration
 
+[한국어](providers.ko.md) | [English](providers.md) | [日本語](providers.ja.md)
+
 ## Mock mode
 
 `LLM_MOCK=true` is the install-validation mode. It requires no provider account and does not make paid generation requests.

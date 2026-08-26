@@ -198,7 +198,7 @@ export function ChatCommandsView({ route, navigate, chatCommands = [], chatComma
     const formDraft = route.page === 'chatCommandDetail' && draft.id !== routeId && detailCommand
       ? normalizeDraft(detailCommand)
       : normalizeDraft(draft);
-    return <section className="panel page grid gap-3" data-modernized="커맨드 상세 shadcn primitive marker">
+    return <section className="panel page grid gap-3" data-modernized="커맨드 상세 design-system primitive marker">
       <CommandForm draft={formDraft} updateDraft={updateDraft} saveChatCommand={saveChatCommand} deleteChatCommand={deleteChatCommand} busy={busy} isNew={isNew} navigate={navigate} />
     </section>;
   }

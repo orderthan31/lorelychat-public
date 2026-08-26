@@ -30,7 +30,7 @@ export function AppShell({ route, backendOnline, drawerOpen, setDrawerOpen, navi
   }, [theme]);
 
   return <>
-    {!isChatRoute && <header className="app-bar sticky top-0 z-30 flex min-h-[58px] w-full items-center gap-2 overflow-hidden border-b border-border bg-card px-3.5 py-2 text-foreground shadow-lg shadow-primary/5 backdrop-blur-xl md:gap-3 md:px-5" data-modernized="앱 셸 shadcn primitive marker">
+    {!isChatRoute && <header className="app-bar sticky top-0 z-30 flex min-h-[58px] w-full items-center gap-2 overflow-hidden border-b border-border bg-card px-3.5 py-2 text-foreground shadow-lg shadow-primary/5 backdrop-blur-xl md:gap-3 md:px-5" data-modernized="앱 셸 design-system primitive marker">
       <Button type="button" variant="ghost" size="icon" className="inline-grid size-11 min-h-11 shrink-0 place-items-center self-center rounded-xl text-foreground" aria-label={t('메뉴 열기')} onClick={() => setDrawerOpen(true)}><Menu className="block" size={20} /></Button>
       <div className="app-title flex min-h-10 min-w-0 flex-1 items-center self-center overflow-hidden">
         <h1 className="m-0 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[16px] leading-[1.2]"><strong className="font-extrabold text-foreground">{t(pageTitle(route))}</strong></h1>

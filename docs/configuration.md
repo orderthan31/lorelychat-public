@@ -1,5 +1,7 @@
 # Configuration
 
+[한국어](configuration.ko.md) | [English](configuration.md) | [日本語](configuration.ja.md)
+
 Copy `.env.example` to `.env`. Docker Compose reads the file automatically.
 
 ## Core values

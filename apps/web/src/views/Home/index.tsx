@@ -138,7 +138,7 @@ export function HomeView({ conversations = [], characters = [], allCharacters = 
     .filter((item) => item.useCount > 0)
     .sort((a, b) => b.useCount - a.useCount)
     .slice(0, 10);
-  return <section className="page home-dashboard" data-modernized="추천 메인 shadcn primitive marker">
+  return <section className="page home-dashboard" data-modernized="추천 메인 design-system primitive marker">
     <Rail title={t('최근 대화방')} action={<Button type="button" variant="ghost" size="sm" onClick={() => navigate('/conversations')}>{t('전체 보기')}</Button>}>
       {recentRooms.length ? recentRooms.map((room) => <button type="button" key={room.id} className="recommend-card room-recommend-card" onClick={() => openConversation(room.id)}>
         <RoomThumbnail room={room} world={room.world_setting_id ? worldById.get(room.world_setting_id) : null} characterById={characterById} />

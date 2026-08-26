@@ -1,5 +1,7 @@
 # Self-hosting
 
+[한국어](self-hosting.ko.md) | [English](self-hosting.md) | [日本語](self-hosting.ja.md)
+
 ## First deployment
 
 ```bash

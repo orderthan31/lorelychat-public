@@ -197,7 +197,7 @@ export function BubbleList({ messages, characters, onAvatarPreview, bottomRef, t
     if (olderPagingReady && node.scrollTop < 80 && hasOlderMessages && !loadingOlderMessages) onLoadOlderMessages?.();
   };
 
-  return <div className="chat-thread" ref={threadRef} onScroll={handleThreadScroll} data-modernized="채팅 버블 shadcn primitive marker">
+  return <div className="chat-thread" ref={threadRef} onScroll={handleThreadScroll} data-modernized="채팅 버블 design-system primitive marker">
     {hasOlderMessages && <div className="grid place-items-center pb-2 pt-1"><Button type="button" variant="ghost" size="sm" className="min-h-[42px] px-3 py-2" disabled={loadingOlderMessages} onClick={onLoadOlderMessages}>{t(loadingOlderMessages ? '이전 대화 불러오는 중…' : '이전 대화 더 보기')}</Button></div>}
     {messages.map((message, index) => {
       const side = bubbleSide(message);

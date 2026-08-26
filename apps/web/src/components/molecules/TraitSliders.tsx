@@ -15,7 +15,7 @@ export type TraitSlidersProps = {
 export function TraitSliders({ scores = {}, onChange, readOnly = false }: TraitSlidersProps) {
   const { t } = useI18n();
   const merged = { ...DEFAULT_TRAIT_SCORES, ...(scores || {}) };
-  return <section className={cn('grid gap-2.5 rounded-[18px] border border-border bg-white/[.04] p-3', readOnly && 'border-0 bg-transparent p-0')} aria-label={t('캐릭터 성향 점수')} data-modernized="성향 슬라이더 shadcn primitive marker">
+  return <section className={cn('grid gap-2.5 rounded-[18px] border border-border bg-white/[.04] p-3', readOnly && 'border-0 bg-transparent p-0')} aria-label={t('캐릭터 성향 점수')} data-modernized="성향 슬라이더 design-system primitive marker">
     <div className="flex flex-wrap items-baseline justify-between gap-2"><strong className="text-foreground">{t('성향 점수')}</strong><small className="text-xs text-muted">{t('1점 낮음 · 5점 강함')}</small></div>
     {TRAIT_DEFINITIONS.map((trait) => {
       const value = Number(merged[trait.key] || 3);
