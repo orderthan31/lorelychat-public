@@ -57,6 +57,7 @@ const operationsViewSource = readFileSync(new URL('../src/views/Operations/index
 const navigationDrawerSource = readFileSync(new URL('../src/components/organisms/Drawer.tsx', import.meta.url), 'utf8');
 const drawerSource = readFileSync(new URL('../src/components/organisms/ConversationInfoDrawer.tsx', import.meta.url), 'utf8');
 const appRootSource = readFileSync(new URL('../src/app/App.tsx', import.meta.url), 'utf8');
+const appErrorBoundarySource = readFileSync(new URL('../src/app/AppErrorBoundary.tsx', import.meta.url), 'utf8');
 const generationJobEventsSource = readFileSync(new URL('../src/api/generationJobEvents.ts', import.meta.url), 'utf8');
 const viteConfig = readFileSync(new URL('../vite.config.js', import.meta.url), 'utf8');
 const removedFrontendManagementFiles = [
@@ -70,10 +71,25 @@ const removedFrontendManagementFiles = [
 assert.deepEqual(removedFrontendManagementFiles.filter((path) => existsSync(new URL(path, import.meta.url))), []);
 
 assert.match(main, /import \{ App \} from '\.\/app\/App'/);
+assert.match(main, /import \{ AppErrorBoundary \} from '\.\/app\/AppErrorBoundary'/);
 assert.match(main, /import \{ AppProviders \} from '\.\/app\/AppProviders'/);
 assert.match(main, /const root = document\.getElementById\('root'\)/);
 assert.match(main, /if \(!root\) throw new Error\('Root element not found'\)/);
-assert.match(main, /<AppProviders><App \/><\/AppProviders>/);
+assert.match(main, /<AppErrorBoundary><AppProviders><App \/><\/AppProviders><\/AppErrorBoundary>/);
+assert.match(appErrorBoundarySource, /export class AppErrorBoundary extends Component/);
+assert.match(appErrorBoundarySource, /static getDerivedStateFromError/);
+assert.match(appErrorBoundarySource, /componentDidCatch\(error: Error, info: ErrorInfo\)/);
+assert.match(appErrorBoundarySource, /function subscribeGlobalErrorListeners\(\): \(\) => void/);
+assert.match(appErrorBoundarySource, /window\.addEventListener\('error', handleWindowError\)/);
+assert.match(appErrorBoundarySource, /window\.addEventListener\('unhandledrejection', handleUnhandledRejection\)/);
+assert.match(appErrorBoundarySource, /globalErrorListenerUsers = Math\.max\(0, globalErrorListenerUsers - 1\)/);
+assert.match(appErrorBoundarySource, /window\.localStorage\.setItem/);
+assert.match(appErrorBoundarySource, /const DUPLICATE_ERROR_WINDOW_MS = 1000/);
+assert.match(appErrorBoundarySource, /Date\.now\(\) - latestTimestamp <= DUPLICATE_ERROR_WINDOW_MS/);
+assert.match(appErrorBoundarySource, /truncateDiagnosticText\(error\.message \|\| 'Unknown client error', 1000\)/);
+assert.match(appErrorBoundarySource, /JSON\.stringify\(\[\.\.\.previous, diagnostic\]\.slice\(-MAX_STORED_CLIENT_ERRORS\)\)/);
+assert.match(appErrorBoundarySource, /return <Fragment key=\{this\.state\.resetKey\}>\{this\.props\.children\}<\/Fragment>/);
+assert.doesNotMatch(appErrorBoundarySource, /message_content|request_payload|response_body/);
 assert.match(cssEntry, /@import "\.\/styles\/base\/_typography\.scss"/);
 assert.match(cssEntry, /@import "\.\/styles\/pages\/_chat\.scss"/);
 assert.match(cssEntry, /@import "\.\/styles\/themes\/_dark\.scss"/);
