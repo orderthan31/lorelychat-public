@@ -1893,6 +1893,15 @@ def test_scene_compression_is_throttled_until_enough_conversation_turns(session)
     session.add(SceneState(conversation_id="conv_throttle", summary="existing compact summary", updated_at=now))
     for idx in range(4):
         session.add(Message(
+            id=f"msg_throttle_backlog_{idx}",
+            conversation_id="conv_throttle",
+            speaker_type="character",
+            speaker_id="char_a",
+            content="older foldable bubble",
+            created_at=now - timedelta(seconds=idx + 1),
+        ))
+    for idx in range(4):
+        session.add(Message(
             id=f"msg_throttle_turn_{idx}",
             conversation_id="conv_throttle",
             speaker_type="user",
@@ -1935,6 +1944,15 @@ def test_system_scene_updates_do_not_reset_compression_turn_cadence(session):
         updated_at=baseline,
     )
     session.add(scene)
+    for index in range(10):
+        session.add(Message(
+            id=f"msg_system_cadence_backlog_{index}",
+            conversation_id=scene.conversation_id,
+            speaker_type="character",
+            speaker_id="char_a",
+            content=f"이전 캐릭터 응답 {index}",
+            created_at=baseline - timedelta(minutes=index + 1),
+        ))
     for index in range(3):
         session.add(Message(
             id=f"msg_system_cadence_{index}",
@@ -1962,6 +1980,15 @@ def test_system_scene_updates_do_not_reset_compression_turn_cadence(session):
 def test_scene_compression_waits_for_interval_even_when_summary_is_missing(session):
     now = datetime.now(timezone.utc)
     session.add(SceneState(conversation_id="conv_first_summary", updated_at=now))
+    for idx in range(7):
+        session.add(Message(
+            id=f"msg_first_summary_backlog_{idx}",
+            conversation_id="conv_first_summary",
+            speaker_type="character",
+            speaker_id="char_a",
+            content="older foldable bubble",
+            created_at=now - timedelta(seconds=idx + 1),
+        ))
     session.add(Message(
         id="msg_first_summary_1",
         conversation_id="conv_first_summary",
@@ -2003,6 +2030,44 @@ def test_scene_compression_waits_for_interval_even_when_summary_is_missing(sessi
         "conv_first_summary",
         generated_character_messages=1,
         interval_turns=5,
+    )
+
+
+def test_scene_compression_eligibility_includes_current_uncommitted_replies(session):
+    now = datetime.now(timezone.utc)
+    conversation_id = "conv_prospective_reply"
+    session.add(SceneState(conversation_id=conversation_id, updated_at=now))
+    for index in range(12):
+        session.add(Message(
+            id=f"msg_prospective_{index:02d}",
+            conversation_id=conversation_id,
+            speaker_type="user" if index % 2 == 0 else "character",
+            speaker_id="user_001" if index % 2 == 0 else "char_a",
+            content=f"persisted {index}",
+            created_at=now + timedelta(seconds=index),
+        ))
+    session.commit()
+    generated = Message(
+        id="msg_prospective_current_reply",
+        conversation_id=conversation_id,
+        speaker_type="character",
+        speaker_id="char_a",
+        content="current reply not finalized yet",
+        created_at=now + timedelta(seconds=20),
+    )
+
+    assert not should_update_scene_orchestration_summary(
+        session,
+        conversation_id,
+        generated_character_messages=1,
+        interval_turns=5,
+    )
+    assert should_update_scene_orchestration_summary(
+        session,
+        conversation_id,
+        generated_character_messages=1,
+        interval_turns=5,
+        prospective_messages=[generated],
     )
 
 

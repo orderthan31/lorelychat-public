@@ -13,7 +13,6 @@ from sqlalchemy import text, update as sa_update
 from app.db.models import Character, Conversation, ConversationParticipant, ConversationReadState, GenerationJobEvent, MessageGenerationJob, PostCommitTask, ConversationRelationshipState, CharacterMemory, Message, SceneState, MessageAsset, BattleMatchRecord, BattleStanding, RuntimeSetting, WorldSetting
 from app.schemas.conversations import ConversationCreate, ConversationUpdate, MessageCreate, ParticipantCreate
 from app.services import external_memory_service, genre_domain_service, system_prompt_service
-from app.services.runtime_settings_service import DEFAULT_COMPRESSION_MODEL_KEY, DEFAULT_MODEL_KEY, DEFAULT_RESPONSE_LENGTH_PRESET, DEFAULT_MIN_OUTPUT_TOKENS, GLOBAL_RUNTIME_SETTING_ID
 
 
 MAX_SCENE_MEMORY_CHARS = 2200
@@ -76,13 +75,6 @@ def first_character_participant_id(participants: list[ParticipantCreate]) -> str
     return None
 
 
-def scene_has_flavor_hooks(scene: object | None) -> bool:
-    if scene is None:
-        return False
-    keys = ("opening_scene", "opening_line", "tone_preset", "relationship_archetype", "compression_focus", "world_seed")
-    return any(bool((getattr(scene, key, None) or "").strip()) for key in keys)
-
-
 def scene_payload_from_world_setting(world: WorldSetting | None, scene: Any | None) -> dict:
     base = {}
     if world:
@@ -110,21 +102,6 @@ def user_description_from_scene(scene: object | None) -> str:
 
 def opening_line_from_scene_data(scene_data: dict) -> str:
     return (scene_data.get("opening_line") or "").strip()
-
-
-def add_early_compression_setting_for_flavor_room(session: Session, conversation_id: str) -> None:
-    global_setting = session.get(RuntimeSetting, GLOBAL_RUNTIME_SETTING_ID)
-    session.add(RuntimeSetting(
-        id=conversation_id,
-        conversation_id=conversation_id,
-        model_key=getattr(global_setting, "model_key", None) or DEFAULT_MODEL_KEY,
-        compression_model_key=getattr(global_setting, "compression_model_key", None) or DEFAULT_COMPRESSION_MODEL_KEY,
-        response_length_preset=getattr(global_setting, "response_length_preset", None) or DEFAULT_RESPONSE_LENGTH_PRESET,
-        min_output_tokens=getattr(global_setting, "min_output_tokens", None) or DEFAULT_MIN_OUTPUT_TOKENS,
-        compression_interval_turns=2,
-        default_tts_model_option_key=getattr(global_setting, "default_tts_model_option_key", None),
-        safety_preset=getattr(global_setting, "safety_preset", "medium") or "medium",
-    ))
 
 
 def create_conversation(session: Session, payload: ConversationCreate) -> Conversation:
@@ -166,8 +143,6 @@ def create_conversation(session: Session, payload: ConversationCreate) -> Conver
                 content=opening_line,
                 metadata_={"source": "world_setting_opening_line" if world_setting else "room_opening_line"},
             ))
-    if scene_has_flavor_hooks(payload.scene) or world_setting:
-        add_early_compression_setting_for_flavor_room(session, conversation.id)
     session.commit()
     session.refresh(conversation)
     return conversation
@@ -2838,8 +2813,9 @@ def should_update_scene_orchestration_summary(
     generated_character_messages: int = 0,
     interval_turns: int = 5,
     force: bool = False,
+    prospective_messages: list[Message] | None = None,
 ) -> bool:
-    """Run compression on the configured user/system turn interval.
+    """Run compression when cadence is due and a foldable prefix exists.
 
     Cadence is anchored to the last compression attempt, not SceneState.updated_at.
     Scene directions and other state edits may update the scene timestamp without
@@ -2862,7 +2838,30 @@ def should_update_scene_orchestration_summary(
         .where(*filters)
         .limit(interval_turns)
     ).all()
-    return len(turn_count) >= interval_turns
+    if len(turn_count) < interval_turns:
+        return False
+
+    # The configured cadence decides when compression may run, while the
+    # incremental selector decides whether there is an actual prefix to fold.
+    # Without this second check a short room records repeated no-op attempts;
+    # the attempt timestamp then consumes another full cadence even though the
+    # summary and boundary never moved. That makes the visible application
+    # cadence depend on the number of bubbles generated per turn.
+    selector_scene = scene_state or SceneState(conversation_id=conversation_id)
+    candidate_messages = list_messages(session, conversation_id)
+    if prospective_messages:
+        persisted_ids = {message.id for message in candidate_messages}
+        candidate_messages.extend(message for message in prospective_messages if message.id not in persisted_ids)
+    try:
+        compression_batch, _ = select_incremental_compression_batch(
+            selector_scene,
+            candidate_messages,
+        )
+    except ValueError:
+        # A dangling persisted boundary must reach the compression worker so it
+        # can record the diagnostic instead of silently disabling the room.
+        return True
+    return bool(compression_batch)
 
 
 def _latest_message_id(session: Session, conversation_id: str) -> str | None:
@@ -3143,15 +3142,12 @@ async def update_scene_orchestration_summary(
     if not scene_state:
         scene_state = SceneState(conversation_id=conversation_id)
         session.add(scene_state)
-    scene_state.last_compression_attempt_at = datetime.now(timezone.utc)
-    session.add(scene_state)
-    session.commit()
-    session.refresh(scene_state)
     expected_revision = int(scene_state.compression_revision or 0)
     expected_boundary_message_id = scene_state.last_compression_source_message_id
     try:
         recent, _raw_tail = select_incremental_compression_batch(scene_state, recent_messages)
     except ValueError as exc:
+        scene_state.last_compression_attempt_at = datetime.now(timezone.utc)
         scene_state.last_compression_error = compact_text(str(exc), 1000)
         session.add(scene_state)
         session.commit()
@@ -3163,6 +3159,13 @@ async def update_scene_orchestration_summary(
         session.commit()
         session.refresh(scene_state)
         return scene_state
+    # Only a real foldable source window is a compression attempt. Provider or
+    # validation failures after this point still advance the retry cadence, but
+    # a protected-raw-tail no-op does not postpone the first useful fold.
+    scene_state.last_compression_attempt_at = datetime.now(timezone.utc)
+    session.add(scene_state)
+    session.commit()
+    session.refresh(scene_state)
     source_message_id = recent[-1].id
     allowed_character_ids = character_ids or sorted({message.speaker_id for message in recent_messages if message.speaker_type == "character"})
     active_ids = set(allowed_character_ids)

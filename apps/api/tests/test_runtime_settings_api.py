@@ -46,7 +46,9 @@ def test_runtime_settings_default_and_conversation_override(client):
     assert room_patch.status_code == 400
 
 
-def test_room_flavor_creation_auto_sets_early_compression_cadence(client):
+def test_flavor_and_world_rooms_inherit_global_compression_cadence(client):
+    patched_default = client.patch('/runtime-settings/default', json={'compression_interval_turns': 8})
+    assert patched_default.status_code == 200
     character = client.post('/characters', json={'name': '첫장면테스트', 'persona': '첫 장면 테스트용'}).json()
     conversation = client.post('/conversations', json={
         'mode': 'user_character',
@@ -64,9 +66,25 @@ def test_room_flavor_creation_auto_sets_early_compression_cadence(client):
 
     setting = client.get(f"/runtime-settings/conversations/{conversation['id']}")
     assert setting.status_code == 200
-    assert setting.json()['compression_interval_turns'] == 2
+    assert setting.json()['compression_interval_turns'] == 8
     assert setting.json()['model_key'] is None
     assert setting.json()['response_length_preset'] == 'medium'
+
+    world = client.post('/world-settings', json={
+        'title': '압축 간격 상속 세계관',
+        'world_seed': '세계관이 있어도 숨은 방별 압축 간격을 만들지 않는다.',
+    }).json()
+    world_room = client.post('/conversations', json={
+        'mode': 'user_character',
+        'world_setting_id': world['id'],
+        'participants': [
+            {'type': 'user', 'id': 'user_001'},
+            {'type': 'character', 'id': character['id']},
+        ],
+    }).json()
+    world_setting = client.get(f"/runtime-settings/conversations/{world_room['id']}")
+    assert world_setting.status_code == 200
+    assert world_setting.json()['compression_interval_turns'] == 8
 
     plain = client.post('/conversations', json={
         'mode': 'user_character',
@@ -77,4 +95,4 @@ def test_room_flavor_creation_auto_sets_early_compression_cadence(client):
         ],
     }).json()
     plain_setting = client.get(f"/runtime-settings/conversations/{plain['id']}").json()
-    assert plain_setting['compression_interval_turns'] == 5
+    assert plain_setting['compression_interval_turns'] == 8

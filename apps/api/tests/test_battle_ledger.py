@@ -346,3 +346,50 @@ def test_battle_control_rejects_invalid_active_pair(client, session, monkeypatch
     })
     assert response.status_code == 422
     assert battle_ledger_service.list_match_records(session, "conv_battle_invalid_pair") == []
+
+
+async def test_battle_control_survives_async_job_rehydration(client, session, monkeypatch):
+    _add_character(session, "char_a", "유나")
+    _add_character(session, "char_b", "네리 로드리게스")
+    _add_room(session, "conv_battle_async_control", genre_mode="battle")
+    monkeypatch.setattr(conversations_api, "_start_message_generation_worker", lambda _job_id: None)
+    captured = {}
+
+    async def fake_generate_replies_from_message(**kwargs):
+        captured["payload"] = kwargs["payload"]
+        captured["runtime_context"] = conversations_api.build_battle_control_runtime_context(
+            kwargs["session"],
+            kwargs["payload"],
+            conversation_id=kwargs["conversation_id"],
+        )
+        return []
+
+    monkeypatch.setattr(conversations_api, "generate_replies_from_message", fake_generate_replies_from_message)
+    response = client.post("/conversations/conv_battle_async_control/messages/jobs", json={
+        "speaker_type": "user",
+        "speaker_id": "user_001",
+        "content": "유나와 네리가 배틀을 시작한다.",
+        "battle_control": {
+            "action": "start",
+            "participant_a_id": "char_a",
+            "participant_b_id": "char_b",
+            "advantage": 0.5,
+            "current_phase": "opening",
+        },
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["incoming_message"]["metadata"]["battle_control"]["action"] == "start"
+    await conversations_api._run_message_generation_job_in_session(session, body["job"]["id"])
+
+    assert captured["payload"].battle_control.action == "start"
+    assert captured["runtime_context"]["action"] == "start"
+    assert captured["runtime_context"]["active_pair"] == {
+        "participant_a_id": "char_a",
+        "participant_a_name": "유나",
+        "participant_b_id": "char_b",
+        "participant_b_name": "네리 로드리게스",
+    }
+    state = client.get("/conversations/conv_battle_async_control/battle-state").json()
+    assert state["active_match"]["result_status"] == "in_progress"

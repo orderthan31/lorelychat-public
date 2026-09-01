@@ -7,7 +7,7 @@ import threading
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, col, select
-from app.db.models import CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, GenerationJobEvent, Message, MessageGenerationJob, PostCommitTask, SceneState
+from app.db.models import BattleMatchRecord, CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, GenerationJobEvent, Message, MessageGenerationJob, PostCommitTask, SceneState
 from app.db.session import engine, get_session
 from app.engine.character_runtime import CharacterRuntime, CharacterRuntimeError
 from app.engine.llm_client import LLMClient, LLMUnavailableError
@@ -573,7 +573,12 @@ def _battle_character_name(session: Session, character_id: str | None) -> str:
     return character.name if character else character_id
 
 
-def build_battle_control_runtime_context(session: Session, payload: MessageCreate, applied_record=None) -> dict[str, object] | None:
+def build_battle_control_runtime_context(
+    session: Session,
+    payload: MessageCreate,
+    applied_record=None,
+    conversation_id: str | None = None,
+) -> dict[str, object] | None:
     control = payload.battle_control
     if not control:
         return None
@@ -581,6 +586,12 @@ def build_battle_control_runtime_context(session: Session, payload: MessageCreat
     if not action:
         return None
     record = applied_record
+    if record is None:
+        match_id = str(_battle_control_value(control, "match_id") or "").strip()
+        if match_id:
+            candidate = session.get(BattleMatchRecord, match_id)
+            if candidate is not None and (conversation_id is None or candidate.conversation_id == conversation_id):
+                record = candidate
     active_pair = None
     if record:
         active_pair = {
@@ -589,6 +600,16 @@ def build_battle_control_runtime_context(session: Session, payload: MessageCreat
             "participant_b_id": record.participant_b_id,
             "participant_b_name": _battle_character_name(session, record.participant_b_id),
         }
+    elif action == "start":
+        participant_a_id = str(_battle_control_value(control, "participant_a_id") or "").strip()
+        participant_b_id = str(_battle_control_value(control, "participant_b_id") or "").strip()
+        if participant_a_id and participant_b_id:
+            active_pair = {
+                "participant_a_id": participant_a_id,
+                "participant_a_name": _battle_character_name(session, participant_a_id),
+                "participant_b_id": participant_b_id,
+                "participant_b_name": _battle_character_name(session, participant_b_id),
+            }
     context: dict[str, object] = {"action": action}
     if active_pair:
         context["active_pair"] = active_pair
@@ -1019,7 +1040,12 @@ async def generate_replies_from_message(
     }
     genre_mode = conversation_service.normalize_genre_mode(getattr(conversation, "genre_mode", None))
     official_domain_context = genre_domain_service.get_official_context(session, conversation)
-    battle_control_context = build_battle_control_runtime_context(session, payload, applied_record=applied_battle_record)
+    battle_control_context = build_battle_control_runtime_context(
+        session,
+        payload,
+        applied_record=applied_battle_record,
+        conversation_id=conversation_id,
+    )
     recent_for_prompt = recent_messages if recent_messages is not None else conversation_service.list_messages(session, conversation_id)
     room_characters = select_runtime_room_characters(
         room_characters=room_characters,
@@ -1132,6 +1158,7 @@ async def generate_replies_from_message(
         interval_turns=runtime_settings_service.clamp_compression_interval_turns(
             getattr(runtime_setting, "compression_interval_turns", runtime_settings_service.DEFAULT_COMPRESSION_INTERVAL_TURNS)
         ),
+        prospective_messages=generated_messages,
     )
     post_commit_tasks = build_generated_turn_post_commit_tasks(
         session=session,
@@ -1185,14 +1212,28 @@ def _serialize_generation_job(job) -> MessageGenerationJobRead:
 
 
 def _message_payload_from_stored_message(message: Message) -> MessageCreate:
+    metadata = dict(message.metadata_ or {})
     return MessageCreate(
         speaker_type=message.speaker_type,
         speaker_id=message.speaker_id,
         content=message.content,
         action=message.action,
         thought=message.thought,
-        metadata=dict(message.metadata_ or {}),
+        metadata=metadata,
+        battle_control=metadata.get("battle_control"),
     )
+
+
+def _with_persisted_battle_control(payload: MessageCreate) -> MessageCreate:
+    """Keep async generation control state with its durable source message."""
+    if not payload.battle_control:
+        return payload
+    return payload.model_copy(update={
+        "metadata": {
+            **(payload.metadata or {}),
+            "battle_control": payload.battle_control.model_dump(exclude_none=True),
+        },
+    })
 
 
 def _prepare_message_payload_for_post(session: Session, conversation: Conversation, payload: MessageCreate) -> MessageCreate:
@@ -1317,7 +1358,7 @@ async def create_message_generation_job(
     conversation = conversation_service.get_conversation(session, conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    payload = _prepare_message_payload_for_post(session, conversation, payload)
+    payload = _with_persisted_battle_control(_prepare_message_payload_for_post(session, conversation, payload))
     if not payload.content.strip() and not (payload.action or "").strip():
         raise HTTPException(status_code=422, detail="Message content or action is required")
     metadata = payload.metadata if isinstance(payload.metadata, dict) else {}
@@ -1475,7 +1516,7 @@ async def post_message(conversation_id: str, payload: MessageCreate, session: Se
     conversation = conversation_service.get_conversation(session, conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    payload = _prepare_message_payload_for_post(session, conversation, payload)
+    payload = _with_persisted_battle_control(_prepare_message_payload_for_post(session, conversation, payload))
     if not payload.content.strip() and not (payload.action or "").strip():
         raise HTTPException(status_code=422, detail="Message content or action is required")
     incoming_message = conversation_service.add_message(session, conversation_id, payload)

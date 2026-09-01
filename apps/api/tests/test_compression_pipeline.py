@@ -48,6 +48,39 @@ def test_live_scene_preserves_previous_summary_after_compression_failure(session
     assert live.compression_revision == 7
 
 
+@pytest.mark.asyncio
+async def test_protected_raw_tail_noop_does_not_advance_attempt_cadence(session):
+    baseline = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    scene = SceneState(
+        conversation_id="conv_noop_cadence",
+        summary="[Rolling Story Arc]\n- 이전 압축",
+        last_compression_attempt_at=baseline,
+    )
+    messages = [
+        Message(
+            id=f"msg_noop_{index:02d}",
+            conversation_id=scene.conversation_id,
+            speaker_type="user" if index % 2 == 0 else "character",
+            speaker_id="user_001" if index % 2 == 0 else "char_a",
+            content=f"raw tail {index}",
+        )
+        for index in range(conversation_service.COMPRESSION_RECENT_MESSAGE_LIMIT)
+    ]
+    session.add_all([scene, *messages])
+    session.commit()
+
+    result = await conversation_service.update_scene_orchestration_summary(
+        session,
+        scene.conversation_id,
+        messages,
+        character_ids=["char_a"],
+    )
+
+    assert result.summary == "[Rolling Story Arc]\n- 이전 압축"
+    assert result.last_compression_attempt_at == baseline.replace(tzinfo=None)
+    assert result.last_compression_source_message_id is None
+
+
 def test_compression_source_uses_previous_summary_and_only_supplied_transcript_batch():
     messages = [make_message(i, "character") for i in range(20)]
     messages[3] = make_message(3, "system", "초기 장면 지시 anchor")

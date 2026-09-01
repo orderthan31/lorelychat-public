@@ -68,6 +68,27 @@ async function delay(ms) { return new Promise((resolve) => window.setTimeout(res
 const JOB_POLL_INTERVAL_MS = 1200;
 const JOB_POLL_MAX_ATTEMPTS = 120;
 const JOB_PENDING_TIMEOUT_MESSAGE = '응답 생성 지연 중입니다. 완료 후 현재 방 재진입 때 동기화됩니다.';
+const EMPTY_BATTLE_CONTROL_DRAFT = { action: 'none', advantage: 0.5, progress_balance: 0.5, current_phase: 'opening' };
+
+function battleControlDraftFromState(state: any) {
+  const active = state?.active_match;
+  if (!active) return { ...EMPTY_BATTLE_CONTROL_DRAFT };
+  const metadata = active.metadata || {};
+  const savedAdvantage = metadata.advantage || {};
+  const rawAdvantage = Number(savedAdvantage.value ?? 0.5);
+  const advantage = Number.isFinite(rawAdvantage) ? Math.max(0.5, Math.min(1, rawAdvantage)) : 0.5;
+  const progressBalance = savedAdvantage.favored_character_id === active.participant_a_id
+    ? 1 - advantage
+    : savedAdvantage.favored_character_id === active.participant_b_id
+      ? advantage
+      : 0.5;
+  return {
+    action: 'progress',
+    advantage,
+    progress_balance: progressBalance,
+    current_phase: metadata.current_phase || 'middle',
+  };
+}
 function newClientRequestId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   return `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -113,7 +134,7 @@ export function App() {
   const setContextDrawerOpen = useUiStore((state) => state.setContextDrawerOpen);
   const [conversationContext, setConversationContext] = useState<any>(null);
   const [battleState, setBattleState] = useState<any>(null);
-  const [battleControlDraft, setBattleControlDraft] = useState<any>({ action: 'none', advantage: 0.5, progress_balance: 0.5, current_phase: 'opening' });
+  const [battleControlDraft, setBattleControlDraft] = useState<any>(() => ({ ...EMPTY_BATTLE_CONTROL_DRAFT }));
   const [contextLoading, setContextLoading] = useState(false);
   const [characters, setCharacters] = useState<any[]>([]);
   const [characterUsageRanking, setCharacterUsageRanking] = useState<any[]>([]);
@@ -174,6 +195,8 @@ export function App() {
   const appRoute = route as typeof route & { id?: string };
   const routeId = appRoute.id || '';
   const selectedConversationId = route.page === 'conversationDetail' ? routeId : '';
+  const selectedConversationIdRef = useRef('');
+  selectedConversationIdRef.current = selectedConversationId;
   const characterById = useMemo(() => new Map(characters.map((c) => [c.id, c])), [characters]);
   const { resizeComposerTextarea, handleComposerKeyDown } = useConversationComposer({ compose, composerTextareaRef, sendConversationMessage });
   const participantName = (id) => id === SYSTEM_ID ? t('시스템') : id === 'storyteller' ? t('스토리텔링') : id === USER_ID ? t('나') : characterById.get(id)?.name || `${t('삭제된 캐릭터')} · ${id.slice(-4)}`;
@@ -241,6 +264,9 @@ export function App() {
         await revealServerMessages(serverMessages, activeJob.localMessageId);
         activeGenerationJobRef.current = null;
         await markConversationRead(activeJob.conversationId);
+        if (activeJob.payload?.battle_control) {
+          await loadBattleState(activeJob.conversationId, { genre_mode: 'battle' }, true);
+        }
         setStatus(`${t('대화 생성 완료 ·')} ${formatUiCount(Math.max(0, serverMessages.length - 1), 'messages', locale)}`);
       } catch (error) {
         setStatus(`${t('생성 job 동기화 실패 ·')} ${error.message}`);
@@ -321,10 +347,16 @@ export function App() {
       setContextLoading(false);
     }
   }
-  async function loadBattleState(conversationId = selectedConversationId, room = conversation) {
-    if (!conversationId || room?.genre_mode !== 'battle') { setBattleState(null); return null; }
+  async function loadBattleState(conversationId = selectedConversationId, room = conversation, syncControl = false) {
+    if (!conversationId || room?.genre_mode !== 'battle') {
+      setBattleState(null);
+      if (syncControl) setBattleControlDraft({ ...EMPTY_BATTLE_CONTROL_DRAFT });
+      return null;
+    }
     const state = await conversationApi.battleState(conversationId);
+    if (selectedConversationIdRef.current !== conversationId) return state;
     setBattleState(state);
+    if (syncControl) setBattleControlDraft(battleControlDraftFromState(state));
     return state;
   }
   async function clearActiveCommand(commandId = '') {
@@ -423,14 +455,18 @@ export function App() {
       conversationApi.participants(conversationId),
       conversationApi.runtimeSetting(conversationId),
     ]) as [any, any[], any[], any];
+    if (selectedConversationIdRef.current !== conversationId) return;
     setConversation(room);
     setMessages(roomMessages);
     setHasOlderMessages(roomMessages.length > 0);
     setParticipants(roomParticipants);
     setConversationRuntimeSetting(runtimeSetting);
     setConversationContext(null);
-    if (room.genre_mode === 'battle') await loadBattleState(conversationId, room);
-    else setBattleState(null);
+    if (room.genre_mode === 'battle') await loadBattleState(conversationId, room, true);
+    else {
+      setBattleState(null);
+      setBattleControlDraft({ ...EMPTY_BATTLE_CONTROL_DRAFT });
+    }
     setSpeakerId(USER_ID);
     await markConversationRead(conversationId);
     setStatus(t('대화 표시 중'));
@@ -943,6 +979,9 @@ export function App() {
       const incomingMessage = created?.incoming_message;
       if (!jobId || !incomingMessage) throw new Error(t('응답 생성 job 정보를 받지 못했습니다.'));
       activeGenerationJobRef.current = { conversationId: selectedConversationId, jobId, localMessageId, incomingMessage, payload: payloadWithRequestId };
+      if (payload.battle_control) {
+        await loadBattleState(selectedConversationId, conversation, true).catch(() => null);
+      }
       setStatus(t('대화 생성 중… 백그라운드 job 확인 중'));
       const job = await waitForGenerationJob(selectedConversationId, jobId);
       if (job.status === 'failed' || job.status === 'cancelled') throw new Error(job.error_message || t(job.status === 'cancelled' ? '응답 생성 job 취소됨' : '응답 생성 job 실패'));
@@ -952,7 +991,7 @@ export function App() {
       setStatus(`${t('대화 생성 완료 ·')} ${formatUiCount(Math.max(0, serverMessages.length - 1), 'messages', locale)}`);
       await markConversationRead(selectedConversationId);
       await loadConversations();
-      if (payload.battle_control) await loadBattleState(selectedConversationId);
+      if (payload.battle_control) await loadBattleState(selectedConversationId, conversation, true).catch(() => null);
       if (contextDrawerOpen) await Promise.all([loadConversationContext(), loadBattleState()]);
     } catch (error) {
       if (error instanceof GenerationLifecycleSubscriptionClosedError) {
