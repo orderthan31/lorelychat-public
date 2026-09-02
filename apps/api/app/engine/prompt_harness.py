@@ -69,11 +69,18 @@ def compile_prompt_harness(*, sections: list[PromptSection], total_budget_tokens
         raw_content = section.content or ""
         raw_tokens = approx_tokens(raw_content)
         compacted = _clamp_to_budget(raw_content, section.budget_tokens)
-        compacted_tokens = approx_tokens(compacted)
         include = bool(compacted.strip())
         excluded_reason = ""
 
-        if include and not section.required and compacted_tokens > remaining:
+        rendered_section = f"[{section.title}]\n{compacted}"
+        current_text = "\n\n".join(rendered_sections)
+        candidate_text = "\n\n".join([*rendered_sections, rendered_section])
+        rendered_tokens = max(
+            0,
+            approx_tokens(candidate_text) - approx_tokens(current_text),
+        )
+
+        if include and not section.required and rendered_tokens > remaining:
             include = False
             excluded_reason = "total_budget_exhausted"
         # Required sections survive total-budget pressure after their own
@@ -83,8 +90,8 @@ def compile_prompt_harness(*, sections: list[PromptSection], total_budget_tokens
             excluded_reason = "empty"
 
         if include:
-            rendered_sections.append(f"[{section.title}]\n{compacted}")
-            remaining = max(0, remaining - compacted_tokens)
+            rendered_sections.append(rendered_section)
+            remaining = max(0, remaining - rendered_tokens)
 
         ledger.append(PromptLedgerEntry(
             key=section.key,
@@ -94,11 +101,11 @@ def compile_prompt_harness(*, sections: list[PromptSection], total_budget_tokens
             included=include,
             approx_tokens=raw_tokens,
             budget_tokens=section.budget_tokens,
-            used_tokens=compacted_tokens if include else 0,
+            used_tokens=rendered_tokens if include else 0,
             excluded_reason=excluded_reason if not include else "",
         ))
 
-    used_tokens = sum(entry.used_tokens for entry in ledger)
+    used_tokens = approx_tokens("\n\n".join(rendered_sections))
     return PromptHarness(
         compiled_text="\n\n".join(rendered_sections),
         ledger=ledger,

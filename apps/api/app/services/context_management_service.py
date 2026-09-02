@@ -11,11 +11,26 @@ DEFAULT_CONTEXT_WINDOW_TOKENS = 16_384
 DEFAULT_MAX_OUTPUT_TOKENS = 2_048
 DEFAULT_MANDATORY_RESERVE_TOKENS = 1_024
 DEFAULT_HIGH_WATERMARK = 0.82
+DEFAULT_LOW_WATERMARK = 0.65
+DEFAULT_COMPRESSION_BATCH_MESSAGE_LIMIT = 48
+SYNC_TURN_GROUP_PREFIX = "sync_turn:"
 
 PressureStatus = Literal["low", "high", "hard"]
 CapacitySource = Literal["model_metadata", "conservative_fallback"]
 MessageGroup = tuple[Message, ...]
 TokenEstimator = Callable[[Message], int]
+
+
+def sync_turn_group_id(source_message_id: str) -> str:
+    return f"{SYNC_TURN_GROUP_PREFIX}{source_message_id}"
+
+
+def sync_turn_source_message_id(turn_group_id: str | None) -> str | None:
+    value = str(turn_group_id or "")
+    if not value.startswith(SYNC_TURN_GROUP_PREFIX):
+        return None
+    source_message_id = value[len(SYNC_TURN_GROUP_PREFIX):]
+    return source_message_id or None
 
 
 @dataclass(frozen=True)
@@ -48,6 +63,22 @@ class ContextPressureReport:
     selected_message_count: int
     backlog_message_count: int
     selected_message_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AutomaticContextPlan:
+    """One authoritative pressure/coverage and complete-turn fold plan."""
+
+    pressure: ContextPressureReport
+    raw_tail_token_budget: int
+    fold_message_ids: tuple[str, ...]
+    raw_tail_message_ids: tuple[str, ...]
+    fold_group_count: int
+    oversized_indivisible_turn: bool
+
+    @property
+    def has_foldable_backlog(self) -> bool:
+        return bool(self.fold_message_ids)
 
 
 def _positive_int(value: int | None, fallback: int) -> int:
@@ -132,57 +163,74 @@ def group_complete_turns(
     *,
     job_source_message_ids: Mapping[str, str] | None = None,
 ) -> list[MessageGroup]:
-    """Group ordered source messages and their contiguous generated bubbles.
+    """Group ordered messages into contiguous dependency-closed turn ranges.
 
-    When job-to-source metadata is available it is authoritative. Without it,
-    the current persisted ordering is used conservatively: a contiguous generated
-    job attaches only to the immediately preceding untagged source group.
+    Authoritative job-to-source edges may span messages appended while generation
+    was in flight.  The whole interval from source through reply is therefore one
+    indivisible group, including intervening messages.  Overlapping intervals are
+    merged transitively so compression never advances across one side of a turn.
+    Unknown legacy jobs retain the conservative contiguous-run fallback.
     """
 
-    groups: list[list[Message]] = []
-    active_job_id: str | None = None
-    active_source_id: str | None = None
-    source_job_ids = {
-        source_message_id: job_id
-        for job_id, source_message_id in (job_source_message_ids or {}).items()
-    }
+    ordered = list(messages)
+    if not ordered:
+        return []
 
-    for message in messages:
-        source_for_job_id = source_job_ids.get(message.id)
-        if source_for_job_id:
-            groups.append([message])
-            active_job_id = source_for_job_id
-            active_source_id = message.id
-            continue
+    index_by_id = {message.id: index for index, message in enumerate(ordered)}
+    interval_end_by_start: dict[int, int] = {}
+    authoritative = dict(job_source_message_ids or {})
+    for message in ordered:
+        job_id = message.generation_job_id
+        source_id = sync_turn_source_message_id(job_id)
+        if source_id and source_id in index_by_id:
+            authoritative.setdefault(str(job_id), source_id)
 
+    for reply_index, message in enumerate(ordered):
         job_id = message.generation_job_id
         if not job_id:
-            groups.append([message])
-            active_job_id = None
-            active_source_id = message.id
             continue
+        source_id = authoritative.get(job_id)
+        source_index = index_by_id.get(source_id) if source_id else None
+        if source_index is None:
+            continue
+        start = min(source_index, reply_index)
+        end = max(source_index, reply_index)
+        interval_end_by_start[start] = max(interval_end_by_start.get(start, start), end)
 
-        expected_source_id = job_source_message_ids.get(job_id) if job_source_message_ids else None
-        may_attach_to_source = bool(
-            groups
-            and active_source_id
-            and (expected_source_id is None or expected_source_id == active_source_id)
-            and (active_job_id is None or active_job_id == job_id)
-        )
-        may_attach_to_orphan_job = bool(
-            groups
-            and active_source_id is None
-            and active_job_id == job_id
-        )
+    index = 0
+    while index < len(ordered):
+        message = ordered[index]
+        job_id = message.generation_job_id
+        if not job_id or job_id in authoritative:
+            index += 1
+            continue
+        run_end = index
+        while (
+            run_end + 1 < len(ordered)
+            and ordered[run_end + 1].generation_job_id == job_id
+        ):
+            run_end += 1
+        source_index = index - 1
+        if source_index >= 0 and ordered[source_index].generation_job_id is None:
+            interval_end_by_start[source_index] = max(
+                interval_end_by_start.get(source_index, source_index),
+                run_end,
+            )
+        elif run_end > index:
+            interval_end_by_start[index] = run_end
+        index = run_end + 1
 
-        if may_attach_to_source or may_attach_to_orphan_job:
-            groups[-1].append(message)
-        else:
-            groups.append([message])
-            active_source_id = None
-        active_job_id = job_id
-
-    return [tuple(group) for group in groups]
+    groups: list[MessageGroup] = []
+    start = 0
+    while start < len(ordered):
+        end = max(start, interval_end_by_start.get(start, start))
+        cursor = start
+        while cursor <= end:
+            end = max(end, interval_end_by_start.get(cursor, cursor))
+            cursor += 1
+        groups.append(tuple(ordered[start:end + 1]))
+        start = end + 1
+    return groups
 
 
 def _group_token_cost(group: Sequence[Message], token_estimator: TokenEstimator) -> int:
@@ -270,4 +318,75 @@ def estimate_context_pressure(
         selected_message_count=selected_message_count,
         backlog_message_count=max(0, total_message_count - selected_message_count),
         selected_message_ids=tuple(message.id for message in selected_messages),
+    )
+
+
+def build_automatic_context_plan(
+    *,
+    capacity: ContextCapacity,
+    mandatory_prompt_tokens: int,
+    messages: Sequence[Message],
+    job_source_message_ids: Mapping[str, str] | None = None,
+    token_estimator: TokenEstimator = estimate_visible_message_tokens,
+    high_watermark: float = DEFAULT_HIGH_WATERMARK,
+    low_watermark: float = DEFAULT_LOW_WATERMARK,
+    batch_message_limit: int = DEFAULT_COMPRESSION_BATCH_MESSAGE_LIMIT,
+) -> AutomaticContextPlan:
+    """Plan automatic compression without splitting a source/reply turn.
+
+    Pressure is measured against the full prospective suffix.  Once pressure is
+    high, the protected suffix is sized to the low watermark so a successful
+    fold creates useful headroom instead of immediately retriggering.
+    """
+
+    pressure = estimate_context_pressure(
+        capacity=capacity,
+        mandatory_prompt_tokens=mandatory_prompt_tokens,
+        messages=messages,
+        job_source_message_ids=job_source_message_ids,
+        token_estimator=token_estimator,
+        high_watermark=high_watermark,
+    )
+    groups = group_complete_turns(messages, job_source_message_ids=job_source_message_ids)
+    low_ratio = max(0.0, min(float(low_watermark), float(high_watermark)))
+    raw_tail_budget = max(
+        0,
+        int(capacity.working_input_tokens * low_ratio) - max(0, int(mandatory_prompt_tokens)),
+    )
+    raw_tail_groups = select_raw_tail_groups(
+        groups,
+        token_budget=raw_tail_budget,
+        token_estimator=token_estimator,
+    )
+    foldable_group_count = max(0, len(groups) - len(raw_tail_groups))
+    limit = max(1, int(batch_message_limit))
+    batch_groups: list[MessageGroup] = []
+    batch_count = 0
+    for group in groups[:foldable_group_count]:
+        # The first complete turn is indivisible even when it alone exceeds 48.
+        if batch_groups and batch_count + len(group) > limit:
+            break
+        batch_groups.append(tuple(group))
+        batch_count += len(group)
+        if batch_count >= limit:
+            break
+
+    fold_messages = tuple(message for group in batch_groups for message in group)
+    consumed_group_count = len(batch_groups)
+    raw_messages = tuple(
+        message
+        for group in groups[consumed_group_count:]
+        for message in group
+    )
+    newest_group_tokens = (
+        _group_token_cost(groups[-1], token_estimator)
+        if groups else 0
+    )
+    return AutomaticContextPlan(
+        pressure=pressure,
+        raw_tail_token_budget=raw_tail_budget,
+        fold_message_ids=tuple(message.id for message in fold_messages),
+        raw_tail_message_ids=tuple(message.id for message in raw_messages),
+        fold_group_count=consumed_group_count,
+        oversized_indivisible_turn=bool(groups and newest_group_tokens > raw_tail_budget),
     )

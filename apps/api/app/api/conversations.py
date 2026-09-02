@@ -3,14 +3,17 @@ import asyncio
 import json
 import logging
 import threading
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, col, select
 from app.db.models import BattleMatchRecord, CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, GenerationJobEvent, Message, MessageGenerationJob, PostCommitTask, SceneState
 from app.db.session import engine, get_session
-from app.engine.character_runtime import CharacterRuntime, CharacterRuntimeError
+from app.engine.character_runtime import CHARACTER_TURN_CONTINUATION_INSTRUCTION, CharacterRuntime, CharacterRuntimeError, build_chat_replies_response_format, character_retry_instruction
+from app.engine import prompts
 from app.engine.llm_client import LLMClient, LLMUnavailableError
+from app.engine.prompt_harness import PromptHarness, approx_tokens
 from app.engine.input_markup import parse_input_markup
 from app.schemas.conversations import (
     CharacterMemoryCreate,
@@ -39,7 +42,9 @@ from app.schemas.conversations import (
     SceneStateRead,
     SceneSummaryUpdate,
 )
-from app.services import asset_service, battle_ledger_service, character_service, chat_command_service, context_preview_service, conversation_service, domain_actor_service, genre_domain_service, prompt_snapshot_service, runtime_settings_service, system_prompt_service, tts_service, usage_service
+from app.core.config import get_settings
+from app.services import asset_service, battle_ledger_service, character_service, chat_command_service, context_preview_service, conversation_service, domain_actor_service, genre_domain_service, model_provider_service, prompt_snapshot_service, runtime_settings_service, system_prompt_service, tts_service, usage_service
+from app.services.context_management_service import AutomaticContextPlan, ContextCapacity, resolve_model_context_capacity, sync_turn_group_id
 from app.services.generation_dispatcher import generation_dispatcher
 from app.services.post_commit_dispatcher import post_commit_dispatcher
 
@@ -47,6 +52,93 @@ router = APIRouter(prefix="/conversations", tags=["conversations"])
 logger = logging.getLogger(__name__)
 _scene_compression_locks_guard = threading.Lock()
 _scene_compression_locks: dict[str, threading.Lock] = {}
+AUTOMATIC_PREGENERATION_MAX_COMPRESSION_BATCHES = 3
+
+
+class ContextMaintenanceRequired(RuntimeError):
+    """Recoverable fail-closed generation error with content-free diagnostics."""
+
+    code = "context_maintenance_required"
+
+    def __init__(self, *, projected_tokens: int, working_tokens: int, backlog_groups: int, batches: int):
+        self.projected_tokens = max(0, int(projected_tokens))
+        self.working_tokens = max(0, int(working_tokens))
+        self.backlog_groups = max(0, int(backlog_groups))
+        self.batches = max(0, int(batches))
+        super().__init__(
+            f"{self.code}: projected_tokens={self.projected_tokens}; "
+            f"working_tokens={self.working_tokens}; backlog_groups={self.backlog_groups}; "
+            f"catchup_batches={self.batches}"
+        )
+
+
+@dataclass(frozen=True)
+class AutomaticGenerationContextEvaluation:
+    scene_state: SceneState
+    messages: tuple[Message, ...]
+    harness: PromptHarness
+    plan: AutomaticContextPlan
+    mandatory_without_current: int
+    job_source_message_ids: dict[str, str]
+
+
+async def _ensure_automatic_generation_context(
+    *,
+    evaluate,
+    compress_once,
+    capacity: ContextCapacity,
+    max_batches: int = AUTOMATIC_PREGENERATION_MAX_COMPRESSION_BATCHES,
+) -> tuple[AutomaticGenerationContextEvaluation, int]:
+    """Refresh exact coverage; once hard catch-up starts, continue below high."""
+
+    batches = 0
+    max_batches = max(0, int(max_batches))
+    while True:
+        try:
+            evaluation = evaluate()
+        except prompts.ContextCoverageError as exc:
+            raise ContextMaintenanceRequired(
+                projected_tokens=0,
+                working_tokens=capacity.working_input_tokens,
+                backlog_groups=0,
+                batches=batches,
+            ) from exc
+
+        plan = evaluation.plan
+        status = plan.pressure.status
+        catchup_in_progress = batches > 0
+        needs_compression = status == "hard" or (
+            catchup_in_progress and status == "high"
+        )
+        if not needs_compression:
+            return evaluation, batches
+        if not plan.has_foldable_backlog:
+            if status != "hard":
+                return evaluation, batches
+            raise ContextMaintenanceRequired(
+                projected_tokens=plan.pressure.projected_input_tokens,
+                working_tokens=plan.pressure.working_input_tokens,
+                backlog_groups=plan.pressure.backlog_group_count,
+                batches=batches,
+            )
+        if batches >= max_batches:
+            if status != "hard":
+                return evaluation, batches
+            raise ContextMaintenanceRequired(
+                projected_tokens=plan.pressure.projected_input_tokens,
+                working_tokens=plan.pressure.working_input_tokens,
+                backlog_groups=plan.pressure.backlog_group_count,
+                batches=batches,
+            )
+        progressed = await compress_once(evaluation)
+        batches += 1
+        if not progressed:
+            raise ContextMaintenanceRequired(
+                projected_tokens=plan.pressure.projected_input_tokens,
+                working_tokens=plan.pressure.working_input_tokens,
+                backlog_groups=plan.pressure.backlog_group_count,
+                batches=batches,
+            )
 
 
 def _scene_compression_lock(conversation_id: str) -> threading.Lock:
@@ -501,7 +593,13 @@ def get_context_preview(conversation_id: str, session: Session = Depends(get_ses
     conversation = conversation_service.get_conversation(session, conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return context_preview_service.build_context_preview(session, conversation_id)
+    try:
+        return context_preview_service.build_context_preview(session, conversation_id)
+    except prompts.ContextCoverageError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code},
+        ) from exc
 
 
 @router.get("/{conversation_id}/compression-preview", response_model=ConversationCompressionPreviewRead)
@@ -558,6 +656,50 @@ def runtime_user_message(payload: MessageCreate, *, speaker_name: str | None = N
     if payload.content:
         parts.append(f"[User dialogue]\n{payload.content}")
     return "\n\n".join(parts) or payload.content
+
+
+def generation_control_reserve_tokens(
+    *,
+    speaker_type: str,
+    min_bubbles: int,
+    max_bubbles: int,
+) -> int:
+    retry_instruction = character_retry_instruction(min_bubbles)
+    initial_response_tokens = approx_tokens(
+        json.dumps(
+            build_chat_replies_response_format(
+                min_bubbles=min_bubbles,
+                max_bubbles=max_bubbles,
+            ),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    retry_response_tokens = approx_tokens(
+        json.dumps(
+            build_chat_replies_response_format(
+                min_bubbles=min_bubbles,
+                max_bubbles=max_bubbles,
+                retry=True,
+            ),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    if speaker_type == "character":
+        initial_control_tokens = approx_tokens(CHARACTER_TURN_CONTINUATION_INSTRUCTION)
+        retry_control_tokens = approx_tokens(
+            f"{CHARACTER_TURN_CONTINUATION_INSTRUCTION}\n\n{retry_instruction}"
+        )
+    else:
+        initial_control_tokens = 0
+        # The retry is appended to the existing user message. Account for the
+        # separator and one ceil-boundary token without retaining that message.
+        retry_control_tokens = approx_tokens(f"\n\n{retry_instruction}") + 1
+    return max(
+        initial_control_tokens + initial_response_tokens,
+        retry_control_tokens + retry_response_tokens,
+    )
 
 
 def _battle_control_value(control: object, key: str):
@@ -735,6 +877,8 @@ def build_generated_turn_post_commit_tasks(
     enqueue_compression: bool,
     character_ids: list[str],
     generation_job_id: str | None = None,
+    compression_raw_tail_token_budget: int | None = None,
+    compression_mandatory_prompt_tokens: int | None = None,
 ) -> list[dict]:
     identity = f"job:{generation_job_id}" if generation_job_id else f"source:{incoming_message.id}"
     tasks: list[dict] = []
@@ -780,6 +924,8 @@ def build_generated_turn_post_commit_tasks(
                 "conversation_id": conversation.id,
                 "generated_character_count": sum(1 for message in generated_messages if message.speaker_type == "character"),
                 "character_ids": character_ids,
+                "raw_tail_token_budget": compression_raw_tail_token_budget,
+                "mandatory_prompt_tokens": compression_mandatory_prompt_tokens,
             },
         })
     return tasks
@@ -791,6 +937,8 @@ async def _run_scene_compression_in_session(
     *,
     generated_character_count: int,
     character_ids: list[str],
+    raw_tail_token_budget: int | None = None,
+    mandatory_prompt_tokens: int | None = None,
 ) -> bool:
     if generated_character_count <= 0:
         return True
@@ -800,14 +948,38 @@ async def _run_scene_compression_in_session(
     runtime_setting = runtime_settings_service.get_effective_setting(session, conversation_id)
     current_messages = conversation_service.list_messages(session, conversation_id)
     current_scene = session.get(SceneState, conversation_id) or SceneState(conversation_id=conversation_id)
+    job_mapping = conversation_service.generation_job_source_message_ids(session, conversation_id)
+    if get_settings().context_management_mode == "automatic":
+        selected_model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
+        automatic_capacity = resolve_model_context_capacity(
+            selected_model_option,
+            room_prompt_budget_tokens=prompts.prompt_budget_for_context(
+                genre_mode=getattr(conversation, "genre_mode", None),
+                is_multi_room=len(character_ids) >= 2,
+            ),
+            completion_reserve_tokens=getattr(selected_model_option, "max_output_tokens", None),
+        )
+        execution_plan = conversation_service.automatic_context_plan(
+            current_scene,
+            current_messages,
+            capacity=automatic_capacity,
+            mandatory_prompt_tokens=max(0, int(mandatory_prompt_tokens or 0)),
+            job_source_message_ids=job_mapping,
+        )
+        if execution_plan.pressure.status == "low":
+            return True
+        raw_tail_token_budget = execution_plan.raw_tail_token_budget
+    selector_kwargs = {
+        "raw_tail_token_budget": raw_tail_token_budget,
+        "job_source_message_ids": job_mapping,
+    }
     try:
         pending_batch, _ = conversation_service.select_incremental_compression_batch(
             current_scene,
             current_messages,
+            **selector_kwargs,
         )
     except ValueError:
-        # Let the compression service persist the dangling-boundary diagnostic;
-        # the post-run verification below will reject completion.
         pending_batch = current_messages
     if not pending_batch:
         return True
@@ -827,6 +999,7 @@ async def _run_scene_compression_in_session(
             if compression_fallback_overrides else None
         ),
         character_ids=character_ids,
+        **selector_kwargs,
     )
 
     session.expire_all()
@@ -841,6 +1014,7 @@ async def _run_scene_compression_in_session(
         remaining_batch, _ = conversation_service.select_incremental_compression_batch(
             selector_scene,
             conversation_service.list_messages(session, conversation_id),
+            **selector_kwargs,
         )
     except ValueError as exc:
         raise RuntimeError(
@@ -912,6 +1086,14 @@ async def _execute_claimed_post_commit_task(
                 conversation_id,
                 generated_character_count=int(payload.get("generated_character_count") or 0),
                 character_ids=[str(item) for item in (payload.get("character_ids") or []) if item],
+                raw_tail_token_budget=(
+                    int(payload["raw_tail_token_budget"])
+                    if payload.get("raw_tail_token_budget") is not None else None
+                ),
+                mandatory_prompt_tokens=(
+                    int(payload["mandatory_prompt_tokens"])
+                    if payload.get("mandatory_prompt_tokens") is not None else None
+                ),
             )
             session.expire_all()
             refreshed = session.get(PostCommitTask, task.id)
@@ -1087,21 +1269,7 @@ async def generate_replies_from_message(
     active_character_ids = {character.id for character in room_characters}
     payload_speaker_name = next((character.name for character in room_characters if character.id == payload.speaker_id), None)
     runtime_message_text = runtime_user_message(payload, speaker_name=payload_speaker_name)
-    base_recall_query = "\n".join(filter(None, [
-        f"genre={genre_mode}",
-        scene_state.world_seed if scene_state else "",
-        scene_state.current_conflict if scene_state else "",
-        scene_state.summary if scene_state else "",
-        runtime_message_text,
-    ]))[:800]
-    offstage_recall = domain_actor_service.build_offstage_actor_recall_context(
-        session,
-        conversation,
-        text=base_recall_query,
-        active_character_ids=active_character_ids,
-        genre_mode=genre_mode,
-        query=base_recall_query,
-    )
+
     common_memory_context = conversation_service.build_continuity_context(
         conversation_service.list_common_room_memories(session, conversation_id),
         None,
@@ -1120,6 +1288,210 @@ async def generate_replies_from_message(
         # injected because they duplicate raw/arc context and are unstable.
         external_memory_context_by_character[character.id] = ""
         continuity_by_character[character.id] = local_context
+
+    context_mode = get_settings().context_management_mode
+    selected_model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
+    room_prompt_budget = prompts.prompt_budget_for_context(
+        genre_mode=genre_mode,
+        is_multi_room=is_multi_room,
+    )
+    capacity = resolve_model_context_capacity(
+        selected_model_option,
+        room_prompt_budget_tokens=room_prompt_budget,
+        completion_reserve_tokens=getattr(selected_model_option, "max_output_tokens", None),
+    )
+    job_mapping = conversation_service.generation_job_source_message_ids(
+        session,
+        conversation_id,
+        extra={generation_job.id: incoming_message.id} if generation_job else None,
+    )
+
+    latest_offstage_context = ""
+
+    def build_generation_harness(current_scene: SceneState, current_messages: list[Message]):
+        nonlocal latest_offstage_context
+        base_recall_query = "\n".join(filter(None, [
+            f"genre={genre_mode}",
+            current_scene.world_seed,
+            current_scene.current_conflict,
+            current_scene.summary,
+            runtime_message_text,
+        ]))[:800]
+        offstage_recall = domain_actor_service.build_offstage_actor_recall_context(
+            session,
+            conversation,
+            text=base_recall_query,
+            active_character_ids=active_character_ids,
+            genre_mode=genre_mode,
+            query=base_recall_query,
+        )
+        latest_offstage_context = offstage_recall.content
+        return prompts.build_multi_character_prompt_harness(
+            characters=room_characters,
+            recent_messages=[message for message in current_messages if message.id != incoming_message.id],
+            user_message=runtime_message_text,
+            scene_state=current_scene,
+            directive=directive,
+            conversation_mode=effective_mode,
+            genre_mode=genre_mode,
+            continuity_context_by_character=continuity_by_character,
+            relationship_context_by_character={},
+            external_memory_context_by_character=external_memory_context_by_character,
+            offstage_actor_context=offstage_recall.content,
+            min_bubbles=min_reply_bubbles,
+            max_bubbles=max_reply_bubbles,
+            min_output_tokens=token_target,
+            prompt_settings=prompt_settings,
+            battle_control_context=battle_control_context,
+            official_domain_context=official_domain_context,
+            room_cast_roles=room_cast_roles,
+            provider_type=getattr(selected_model_option, "provider_type", None),
+            total_budget_tokens=room_prompt_budget,
+            context_management_mode=context_mode,
+        )
+
+    prepared_harness = None
+    pressure_plan = None
+    generation_mandatory_without_current = 0
+    catchup_batches = 0
+    if context_mode == "automatic":
+        compression_overrides = runtime_settings_service.compression_llm_overrides_for_setting(runtime_setting, session=session)
+        compression_fallback_overrides = runtime_settings_service.compression_fallback_llm_overrides_for_setting(runtime_setting, session=session)
+
+        def generation_history_token_estimator(message: Message) -> int:
+            if message.id == incoming_message.id:
+                return 0
+            return max(
+                1,
+                approx_tokens(prompts.format_message_for_context(message, include_thought=False)) + 1,
+            )
+
+        current_turn_control_tokens = generation_control_reserve_tokens(
+            speaker_type=payload.speaker_type,
+            min_bubbles=min_reply_bubbles,
+            max_bubbles=max_reply_bubbles,
+        )
+
+        def evaluate_automatic_context() -> AutomaticGenerationContextEvaluation:
+            current_messages = conversation_service.list_messages(session, conversation_id)
+            current_job_mapping = conversation_service.generation_job_source_message_ids(
+                session,
+                conversation_id,
+                extra=(
+                    {generation_job.id: incoming_message.id}
+                    if generation_job else None
+                ),
+            )
+            current_scene = conversation_service.build_live_scene_state(
+                session,
+                conversation,
+                session.get(SceneState, conversation_id),
+            )
+            harness = build_generation_harness(current_scene, current_messages)
+            recent_entry = next(
+                (entry for entry in harness.ledger if entry.key == "recent_messages"),
+                None,
+            )
+            recent_section = next(
+                (section for section in harness.sections if section.key == "recent_messages"),
+                None,
+            )
+            current_input_tokens = approx_tokens(runtime_message_text)
+            mandatory_tokens = (
+                harness.used_tokens
+                - min(
+                    int(getattr(recent_entry, "used_tokens", 0) or 0),
+                    approx_tokens(getattr(recent_section, "content", "") or ""),
+                )
+                + current_input_tokens
+                + current_turn_control_tokens
+            )
+            plan = conversation_service.automatic_context_plan(
+                session.get(SceneState, conversation_id) or SceneState(conversation_id=conversation_id),
+                current_messages,
+                capacity=capacity,
+                mandatory_prompt_tokens=mandatory_tokens,
+                job_source_message_ids=current_job_mapping,
+                token_estimator=generation_history_token_estimator,
+            )
+            return AutomaticGenerationContextEvaluation(
+                scene_state=current_scene,
+                messages=tuple(current_messages),
+                harness=harness,
+                plan=plan,
+                mandatory_without_current=max(0, mandatory_tokens - current_input_tokens),
+                job_source_message_ids=current_job_mapping,
+            )
+
+        async def compress_automatic_context(
+            evaluation: AutomaticGenerationContextEvaluation,
+        ) -> bool:
+            persisted_before = session.get(SceneState, conversation_id)
+            before_revision = int(
+                getattr(persisted_before, "compression_revision", 0) or 0
+            )
+            before_boundary = getattr(
+                persisted_before,
+                "last_compression_source_message_id",
+                None,
+            )
+            await conversation_service.update_scene_orchestration_summary(
+                session,
+                conversation_id,
+                list(evaluation.messages),
+                llm_client=LLMClient(profile="compression", purpose="conversation_compression", overrides=compression_overrides),
+                fallback_llm_client=(
+                    LLMClient(profile="compression", purpose="conversation_compression_fallback", overrides=compression_fallback_overrides)
+                    if compression_fallback_overrides else None
+                ),
+                character_ids=[character.id for character in room_characters],
+                raw_tail_token_budget=evaluation.plan.raw_tail_token_budget,
+                job_source_message_ids=evaluation.job_source_message_ids,
+                token_estimator=generation_history_token_estimator,
+            )
+            session.expire_all()
+            persisted_after = session.get(SceneState, conversation_id)
+            after_revision = int(
+                getattr(persisted_after, "compression_revision", 0) or 0
+            )
+            after_boundary = getattr(
+                persisted_after,
+                "last_compression_source_message_id",
+                None,
+            )
+            return (
+                after_revision > before_revision
+                and after_boundary != before_boundary
+            )
+
+        evaluation, catchup_batches = await _ensure_automatic_generation_context(
+            evaluate=evaluate_automatic_context,
+            compress_once=compress_automatic_context,
+            capacity=capacity,
+        )
+        scene_state = evaluation.scene_state
+        prepared_harness = evaluation.harness
+        pressure_plan = evaluation.plan
+        generation_mandatory_without_current = evaluation.mandatory_without_current
+        job_mapping = evaluation.job_source_message_ids
+    else:
+        prepared_harness = build_generation_harness(scene_state, recent_for_prompt)
+        recent_entry = next(
+            (entry for entry in prepared_harness.ledger if entry.key == "recent_messages"),
+            None,
+        )
+        recent_section = next(
+            (section for section in prepared_harness.sections if section.key == "recent_messages"),
+            None,
+        )
+        generation_mandatory_without_current = (
+            prepared_harness.used_tokens
+            - min(
+                int(getattr(recent_entry, "used_tokens", 0) or 0),
+                approx_tokens(getattr(recent_section, "content", "") or ""),
+            )
+        )
+
     async def persist_prompt_snapshot(snapshot: dict):
         try:
             prompt_snapshot_service.record_prompt_snapshot(session, **snapshot)
@@ -1138,7 +1510,7 @@ async def generate_replies_from_message(
         continuity_context_by_character=continuity_by_character,
         relationship_context_by_character={},
         external_memory_context_by_character=external_memory_context_by_character,
-        offstage_actor_context=offstage_recall.content,
+        offstage_actor_context=latest_offstage_context,
         min_bubbles=min_reply_bubbles,
         max_bubbles=max_reply_bubbles,
         min_output_tokens=token_target,
@@ -1151,6 +1523,7 @@ async def generate_replies_from_message(
         source_message_id=incoming_message.id,
         source_speaker_type=payload.speaker_type,
         prompt_snapshot_callback=persist_prompt_snapshot,
+        prepared_harness=prepared_harness,
     )
     generated_messages = await persist_generated_reply_messages(
         session=session,
@@ -1179,7 +1552,18 @@ async def generate_replies_from_message(
             commit=False,
         )
     character_ids = [character.id for character in room_characters]
+    turn_group_id = assign_generated_turn_group(
+        generated_messages,
+        incoming_message=incoming_message,
+        generation_job=generation_job,
+    )
     generated_character_count = sum(1 for message in generated_messages if message.speaker_type == "character")
+    if context_mode == "automatic":
+        job_mapping = conversation_service.generation_job_source_message_ids(
+            session,
+            conversation_id,
+            extra={turn_group_id: incoming_message.id},
+        )
     enqueue_compression = generated_character_count > 0 and conversation_service.should_update_scene_orchestration_summary(
         session,
         conversation_id,
@@ -1188,7 +1572,24 @@ async def generate_replies_from_message(
             getattr(runtime_setting, "compression_interval_turns", runtime_settings_service.DEFAULT_COMPRESSION_INTERVAL_TURNS)
         ),
         prospective_messages=generated_messages,
+        context_management_mode=context_mode,
+        capacity=capacity,
+        mandatory_prompt_tokens=generation_mandatory_without_current,
+        job_source_message_ids=job_mapping,
     )
+    compression_raw_tail_token_budget = None
+    if enqueue_compression and context_mode == "automatic":
+        candidate_messages = conversation_service.list_messages(session, conversation_id)
+        persisted_ids = {message.id for message in candidate_messages}
+        candidate_messages.extend(message for message in generated_messages if message.id not in persisted_ids)
+        enqueue_plan = conversation_service.automatic_context_plan(
+            session.get(SceneState, conversation_id) or SceneState(conversation_id=conversation_id),
+            candidate_messages,
+            capacity=capacity,
+            mandatory_prompt_tokens=generation_mandatory_without_current,
+            job_source_message_ids=job_mapping,
+        )
+        compression_raw_tail_token_budget = enqueue_plan.raw_tail_token_budget
     post_commit_tasks = build_generated_turn_post_commit_tasks(
         session=session,
         conversation=conversation,
@@ -1198,6 +1599,10 @@ async def generate_replies_from_message(
         enqueue_compression=enqueue_compression,
         character_ids=character_ids,
         generation_job_id=generation_job.id if generation_job else None,
+        compression_raw_tail_token_budget=compression_raw_tail_token_budget,
+        compression_mandatory_prompt_tokens=(
+            generation_mandatory_without_current if context_mode == "automatic" else None
+        ),
     )
     source_metadata = dict(incoming_message.metadata_ or {})
     finalization_bind = session.get_bind()
@@ -1221,6 +1626,32 @@ async def generate_replies_from_message(
     return replies
 
 
+def assign_generated_turn_group(
+    generated_messages: list[Message],
+    *,
+    incoming_message: Message,
+    generation_job: MessageGenerationJob | None,
+) -> str:
+    turn_group_id = (
+        generation_job.id
+        if generation_job is not None
+        else sync_turn_group_id(incoming_message.id)
+    )
+    for reply_index, generated_message in enumerate(generated_messages):
+        generated_message.generation_job_id = turn_group_id
+        generated_message.reply_index = reply_index
+    return turn_group_id
+
+
+_PUBLIC_GENERATION_ERROR_CODES = {"context_maintenance_required"}
+
+
+def _public_generation_error_code(job) -> str | None:
+    error_message = str(getattr(job, "error_message", "") or "")
+    prefix = error_message.split(":", 1)[0].strip()
+    return prefix if prefix in _PUBLIC_GENERATION_ERROR_CODES else None
+
+
 def _serialize_generation_job(job) -> MessageGenerationJobRead:
     return MessageGenerationJobRead(
         id=job.id,
@@ -1228,6 +1659,7 @@ def _serialize_generation_job(job) -> MessageGenerationJobRead:
         incoming_message_id=job.incoming_message_id,
         status=job.status,
         error_message=job.error_message,
+        error_code=_public_generation_error_code(job),
         generated_message_ids=list(job.generated_message_ids or []),
         attempt_count=job.attempt_count,
         state_version=job.state_version,
@@ -1453,6 +1885,11 @@ def _serialize_generation_sse_event(event: GenerationJobEvent, job: MessageGener
     }
     if public_status == "completed":
         data["generated_message_ids"] = list(job.generated_message_ids or [])
+    elif public_status == "failed":
+        payload = dict(event.payload_ or {})
+        error_code = str(payload.get("error_code") or "")
+        if error_code in _PUBLIC_GENERATION_ERROR_CODES:
+            data["error_code"] = error_code
     return public_status, data
 
 
@@ -1570,6 +2007,20 @@ async def post_message(conversation_id: str, payload: MessageCreate, session: Se
             include_incoming_in_response=True,
             applied_battle_record=applied_battle_record,
         )
+    except ContextMaintenanceRequired as exc:
+        fresh_incoming = conversation_service.get_message(session, incoming_message.id)
+        if fresh_incoming:
+            conversation_service.mark_message_generation_failed(session, fresh_incoming, exc)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": exc.code,
+                "projected_tokens": exc.projected_tokens,
+                "working_tokens": exc.working_tokens,
+                "backlog_groups": exc.backlog_groups,
+                "catchup_batches": exc.batches,
+            },
+        ) from exc
     except LLMUnavailableError as exc:
         fresh_incoming = conversation_service.get_message(session, incoming_message.id)
         if fresh_incoming:

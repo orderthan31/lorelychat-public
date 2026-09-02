@@ -10,6 +10,7 @@ from app.db.session import make_engine, migrate_sqlite_columns
 from app.engine.prompt_harness import approx_tokens
 from app.engine.prompts import format_message_for_context
 from app.services.context_management_service import (
+    build_automatic_context_plan,
     ContextCapacity,
     estimate_context_pressure,
     estimate_visible_message_tokens,
@@ -160,9 +161,42 @@ def test_complete_turn_groups_honor_authoritative_job_source_mapping():
     )
 
     assert [[message.id for message in group] for group in groups] == [
-        ["source_1"],
-        ["source_2"],
-        ["late_reply"],
+        ["source_1", "source_2", "late_reply"],
+    ]
+
+
+def test_complete_turn_groups_decode_noncontiguous_sync_source_mapping():
+    messages = [
+        _message("source_sync"),
+        _message("intervening_message"),
+        _message("reply_sync_a", generation_job_id="sync_turn:source_sync"),
+        _message("reply_sync_b", generation_job_id="sync_turn:source_sync"),
+    ]
+
+    groups = group_complete_turns(messages)
+
+    assert [[message.id for message in group] for group in groups] == [
+        ["source_sync", "intervening_message", "reply_sync_a", "reply_sync_b"],
+    ]
+
+
+def test_complete_turn_groups_multiple_jobs_for_one_source_as_one_turn():
+    messages = [
+        _message("source_retry"),
+        _message("reply_first", generation_job_id="job_first"),
+        _message("reply_retry", generation_job_id="job_retry"),
+    ]
+
+    groups = group_complete_turns(
+        messages,
+        job_source_message_ids={
+            "job_first": "source_retry",
+            "job_retry": "source_retry",
+        },
+    )
+
+    assert [[message.id for message in group] for group in groups] == [
+        ["source_retry", "reply_first", "reply_retry"],
     ]
 
 
@@ -177,6 +211,24 @@ def test_generated_message_can_be_authoritative_source_for_next_job():
 
     assert [[message.id for message in group] for group in groups] == [
         ["generated_source", "next_reply"],
+    ]
+
+
+def test_complete_turn_groups_merge_transitive_generation_dependencies():
+    source = _message("source_root")
+    first_reply = _message("reply_first", generation_job_id="job_first")
+    next_reply = _message("reply_next", generation_job_id="job_next")
+
+    groups = group_complete_turns(
+        [source, first_reply, next_reply],
+        job_source_message_ids={
+            "job_first": source.id,
+            "job_next": first_reply.id,
+        },
+    )
+
+    assert [[message.id for message in group] for group in groups] == [
+        ["source_root", "reply_first", "reply_next"],
     ]
 
 
@@ -214,6 +266,76 @@ def test_token_tail_selection_keeps_contiguous_whole_groups_and_oversized_latest
         ["source_3", "reply_3"],
     ]
     assert [[message.id for message in group] for group in oversized] == [["source_3", "reply_3"]]
+
+
+def _automatic_capacity(*, working_tokens: int = 100) -> ContextCapacity:
+    return ContextCapacity(
+        model_option_key="automatic_model",
+        context_window_tokens=200,
+        max_output_tokens=50,
+        completion_reserve_tokens=50,
+        mandatory_reserve_tokens=0,
+        available_input_tokens=150,
+        working_input_tokens=working_tokens,
+        source="model_metadata",
+        used_fallback=False,
+    )
+
+
+def test_automatic_plan_measures_full_pressure_and_folds_to_low_watermark():
+    messages = [_message(f"source_{index}") for index in range(4)]
+
+    plan = build_automatic_context_plan(
+        capacity=_automatic_capacity(),
+        mandatory_prompt_tokens=20,
+        messages=messages,
+        token_estimator=lambda _message: 20,
+    )
+
+    assert plan.pressure.status == "high"
+    assert plan.pressure.projected_input_tokens == 100
+    assert plan.raw_tail_token_budget == 45
+    assert plan.fold_message_ids == ("source_0", "source_1")
+    assert plan.raw_tail_message_ids == ("source_2", "source_3")
+
+
+def test_automatic_plan_never_splits_oversized_fold_group_at_batch_limit():
+    source = _message("source_large")
+    replies = [_message(f"reply_{index:02d}", generation_job_id="job_large") for index in range(48)]
+    latest = _message("source_latest")
+
+    plan = build_automatic_context_plan(
+        capacity=_automatic_capacity(),
+        mandatory_prompt_tokens=0,
+        messages=[source, *replies, latest],
+        job_source_message_ids={"job_large": source.id},
+        token_estimator=lambda _message: 2,
+        batch_message_limit=48,
+    )
+
+    assert plan.pressure.status == "high"
+    assert len(plan.fold_message_ids) == 49
+    assert plan.fold_message_ids[0] == source.id
+    assert plan.fold_message_ids[-1] == "reply_47"
+    assert plan.raw_tail_message_ids == (latest.id,)
+
+
+def test_automatic_plan_preserves_oversized_newest_turn_and_reports_hard_state():
+    source = _message("source_current")
+    reply = _message("reply_current", generation_job_id="job_current")
+
+    plan = build_automatic_context_plan(
+        capacity=_automatic_capacity(),
+        mandatory_prompt_tokens=0,
+        messages=[source, reply],
+        job_source_message_ids={"job_current": source.id},
+        token_estimator=lambda _message: 60,
+    )
+
+    assert plan.pressure.status == "hard"
+    assert plan.oversized_indivisible_turn is True
+    assert plan.fold_message_ids == ()
+    assert plan.raw_tail_message_ids == (source.id, reply.id)
 
 
 def test_pressure_report_contains_only_sanitized_counts_ids_and_estimates():

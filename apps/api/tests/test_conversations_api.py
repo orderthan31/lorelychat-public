@@ -1,13 +1,17 @@
 import asyncio
+import json
 
 import pytest
 from sqlmodel import select
 
-from app.db.models import BattleMatchRecord, Character, CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, Message, MessageAsset, MessageGenerationJob, RuntimeSetting, SceneState
-from app.engine.character_runtime import CharacterRuntimeError
+from app.db.models import BattleMatchRecord, Character, CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, GenerationJobEvent, Message, MessageAsset, MessageGenerationJob, RuntimeSetting, SceneState
+from app.core.config import get_settings
+from app.engine.character_runtime import CHARACTER_TURN_CONTINUATION_INSTRUCTION, CharacterRuntimeError, build_chat_replies_response_format, character_retry_instruction
+from app.engine.prompt_harness import approx_tokens
 from app.services import conversation_service
 from app.services.conversation_service import apply_conversation_compression_update
-from app.api.conversations import _run_message_generation_job_in_session, normalize_incoming_message, persist_generated_reply_messages, runtime_user_message, select_runtime_room_characters
+from app.services.context_management_service import ContextCapacity
+from app.api.conversations import ContextMaintenanceRequired, _run_message_generation_job_in_session, _serialize_generation_sse_event, assign_generated_turn_group, generation_control_reserve_tokens, normalize_incoming_message, persist_generated_reply_messages, runtime_user_message, select_runtime_room_characters
 from app.schemas.conversations import MessageCreate
 from app.schemas.dialogue import CharacterReply
 
@@ -21,6 +25,46 @@ def test_runtime_user_message_labels_character_speaker_as_character_not_user():
     assert "[Character dialogue: 서모아(char_harin)]" in text
     assert "[User dialogue]" not in text
     assert "리나가 1번을 맡아야 해" in text
+
+
+def test_generation_control_reserve_covers_retry_and_character_continuation():
+    user_tokens = generation_control_reserve_tokens(
+        speaker_type="user",
+        min_bubbles=2,
+        max_bubbles=4,
+    )
+    character_tokens = generation_control_reserve_tokens(
+        speaker_type="character",
+        min_bubbles=2,
+        max_bubbles=4,
+    )
+
+    retry_instruction = character_retry_instruction(2)
+    initial_format_tokens = approx_tokens(json.dumps(
+        build_chat_replies_response_format(min_bubbles=2, max_bubbles=4),
+        ensure_ascii=False,
+        sort_keys=True,
+    ))
+    retry_format_tokens = approx_tokens(json.dumps(
+        build_chat_replies_response_format(min_bubbles=2, max_bubbles=4, retry=True),
+        ensure_ascii=False,
+        sort_keys=True,
+    ))
+    sample_user_message = "계속 이야기해줘"
+    actual_user_retry_delta = (
+        approx_tokens(f"{sample_user_message}\n\n{retry_instruction}")
+        - approx_tokens(sample_user_message)
+        + retry_format_tokens
+    )
+    actual_character_max = max(
+        approx_tokens(CHARACTER_TURN_CONTINUATION_INSTRUCTION) + initial_format_tokens,
+        approx_tokens(f"{CHARACTER_TURN_CONTINUATION_INSTRUCTION}\n\n{retry_instruction}")
+        + retry_format_tokens,
+    )
+
+    assert user_tokens >= actual_user_retry_delta
+    assert character_tokens >= actual_character_max
+    assert character_tokens > user_tokens
 
 
 def test_normalize_incoming_message_parses_character_action_markup_with_render_order():
@@ -77,6 +121,284 @@ def test_persistence_rejects_filtered_reply_before_any_database_write(client, se
         message.id for message in session.exec(select(Message).where(Message.conversation_id == room["id"])).all()
     }
     assert after_ids == before_ids
+
+
+def test_sync_generated_reply_batch_persists_as_one_complete_turn(
+    client,
+    session,
+):
+    character_data = client.post(
+        "/characters",
+        json={"name": "아리아", "persona": "짧게 답한다."},
+    ).json()
+    room = client.post(
+        "/conversations",
+        json={
+            "mode": "user_character",
+            "participants": [
+                {"type": "user", "id": "user_001"},
+                {"type": "character", "id": character_data["id"]},
+            ],
+        },
+    ).json()
+    conversation = session.get(Conversation, room["id"])
+    character = session.get(Character, character_data["id"])
+    payload = MessageCreate(speaker_type="user", speaker_id="user_001", content="두 번 답해")
+    incoming = conversation_service.add_message(session, room["id"], payload)
+
+    generated = asyncio.run(persist_generated_reply_messages(
+        session=session,
+        conversation_id=room["id"],
+        conversation=conversation,
+        payload=payload,
+        incoming_message=incoming,
+        generated_replies=[
+            CharacterReply(character_id=character.id, text="첫 번째"),
+            CharacterReply(character_id=character.id, text="두 번째"),
+        ],
+        room_characters=[character],
+        scene_state=None,
+        is_multi_room=False,
+        min_bubbles=2,
+    ))
+
+    turn_group_id = assign_generated_turn_group(
+        generated,
+        incoming_message=incoming,
+        generation_job=None,
+    )
+    assert turn_group_id == f"sync_turn:{incoming.id}"
+    assert [message.content for message in generated] == ["첫 번째", "두 번째"]
+    assert {message.generation_job_id for message in generated} == {turn_group_id}
+    assert [message.reply_index for message in generated] == [0, 1]
+
+
+def test_post_message_returns_recoverable_context_maintenance_error_and_preserves_raw_input(
+    client,
+    session,
+    monkeypatch,
+):
+    character_data = client.post(
+        "/characters",
+        json={"name": "아리아", "persona": "짧게 답한다."},
+    ).json()
+    room = client.post(
+        "/conversations",
+        json={
+            "mode": "user_character",
+            "participants": [
+                {"type": "user", "id": "user_001"},
+                {"type": "character", "id": character_data["id"]},
+            ],
+        },
+    ).json()
+
+    async def fail_before_provider(**_kwargs):
+        raise ContextMaintenanceRequired(
+            projected_tokens=18_500,
+            working_tokens=16_000,
+            backlog_groups=4,
+            batches=3,
+        )
+
+    monkeypatch.setattr(
+        "app.api.conversations.generate_replies_from_message",
+        fail_before_provider,
+    )
+
+    response = client.post(
+        f"/conversations/{room['id']}/messages",
+        json={
+            "speaker_type": "user",
+            "speaker_id": "user_001",
+            "content": "압축 실패여도 이 원문은 남겨줘",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "context_maintenance_required",
+        "projected_tokens": 18_500,
+        "working_tokens": 16_000,
+        "backlog_groups": 4,
+        "catchup_batches": 3,
+    }
+    persisted = session.exec(
+        select(Message).where(Message.conversation_id == room["id"])
+    ).all()
+    incoming = next(message for message in persisted if message.speaker_type == "user")
+    assert incoming.content == "압축 실패여도 이 원문은 남겨줘"
+    assert incoming.metadata_.get("generation_status") == "failed"
+    assert incoming.metadata_.get("generation_error_code") == "context_maintenance_required"
+
+
+def test_automatic_hard_pressure_no_progress_never_calls_chat_provider(
+    client,
+    session,
+    monkeypatch,
+):
+    character_data = client.post(
+        "/characters",
+        json={"name": "아리아", "persona": "짧게 답한다."},
+    ).json()
+    room = client.post(
+        "/conversations",
+        json={
+            "mode": "user_character",
+            "participants": [
+                {"type": "user", "id": "user_001"},
+                {"type": "character", "id": character_data["id"]},
+            ],
+        },
+    ).json()
+    conversation_service.add_message(
+        session,
+        room["id"],
+        MessageCreate(speaker_type="user", speaker_id="user_001", content="이전 질문"),
+    )
+    conversation_service.add_message(
+        session,
+        room["id"],
+        MessageCreate(
+            speaker_type="character",
+            speaker_id=character_data["id"],
+            content="이전 답변",
+        ),
+    )
+
+    monkeypatch.setenv("CONTEXT_MANAGEMENT_MODE", "automatic")
+    get_settings.cache_clear()
+    tiny_capacity = ContextCapacity(
+        model_option_key="model_tiny",
+        context_window_tokens=200,
+        max_output_tokens=50,
+        completion_reserve_tokens=50,
+        mandatory_reserve_tokens=0,
+        available_input_tokens=150,
+        working_input_tokens=100,
+        source="model_metadata",
+        used_fallback=False,
+    )
+    monkeypatch.setattr(
+        "app.api.conversations.resolve_model_context_capacity",
+        lambda *_args, **_kwargs: tiny_capacity,
+    )
+    provider_calls = 0
+
+    async def no_progress(*_args, **_kwargs):
+        return session.get(SceneState, room["id"])
+
+    async def unexpected_provider_call(*_args, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        raise AssertionError("chat provider must not run under unrecoverable hard pressure")
+
+    monkeypatch.setattr(
+        conversation_service,
+        "update_scene_orchestration_summary",
+        no_progress,
+    )
+    monkeypatch.setattr(
+        "app.api.conversations.CharacterRuntime.generate_replies",
+        unexpected_provider_call,
+    )
+
+    try:
+        response = client.post(
+            f"/conversations/{room['id']}/messages",
+            json={
+                "speaker_type": "user",
+                "speaker_id": "user_001",
+                "content": "새 질문은 원문으로 보존해",
+            },
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "context_maintenance_required"
+    assert response.json()["detail"]["catchup_batches"] == 1
+    assert provider_calls == 0
+    persisted = session.exec(
+        select(Message).where(Message.conversation_id == room["id"])
+    ).all()
+    assert any(message.content == "새 질문은 원문으로 보존해" for message in persisted)
+
+
+def test_async_generation_job_preserves_context_maintenance_code(
+    client,
+    session,
+    monkeypatch,
+):
+    character = client.post(
+        "/characters",
+        json={"name": "세아", "persona": "침착하다."},
+    ).json()
+    room = client.post(
+        "/conversations",
+        json={
+            "mode": "user_character",
+            "participants": [
+                {"type": "user", "id": "user_001"},
+                {"type": "character", "id": character["id"]},
+            ],
+        },
+    ).json()
+    monkeypatch.setattr(
+        "app.api.conversations._start_message_generation_worker",
+        lambda _job_id: None,
+    )
+
+    async def fail_with_maintenance(**_kwargs):
+        raise ContextMaintenanceRequired(
+            projected_tokens=250,
+            working_tokens=100,
+            backlog_groups=2,
+            batches=1,
+        )
+
+    monkeypatch.setattr(
+        "app.api.conversations.generate_replies_from_message",
+        fail_with_maintenance,
+    )
+    response = client.post(
+        f"/conversations/{room['id']}/messages/jobs",
+        json={
+            "speaker_type": "user",
+            "speaker_id": "user_001",
+            "content": "비동기 원문",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    job_id = body["job"]["id"]
+    incoming_id = body["incoming_message"]["id"]
+
+    asyncio.run(_run_message_generation_job_in_session(session, job_id))
+    session.expire_all()
+
+    job = session.get(MessageGenerationJob, job_id)
+    incoming = session.get(Message, incoming_id)
+    failed_event = session.exec(
+        select(GenerationJobEvent)
+        .where(GenerationJobEvent.job_id == job_id)
+        .where(GenerationJobEvent.status == "failed")
+    ).one()
+    assert job.status == "failed"
+    assert "context_maintenance_required" in job.error_message
+    assert incoming.content == "비동기 원문"
+    assert incoming.metadata_.get("generation_error_code") == "context_maintenance_required"
+    assert failed_event.payload_.get("error_code") == "context_maintenance_required"
+
+    public_job = client.get(
+        f"/conversations/{room['id']}/generation-jobs/{job_id}"
+    )
+    assert public_job.status_code == 200
+    assert public_job.json()["error_code"] == "context_maintenance_required"
+
+    event_name, event_payload = _serialize_generation_sse_event(failed_event, job)
+    assert event_name == "failed"
+    assert event_payload["error_code"] == "context_maintenance_required"
 
 
 def test_create_conversation_with_scene(client):

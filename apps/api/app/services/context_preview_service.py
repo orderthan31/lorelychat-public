@@ -10,6 +10,7 @@ from app.db.models import Character, CharacterMemory, Conversation, SceneState
 from app.engine import prompts
 from app.schemas.conversations import ConversationCompressionPreviewRead, ConversationContextPreviewRead, ContextPreviewSectionRead
 from app.services import conversation_service, domain_actor_service, external_memory_service, genre_domain_service, model_provider_service, runtime_settings_service, system_prompt_service
+from app.services.context_management_service import resolve_model_context_capacity
 
 
 def approx_tokens(text: str) -> int:
@@ -35,6 +36,7 @@ def make_section(
         included=included,
         char_count=len(content or ""),
         approx_tokens=token_count,
+        used_tokens=token_count if included else 0,
         source=source or f"prompt.{key}",
         included_reason=included_reason,
         budget_tokens=budget_tokens or max(1, token_count),
@@ -50,6 +52,7 @@ def make_section_from_prompt_section(section: prompts.PromptSection, ledger_entr
         included=ledger_entry.included,
         char_count=len(section.content or ""),
         approx_tokens=ledger_entry.approx_tokens,
+        used_tokens=ledger_entry.used_tokens,
         source=ledger_entry.source,
         included_reason=ledger_entry.included_reason,
         budget_tokens=ledger_entry.budget_tokens,
@@ -71,13 +74,68 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
     participants = conversation_service.get_participants(session, conversation_id)
     character_ids = [participant.participant_id for participant in participants if participant.participant_type == "character"]
     scene = session.get(SceneState, conversation_id) or SceneState(conversation_id=conversation_id)
+    mode = get_settings().context_management_mode
+    selector_kwargs = {}
+    selected_messages: list = []
     warnings: list[str] = []
-    try:
-        selected_messages, _raw_tail = conversation_service.select_incremental_compression_batch(scene, messages)
-    except ValueError as exc:
+    coverage_valid = True
+    if mode == "automatic":
+        runtime_setting = runtime_settings_service.get_effective_setting(session, conversation_id)
+        conversation = session.get(Conversation, conversation_id)
+        model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
+        capacity = resolve_model_context_capacity(
+            model_option,
+            room_prompt_budget_tokens=prompts.prompt_budget_for_context(
+                genre_mode=getattr(conversation, "genre_mode", None),
+                is_multi_room=len(character_ids) >= 2,
+            ),
+        )
+        try:
+            context_preview = build_context_preview(session, conversation_id)
+            recent_section = next(
+                (section for section in context_preview.sections if section.key == "recent_messages"),
+                None,
+            )
+            mandatory_prompt_tokens = max(
+                0,
+                context_preview.used_tokens
+                - min(
+                    int(getattr(recent_section, "used_tokens", 0) or 0),
+                    int(getattr(recent_section, "approx_tokens", 0) or 0),
+                ),
+            )
+            job_mapping = conversation_service.generation_job_source_message_ids(session, conversation_id)
+            plan = conversation_service.automatic_context_plan(
+                scene,
+                messages,
+                capacity=capacity,
+                mandatory_prompt_tokens=mandatory_prompt_tokens,
+                job_source_message_ids=job_mapping,
+            )
+            if plan.pressure.status == "low":
+                selector_kwargs = None
+            else:
+                selector_kwargs = {
+                    "raw_tail_token_budget": plan.raw_tail_token_budget,
+                    "job_source_message_ids": job_mapping,
+                    "token_estimator": conversation_service.automatic_context_message_tokens,
+                }
+        except (ValueError, prompts.ContextCoverageError) as exc:
+            coverage_valid = False
+            warnings.append(str(exc))
+    if coverage_valid and selector_kwargs is not None:
+        try:
+            selected_messages, _raw_tail = conversation_service.select_incremental_compression_batch(
+                scene,
+                messages,
+                **selector_kwargs,
+            )
+        except ValueError as exc:
+            selected_messages = []
+            warnings.append(str(exc))
+    else:
         selected_messages = []
-        warnings.append(str(exc))
-    if not selected_messages:
+    if coverage_valid and not selected_messages:
         warnings.append("no_foldable_overflow")
     memories = _durable_memories(session, conversation_id, set(character_ids))
     harness = conversation_service.build_compression_prompt_harness(
@@ -129,8 +187,16 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
     ) if conversation else session.get(SceneState, conversation_id)
     if scene and stored_scene and stored_scene.last_compression_error:
         scene.last_compression_error = stored_scene.last_compression_error
-    raw_messages = prompts.messages_after_scene_summary_boundary(messages, scene)
-    selected_messages = prompts.select_prompt_recent_messages(raw_messages)
+    context_mode = get_settings().context_management_mode
+    raw_messages = prompts.messages_after_scene_summary_boundary(
+        messages,
+        scene,
+        context_management_mode=context_mode,
+    )
+    selected_messages = prompts.select_prompt_recent_messages(
+        raw_messages,
+        context_management_mode=context_mode,
+    )
     is_multi_room = len(characters) >= 2
 
     preview_query = "\n".join(filter(None, [
@@ -254,6 +320,8 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
         response_length_preset=runtime_setting.response_length_preset,
         recent_message_count=len(messages),
         selected_recent_message_count=len(selected_messages),
+        total_budget_tokens=harness.total_budget_tokens,
+        used_tokens=harness.used_tokens,
         sections=sections,
         warnings=warnings,
     )

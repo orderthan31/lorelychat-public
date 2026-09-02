@@ -18,6 +18,7 @@ from app.engine.llm_client import LLMClient, LLMResponse, LLMUnavailableError
 from app.core.config import Settings
 from app.engine.prompts import build_character_messages, build_multi_character_messages, build_multi_character_prompt_harness, build_scene_text
 from app.services import runtime_settings_service
+from app.services.context_management_service import ContextCapacity
 from app.services.conversation_service import (
     COMMON_ROOM_MEMORY_CHARACTER_ID,
     summarize_scene_memory_with_llm,
@@ -2068,6 +2069,113 @@ def test_scene_compression_eligibility_includes_current_uncommitted_replies(sess
         generated_character_messages=1,
         interval_turns=5,
         prospective_messages=[generated],
+    )
+
+
+def _automatic_test_capacity(*, working_tokens: int) -> ContextCapacity:
+    return ContextCapacity(
+        model_option_key="automatic_test_model",
+        context_window_tokens=working_tokens + 512,
+        max_output_tokens=256,
+        completion_reserve_tokens=256,
+        mandatory_reserve_tokens=0,
+        available_input_tokens=working_tokens + 256,
+        working_input_tokens=working_tokens,
+        source="model_metadata",
+        used_fallback=False,
+    )
+
+
+def test_automatic_scene_compression_uses_pressure_instead_of_due_cadence(session):
+    now = datetime.now(timezone.utc)
+    conversation_id = "conv_automatic_pressure"
+    session.add(SceneState(
+        conversation_id=conversation_id,
+        last_compression_attempt_at=now,
+    ))
+    session.add_all([
+        Message(
+            id=f"msg_automatic_pressure_{index}",
+            conversation_id=conversation_id,
+            speaker_type="user",
+            speaker_id="user_001",
+            content="긴 장면 정보 " * 80,
+            created_at=now + timedelta(seconds=index),
+        )
+        for index in range(4)
+    ])
+    session.commit()
+
+    assert should_update_scene_orchestration_summary(
+        session,
+        conversation_id,
+        generated_character_messages=1,
+        interval_turns=30,
+        context_management_mode="automatic",
+        capacity=_automatic_test_capacity(working_tokens=320),
+        mandatory_prompt_tokens=40,
+    )
+    assert not should_update_scene_orchestration_summary(
+        session,
+        conversation_id,
+        generated_character_messages=1,
+        interval_turns=1,
+        context_management_mode="automatic",
+        capacity=_automatic_test_capacity(working_tokens=20_000),
+        mandatory_prompt_tokens=40,
+    )
+
+
+def test_automatic_scene_compression_includes_prospective_generated_bubbles(session):
+    now = datetime.now(timezone.utc)
+    conversation_id = "conv_automatic_prospective"
+    session.add(SceneState(conversation_id=conversation_id))
+    persisted = [
+        Message(
+            id=f"msg_automatic_existing_{index}",
+            conversation_id=conversation_id,
+            speaker_type="user",
+            speaker_id="user_001",
+            content="short",
+            created_at=now + timedelta(seconds=index),
+        )
+        for index in range(4)
+    ]
+    session.add_all(persisted)
+    session.commit()
+    prospective = [
+        Message(
+            id=f"msg_automatic_future_{index}",
+            conversation_id=conversation_id,
+            speaker_type="character",
+            speaker_id="char_a",
+            content="prospective context " * 80,
+            generation_job_id="job_future",
+            reply_index=index,
+            created_at=now + timedelta(seconds=10 + index),
+        )
+        for index in range(2)
+    ]
+    mapping = {"job_future": persisted[-1].id}
+
+    assert not should_update_scene_orchestration_summary(
+        session,
+        conversation_id,
+        generated_character_messages=1,
+        context_management_mode="automatic",
+        capacity=_automatic_test_capacity(working_tokens=300),
+        mandatory_prompt_tokens=20,
+        job_source_message_ids=mapping,
+    )
+    assert should_update_scene_orchestration_summary(
+        session,
+        conversation_id,
+        generated_character_messages=1,
+        context_management_mode="automatic",
+        capacity=_automatic_test_capacity(working_tokens=300),
+        mandatory_prompt_tokens=20,
+        prospective_messages=prospective,
+        job_source_message_ids=mapping,
     )
 
 

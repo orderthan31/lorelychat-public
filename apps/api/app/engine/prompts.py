@@ -43,6 +43,14 @@ RoomCastRoles = dict[str, str]
 PROMPT_RECENT_TAIL_LIMIT = 8
 PROMPT_RECENT_ANCHOR_LIMIT = 2
 PROMPT_THOUGHT_RECENT_LIMIT = 0
+
+
+class ContextCoverageError(RuntimeError):
+    """The persisted summary boundary cannot prove contiguous prompt coverage."""
+
+    code = "context_coverage_gap"
+
+
 GENERAL_PROMPT_BUDGET_TOKENS = 12_000
 MULTI_CHARACTER_PROMPT_BUDGET_TOKENS = 16_000
 BATTLE_PROMPT_BUDGET_TOKENS = 18_000
@@ -168,7 +176,12 @@ def build_prompt_history(
     )
 
 
-def messages_after_scene_summary_boundary(recent_messages: list[Message], scene_state: SceneState | None) -> list[Message]:
+def messages_after_scene_summary_boundary(
+    recent_messages: list[Message],
+    scene_state: SceneState | None,
+    *,
+    context_management_mode: str = "legacy",
+) -> list[Message]:
     """Keep generation raw history strictly after the compressed-summary boundary."""
     boundary_id = getattr(scene_state, "last_compression_source_message_id", None) if scene_state else None
     if not boundary_id:
@@ -176,8 +189,12 @@ def messages_after_scene_summary_boundary(recent_messages: list[Message], scene_
     for index, message in enumerate(recent_messages):
         if message.id == boundary_id:
             return recent_messages[index + 1:]
-    # A dangling boundary is a persistence problem, but generation must remain
-    # available; use the normal bounded tail instead of dropping all context.
+    if context_management_mode.strip().lower() == "automatic":
+        raise ContextCoverageError(
+            f"context coverage boundary is missing: {boundary_id}"
+        )
+    # Legacy/shadow rollback behavior remains fail-open and bounded. Automatic
+    # mode must never silently turn an unknown middle gap into apparent coverage.
     return recent_messages
 
 
@@ -526,7 +543,11 @@ def build_multi_character_prompt_harness(
     context_management_mode: str = "legacy",
 ) -> PromptHarness:
     character_names = {character.id: character.name for character in characters}
-    raw_messages = messages_after_scene_summary_boundary(recent_messages, scene_state)
+    raw_messages = messages_after_scene_summary_boundary(
+        recent_messages,
+        scene_state,
+        context_management_mode=context_management_mode,
+    )
     history = build_prompt_history(
         raw_messages,
         character_names=character_names,
@@ -564,7 +585,15 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
         PromptSection("character_cards", "Active character cards", character_cards, "conversation.participants.character_cards", "active_room_participants", character_cards_budget, True),
         PromptSection("scene", "World and Rolling Story Arc", build_scene_text(scene_state), "scene_state", "durable_room_context", 1800, True),
         PromptSection("directive", "Current directive", directive or "", "message.directive", "current_user_intent", 180, False),
-        PromptSection("recent_messages", "Prior raw history", history, "conversation.messages.tail", "recent_tail_without_current_input", 1800, True),
+        PromptSection(
+            "recent_messages",
+            "Prior raw history",
+            history,
+            "conversation.messages.tail",
+            "recent_tail_without_current_input",
+            max(1800, approx_tokens(history) + 1) if context_management_mode.strip().lower() == "automatic" else 1800,
+            True,
+        ),
         PromptSection("official_domain_state", "Official domain state", official_domain_context or "none", "genre_domain.battle_ledger", f"genre_route:{genre_mode or 'battle'}", 520, genre_mode == "battle"),
         PromptSection("battle_control_hint", "Battle control hint", format_battle_control_hint(battle_control_context), "ui.battle_control_payload", "live_ui_override", 220, False),
         PromptSection("user_description", "User persona", user_description_text, "scene_state.user_description", "room_user_persona", 320, False),
@@ -656,7 +685,11 @@ def build_character_prompt_sections(
     character_names = {character.id: character.name}
     for room_character in room_characters or []:
         character_names[room_character.id] = room_character.name
-    raw_messages = messages_after_scene_summary_boundary(recent_messages, scene_state)
+    raw_messages = messages_after_scene_summary_boundary(
+        recent_messages,
+        scene_state,
+        context_management_mode=context_management_mode,
+    )
     history = build_prompt_history(
         raw_messages,
         character_names=character_names,
@@ -720,7 +753,15 @@ Keep the reply vivid, specific, and naturally paced."""
         PromptSection("offstage_actor_recall", "Offstage actor recall", offstage_actor_context or "", "domain_actor.offstage_recall", "router:offstage_actor_context", 360, False),
         PromptSection("continuity_state_by_character", "Continuity state", continuity_context or "", "conversation.local_memory", "router:legacy_continuity_context", 360, False),
         PromptSection("room_context", "Room context", room_context, "conversation.participants.counterpart_cards", "character_character_room" if conversation_mode == "character_character" else "single_character_room", 700, False),
-        PromptSection("recent_messages", "Recent messages", history, "conversation.messages.tail", "recent_tail_and_anchors", 1200, True),
+        PromptSection(
+            "recent_messages",
+            "Recent messages",
+            history,
+            "conversation.messages.tail",
+            "recent_tail_and_anchors",
+            max(1200, approx_tokens(history) + 1) if context_management_mode.strip().lower() == "automatic" else 1200,
+            True,
+        ),
         PromptSection("directive", "Directive", directive or "", "message.directive", "current_user_intent", 180, False),
         PromptSection("minimum_output_target", "Minimum output target", build_output_length_rule(min_output_tokens) or "none", "runtime.response_length_preset", "length_contract", 220, False),
         PromptSection("output_rules", "Output rules", output_rules, "runtime.response_contract", "json_contract", 220, True),

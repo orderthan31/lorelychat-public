@@ -648,6 +648,53 @@ async def test_compression_applies_old_prefix_when_new_message_arrives_during_ll
     assert session.get(Message, "msg_stale_newer") is not None
 
 
+@pytest.mark.asyncio
+async def test_compression_update_uses_the_planned_token_estimator_for_exact_prefix(session, monkeypatch):
+    conversation_id = "conv_exact_selector_estimator"
+    conversation = Conversation(id=conversation_id, title="selector estimator", mode="user_character")
+    messages = [
+        Message(
+            id=f"msg_exact_selector_{index}",
+            conversation_id=conversation_id,
+            speaker_type="user",
+            speaker_id="user_001",
+            content=f"source {index}",
+        )
+        for index in range(4)
+    ]
+    scene = SceneState(conversation_id=conversation_id, summary="기존 요약")
+    session.add_all([conversation, *messages, scene])
+    session.commit()
+
+    async def fake_compression(**kwargs):
+        assert [message.id for message in kwargs["recent_messages"]] == [
+            "msg_exact_selector_0",
+            "msg_exact_selector_1",
+        ]
+        return {
+            "scene": {"summary": "[Rolling Story Arc]\n- 계획된 prefix만 반영한 요약"},
+            "memories": [],
+            "relationships": [],
+            "battle_events": [],
+        }
+
+    monkeypatch.setattr(conversation_service, "summarize_conversation_state_with_llm", fake_compression)
+
+    await conversation_service.update_scene_orchestration_summary(
+        session,
+        conversation_id,
+        messages,
+        llm_client=object(),
+        character_ids=["char_a"],
+        raw_tail_token_budget=1,
+        token_estimator=lambda message: 0 if message.id == "msg_exact_selector_3" else 1,
+    )
+
+    session.expire_all()
+    persisted = session.get(SceneState, conversation_id)
+    assert persisted.last_compression_source_message_id == "msg_exact_selector_1"
+
+
 def test_compression_skips_relationship_pair_changed_after_snapshot(session):
     conversation = Conversation(id="conv_relationship_revision", title="relationship revision", mode="user_character")
     source = Message(

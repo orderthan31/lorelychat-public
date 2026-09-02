@@ -13,7 +13,13 @@ from sqlalchemy import text, update as sa_update
 from app.db.models import Character, Conversation, ConversationParticipant, ConversationReadState, GenerationJobEvent, MessageGenerationJob, PostCommitTask, ConversationRelationshipState, CharacterMemory, Message, SceneState, MessageAsset, BattleMatchRecord, BattleStanding, RuntimeSetting, WorldSetting
 from app.schemas.conversations import ConversationCreate, ConversationUpdate, MessageCreate, ParticipantCreate
 from app.services import external_memory_service, genre_domain_service, system_prompt_service
-from app.services.context_management_service import group_complete_turns, select_raw_tail_groups
+from app.services.context_management_service import (
+    AutomaticContextPlan,
+    ContextCapacity,
+    build_automatic_context_plan,
+    group_complete_turns,
+    select_raw_tail_groups,
+)
 
 
 MAX_SCENE_MEMORY_CHARS = 2200
@@ -788,11 +794,15 @@ def mark_message_generation_job_failed(session: Session, job: MessageGenerationJ
     job.heartbeat_at = None
     job.state_version += 1
     session.add(job)
+    failure_payload = {"error_type": type(exc).__name__}
+    error_code = getattr(exc, "code", None)
+    if isinstance(error_code, str) and error_code:
+        failure_payload["error_code"] = error_code
     append_generation_job_event(
         session,
         job,
         "failed",
-        payload={"error_type": type(exc).__name__},
+        payload=failure_payload,
     )
     session.commit()
     session.refresh(job)
@@ -1208,6 +1218,9 @@ def mark_message_generation_failed(session: Session, message: Message, error: Ex
         "generation_error_type": type(error).__name__,
         "generation_error_message": compact_text(str(error), limit=1000),
     })
+    error_code = getattr(error, "code", None)
+    if isinstance(error_code, str) and error_code:
+        metadata["generation_error_code"] = error_code
     message.metadata_ = metadata
     session.add(message)
     session.commit()
@@ -2091,6 +2104,59 @@ COMPRESSION_RECENT_MESSAGE_LIMIT = 12
 COMPRESSION_BATCH_MESSAGE_LIMIT = 48
 
 
+def generation_job_source_message_ids(
+    session: Session,
+    conversation_id: str,
+    *,
+    extra: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return authoritative generation-job -> incoming-message ownership."""
+
+    jobs = session.exec(
+        select(MessageGenerationJob).where(
+            MessageGenerationJob.conversation_id == conversation_id
+        )
+    ).all()
+    mapping = {
+        job.id: job.incoming_message_id
+        for job in jobs
+        if job.id and job.incoming_message_id
+    }
+    mapping.update(extra or {})
+    return mapping
+
+
+def automatic_context_plan(
+    scene_state: SceneState,
+    messages: list[Message],
+    *,
+    capacity: ContextCapacity,
+    mandatory_prompt_tokens: int,
+    job_source_message_ids: Mapping[str, str] | None = None,
+    token_estimator: Callable[[Message], int] | None = None,
+) -> AutomaticContextPlan:
+    suffix = messages_after_compression_boundary(scene_state, messages)
+    return build_automatic_context_plan(
+        capacity=capacity,
+        mandatory_prompt_tokens=mandatory_prompt_tokens,
+        messages=suffix,
+        job_source_message_ids=job_source_message_ids,
+        token_estimator=token_estimator or automatic_context_message_tokens,
+        batch_message_limit=COMPRESSION_BATCH_MESSAGE_LIMIT,
+    )
+
+
+def automatic_context_message_tokens(message: Message) -> int:
+    """Estimate the exact message fields rendered into automatic raw history."""
+
+    return max(
+        1,
+        prompts.approx_tokens(
+            prompts.format_message_for_context(message, include_thought=False)
+        ) + 1,
+    )
+
+
 def messages_after_compression_boundary(
     scene_state: SceneState,
     messages: list[Message],
@@ -2151,10 +2217,13 @@ def select_incremental_compression_batch(
             uncompressed,
             job_source_message_ids=job_source_message_ids,
         )
+        selector_kwargs = {
+            "token_estimator": token_estimator or automatic_context_message_tokens,
+        }
         raw_turns = select_raw_tail_groups(
             complete_turns,
             token_budget=max(0, int(raw_tail_token_budget)),
-            token_estimator=token_estimator,
+            **selector_kwargs,
         )
         foldable_turn_count = len(complete_turns) - len(raw_turns)
         if foldable_turn_count <= 0:
@@ -2852,18 +2921,48 @@ def should_update_scene_orchestration_summary(
     interval_turns: int = 5,
     force: bool = False,
     prospective_messages: list[Message] | None = None,
+    context_management_mode: str = "shadow",
+    capacity: ContextCapacity | None = None,
+    mandatory_prompt_tokens: int = 0,
+    job_source_message_ids: Mapping[str, str] | None = None,
 ) -> bool:
-    """Run compression when cadence is due and a foldable prefix exists.
-
-    Cadence is anchored to the last compression attempt, not SceneState.updated_at.
-    Scene directions and other state edits may update the scene timestamp without
-    consuming compression turns. Failed attempts still advance the cadence so a
-    broken provider is retried after the next full interval instead of every turn.
-    """
+    """Choose automatic pressure policy or the unchanged rollback cadence."""
     interval_turns = max(1, min(30, int(interval_turns or 5)))
     if generated_character_messages <= 0:
         return False
     scene_state = session.get(SceneState, conversation_id)
+    candidate_messages = list_messages(session, conversation_id)
+    if prospective_messages:
+        persisted_ids = {message.id for message in candidate_messages}
+        candidate_messages.extend(message for message in prospective_messages if message.id not in persisted_ids)
+
+    if (context_management_mode or "shadow").strip().lower() == "automatic":
+        selector_scene = scene_state or SceneState(conversation_id=conversation_id)
+        fallback_capacity = ContextCapacity(
+            model_option_key=None,
+            context_window_tokens=16_384,
+            max_output_tokens=2_048,
+            completion_reserve_tokens=2_048,
+            mandatory_reserve_tokens=1_024,
+            available_input_tokens=13_312,
+            working_input_tokens=12_000,
+            source="conservative_fallback",
+            used_fallback=True,
+        )
+        try:
+            plan = automatic_context_plan(
+                selector_scene,
+                candidate_messages,
+                capacity=capacity or fallback_capacity,
+                mandatory_prompt_tokens=mandatory_prompt_tokens,
+                job_source_message_ids=job_source_message_ids,
+            )
+        except ValueError:
+            # A dangling boundary must be handled by maintenance, never hidden by cadence.
+            return True
+        return plan.pressure.status in {"high", "hard"} and plan.has_foldable_backlog
+
+    # Shadow and legacy deliberately retain the old cadence/count-tail behavior.
     since = scene_state.last_compression_attempt_at if scene_state else None
     filters = [
         Message.conversation_id == conversation_id,
@@ -2879,25 +2978,13 @@ def should_update_scene_orchestration_summary(
     if len(turn_count) < interval_turns:
         return False
 
-    # The configured cadence decides when compression may run, while the
-    # incremental selector decides whether there is an actual prefix to fold.
-    # Without this second check a short room records repeated no-op attempts;
-    # the attempt timestamp then consumes another full cadence even though the
-    # summary and boundary never moved. That makes the visible application
-    # cadence depend on the number of bubbles generated per turn.
     selector_scene = scene_state or SceneState(conversation_id=conversation_id)
-    candidate_messages = list_messages(session, conversation_id)
-    if prospective_messages:
-        persisted_ids = {message.id for message in candidate_messages}
-        candidate_messages.extend(message for message in prospective_messages if message.id not in persisted_ids)
     try:
         compression_batch, _ = select_incremental_compression_batch(
             selector_scene,
             candidate_messages,
         )
     except ValueError:
-        # A dangling persisted boundary must reach the compression worker so it
-        # can record the diagnostic instead of silently disabling the room.
         return True
     return bool(compression_batch)
 
@@ -3175,6 +3262,9 @@ async def update_scene_orchestration_summary(
     llm_client: LLMClient | None = None,
     fallback_llm_client: LLMClient | None = None,
     character_ids: list[str] | None = None,
+    raw_tail_token_budget: int | None = None,
+    job_source_message_ids: Mapping[str, str] | None = None,
+    token_estimator: Callable[[Message], int] | None = None,
 ) -> SceneState:
     scene_state = session.get(SceneState, conversation_id)
     if not scene_state:
@@ -3183,7 +3273,13 @@ async def update_scene_orchestration_summary(
     expected_revision = int(scene_state.compression_revision or 0)
     expected_boundary_message_id = scene_state.last_compression_source_message_id
     try:
-        recent, _raw_tail = select_incremental_compression_batch(scene_state, recent_messages)
+        recent, _raw_tail = select_incremental_compression_batch(
+            scene_state,
+            recent_messages,
+            raw_tail_token_budget=raw_tail_token_budget,
+            job_source_message_ids=job_source_message_ids,
+            token_estimator=token_estimator,
+        )
     except ValueError as exc:
         scene_state.last_compression_attempt_at = datetime.now(timezone.utc)
         scene_state.last_compression_error = compact_text(str(exc), 1000)
