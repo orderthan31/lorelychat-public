@@ -531,6 +531,120 @@ def test_google_model_classification_filters_runtime_capabilities():
         assert excluded.supports_tts is False
 
 
+def test_manual_model_context_metadata_round_trips_and_can_be_cleared(client):
+    account = client.post(
+        "/model-provider-accounts",
+        json={
+            "provider_type": "openai_compatible",
+            "alias": "Context Local",
+            "base_url": "http://127.0.0.1:1234/v1",
+            "preset": "local_gemma",
+        },
+    ).json()
+
+    created_response = client.post(
+        "/model-options/manual",
+        json={
+            "provider_account_id": account["id"],
+            "model": "context-local-model",
+            "context_window_tokens": 32_768,
+            "max_output_tokens": 4_096,
+        },
+    )
+
+    assert created_response.status_code == 200, created_response.text
+    created = created_response.json()
+    assert created["context_window_tokens"] == 32_768
+    assert created["max_output_tokens"] == 4_096
+    assert created["supports_chat"] is True
+    assert created["source"] == "manual"
+
+    updated = client.patch(
+        f"/model-options/{created['id']}",
+        json={"context_window_tokens": 65_536, "max_output_tokens": None},
+    )
+
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["context_window_tokens"] == 65_536
+    assert updated.json()["max_output_tokens"] is None
+
+
+def test_provider_model_derives_common_context_metadata_keys():
+    google = model_provider_service._provider_model(
+        "gemini-context",
+        "Gemini Context",
+        "google",
+        {
+            "supportedGenerationMethods": ["generateContent"],
+            "inputTokenLimit": 1_048_576,
+            "outputTokenLimit": 65_536,
+        },
+    )
+    openrouter = model_provider_service._provider_model(
+        "vendor/router-context",
+        "Router Context",
+        "openrouter",
+        {
+            "context_length": 131_072,
+            "architecture": {"output_modalities": ["text"]},
+            "top_provider": {"max_completion_tokens": 16_384},
+        },
+    )
+    compatible = model_provider_service._provider_model(
+        "qwen-context",
+        "Qwen Context",
+        "openai_compatible",
+        {"context_window": "32768", "max_output_tokens": "4096"},
+    )
+
+    assert (google.context_window_tokens, google.max_output_tokens) == (1_048_576, 65_536)
+    assert (openrouter.context_window_tokens, openrouter.max_output_tokens) == (131_072, 16_384)
+    assert (compatible.context_window_tokens, compatible.max_output_tokens) == (32_768, 4_096)
+
+
+def test_sync_preserves_configured_context_metadata_when_provider_omits_it(client, monkeypatch):
+    account = client.post(
+        "/model-provider-accounts",
+        json={
+            "provider_type": "openai_compatible",
+            "alias": "Sparse Metadata",
+            "base_url": "http://127.0.0.1:1234/v1",
+            "preset": "local_gemma",
+        },
+    ).json()
+    monkeypatch.setattr(
+        model_provider_service,
+        "fetch_provider_models",
+        lambda _account: [
+            model_provider_service.ProviderModel(
+                "gemma-sparse",
+                "Gemma Sparse",
+                "local",
+                context_window_tokens=32_768,
+                max_output_tokens=4_096,
+            )
+        ],
+    )
+    synced = client.post(f"/model-provider-accounts/{account['id']}/sync-models").json()
+    option = next(item for item in synced if item["model"] == "gemma-sparse")
+    configured = client.patch(
+        f"/model-options/{option['id']}",
+        json={"context_window_tokens": 65_536, "max_output_tokens": 8_192},
+    ).json()
+    assert configured["context_window_tokens"] == 65_536
+
+    monkeypatch.setattr(
+        model_provider_service,
+        "fetch_provider_models",
+        lambda _account: [model_provider_service.ProviderModel("gemma-sparse", "Gemma Sparse", "local")],
+    )
+    resynced = client.post(f"/model-provider-accounts/{account['id']}/sync-models").json()
+    preserved = next(item for item in resynced if item["id"] == option["id"])
+
+    assert preserved["context_window_tokens"] == 65_536
+    assert preserved["max_output_tokens"] == 8_192
+
+
 def test_sync_models_reclassifies_existing_google_options_and_runtime_filters(client, monkeypatch):
     secret_file = _secret_path("provider_secrets_6.json")
     monkeypatch.setattr(provider_secret_service, "SECRET_ROOT", secret_file.parent)

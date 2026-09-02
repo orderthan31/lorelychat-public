@@ -280,6 +280,13 @@ def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
             if "safety_preset" not in columns:
                 connection.execute(text("ALTER TABLE runtime_settings ADD COLUMN safety_preset VARCHAR NOT NULL DEFAULT 'medium'"))
                 connection.execute(text("UPDATE runtime_settings SET safety_preset = 'medium' WHERE safety_preset IS NULL OR safety_preset = ''"))
+    if "model_options" in table_names:
+        columns = {column["name"] for column in inspector.get_columns("model_options")}
+        with active_engine.begin() as connection:
+            if "context_window_tokens" not in columns:
+                connection.execute(text("ALTER TABLE model_options ADD COLUMN context_window_tokens INTEGER"))
+            if "max_output_tokens" not in columns:
+                connection.execute(text("ALTER TABLE model_options ADD COLUMN max_output_tokens INTEGER"))
     if "conversation_relationship_states" in table_names:
         pk_columns = {column["name"] for column in inspector.get_columns("conversation_relationship_states") if column.get("primary_key")}
         if not {"counterpart_type", "counterpart_id"}.issubset(pk_columns):
