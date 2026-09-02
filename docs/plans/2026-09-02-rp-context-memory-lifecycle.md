@@ -254,13 +254,27 @@ Synthetic replay is a regression safety net, not the final RP-quality verdict. A
    - chronology/causality 15
    - official league ledger contamination avoidance 15
    - active-vs-closed lifecycle distinction 15
+   - unresolved/open-hook retention 10
    - next-turn continuity usefulness 10
-   - compression density/no raw copy 10
+   - semantic density/no raw copy 5
    - Rolling Story Arc structure 5
-   - revision/boundary operational health 5
-5. PASS requires `>= 85` and no critical flag. Invented winner/ranking, a closed event reactivated as current, uncovered folded source, malformed/blank Arc, or raw-copy leakage is an automatic failure.
-6. Keep only a redacted score ledger outside Git: implementation commit, runtime build identity, provider/model key, pre/post revision, whether the boundary advanced, batch counts, numeric subscores, critical flags and short paraphrased defect codes.
-7. Compare the current stable baseline with the feature-branch verification instance under the same room/model contract. Do not assume a working-tree edit is active; restart the intended verification service and verify `/ready`, `/health` and runtime build identity first.
+5. Treat revision/boundary advancement, pipeline completion, format validity, usage completeness and production apply/abort behavior as separate fail-closed operational gates rather than quality points.
+6. PASS requires `>= 85` and no critical flag. Invented winner/ranking, a closed event reactivated as current, uncovered folded source, malformed/blank Arc, or raw-copy leakage is an automatic failure.
+7. Keep only a redacted score ledger outside Git: implementation commit, runtime build identity, provider/model key, pre/post revision, whether the boundary advanced, batch counts, numeric subscores, critical flags and short paraphrased defect codes.
+8. Compare the current stable baseline with the feature-branch verification instance under the same room/model contract. Do not assume a working-tree edit is active; restart the intended verification service and verify `/ready`, `/health` and runtime build identity first.
+
+#### 2026-09-02 frozen Gemini cohort result
+
+The first exploratory 12-candidate run is excluded from causal evidence because C and D did not share the same upstream draft. The corrected v2 harness (`a56230314afa685162286907580fe1f8b16f8c7cedb379afe4f655f3608d3175`) received independent controlled-validity and privacy PASS verdicts before execution. It used revision 81, the exact 52-message fold batch, the same prior Arc/boundary/runtime/model contract, three repetitions per arm, and a shared C→D upstream draft. Three reviewers locked blind scores before unblinding; redaction, arithmetic and no-mapping-access checks passed.
+
+| Arm | Mean score | Critical candidates | Domain contract | Mean calls | Mean total tokens | Mean wall time |
+|---|---:|---:|---:|---:|---:|---:|
+| A — current one-pass | 68.56 | 3/3 | 0/3 | 1.00 | 10,105.67 | 12.64 s |
+| B — stronger one-pass contract | 85.33 | 3/3 | 3/3 | 1.00 | 12,396.67 | 18.64 s |
+| C — structured extraction/render | 83.56 | 3/3 | 1/3 | 4.00 | 35,459.67 | 51.27 s |
+| D — shared C draft + critic/repair | 84.89 | 3/3 | 2/3 | 6.33 | 64,653.33 | 66.82 s |
+
+No arm passed the required `>=85 and zero critical flags` gate, so automatic rollout remains blocked. B is the best cost/quality baseline for the next implementation iteration, but its mean above 85 is not a PASS because all three candidates retained at least one critical defect. C→D improved only one of three paired repetitions (`+4.0`, then `0.0`, `0.0`) while adding an average 2.33 calls, 29,193.67 tokens and 15.55 seconds. D's runtime gate accepted one candidate that human reviewers still flagged for terminal chronology distortion and unsupported official-ledger content, so the critic/gate is not yet trustworthy for boundary advancement.
 
 **Commands**
 ```bash
