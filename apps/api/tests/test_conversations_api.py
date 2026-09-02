@@ -11,7 +11,8 @@ from app.engine.prompt_harness import approx_tokens
 from app.services import conversation_service
 from app.services.conversation_service import apply_conversation_compression_update
 from app.services.context_management_service import ContextCapacity
-from app.api.conversations import ContextMaintenanceRequired, _run_message_generation_job_in_session, _serialize_generation_sse_event, assign_generated_turn_group, generation_control_reserve_tokens, normalize_incoming_message, persist_generated_reply_messages, runtime_user_message, select_runtime_room_characters
+from app.api.conversations import ContextMaintenanceRequired, _run_message_generation_job_in_session, _serialize_generation_sse_event, assign_generated_turn_group, build_generated_turn_post_commit_tasks, normalize_incoming_message, persist_generated_reply_messages, runtime_user_message, select_runtime_room_characters
+from app.engine.character_runtime import generation_control_reserve_tokens
 from app.schemas.conversations import MessageCreate
 from app.schemas.dialogue import CharacterReply
 
@@ -167,10 +168,56 @@ def test_sync_generated_reply_batch_persists_as_one_complete_turn(
         incoming_message=incoming,
         generation_job=None,
     )
-    assert turn_group_id == f"sync_turn:{incoming.id}"
+    assert turn_group_id == f"sync_turn:v2:{generated[0].id}:{incoming.id}"
     assert [message.content for message in generated] == ["첫 번째", "두 번째"]
     assert {message.generation_job_id for message in generated} == {turn_group_id}
     assert [message.reply_index for message in generated] == [0, 1]
+
+    regenerated = asyncio.run(persist_generated_reply_messages(
+        session=session,
+        conversation_id=room["id"],
+        conversation=conversation,
+        payload=payload,
+        incoming_message=incoming,
+        generated_replies=[CharacterReply(character_id=character.id, text="재생성")],
+        room_characters=[character],
+        scene_state=None,
+        is_multi_room=False,
+        min_bubbles=1,
+    ))
+    regenerated_turn_group_id = assign_generated_turn_group(
+        regenerated,
+        incoming_message=incoming,
+        generation_job=None,
+    )
+    assert regenerated_turn_group_id == f"sync_turn:v2:{regenerated[0].id}:{incoming.id}"
+    assert regenerated_turn_group_id != turn_group_id
+    session.add_all([*generated, *regenerated])
+    session.commit()
+
+    first_tasks = build_generated_turn_post_commit_tasks(
+        session=session,
+        conversation=conversation,
+        scene_state=None,
+        incoming_message=incoming,
+        generated_messages=generated,
+        enqueue_compression=True,
+        character_ids=[character.id],
+        generation_attempt_id=turn_group_id,
+    )
+    regenerated_tasks = build_generated_turn_post_commit_tasks(
+        session=session,
+        conversation=conversation,
+        scene_state=None,
+        incoming_message=incoming,
+        generated_messages=regenerated,
+        enqueue_compression=True,
+        character_ids=[character.id],
+        generation_attempt_id=regenerated_turn_group_id,
+    )
+    assert {task["unique_key"] for task in first_tasks}.isdisjoint(
+        {task["unique_key"] for task in regenerated_tasks}
+    )
 
 
 def test_post_message_returns_recoverable_context_maintenance_error_and_preserves_raw_input(
@@ -280,7 +327,7 @@ def test_automatic_hard_pressure_no_progress_never_calls_chat_provider(
         used_fallback=False,
     )
     monkeypatch.setattr(
-        "app.api.conversations.resolve_model_context_capacity",
+        "app.api.conversations.resolve_safe_model_context_capacity",
         lambda *_args, **_kwargs: tiny_capacity,
     )
     provider_calls = 0

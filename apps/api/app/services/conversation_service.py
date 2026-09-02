@@ -2146,15 +2146,34 @@ def automatic_context_plan(
     )
 
 
-def automatic_context_message_tokens(message: Message) -> int:
+def automatic_context_message_tokens(
+    message: Message,
+    *,
+    character_names: Mapping[str, str] | None = None,
+) -> int:
     """Estimate the exact message fields rendered into automatic raw history."""
 
     return max(
         1,
         prompts.approx_tokens(
-            prompts.format_message_for_context(message, include_thought=False)
+            prompts.format_message_for_context(
+                message,
+                include_thought=False,
+                character_names=dict(character_names or {}),
+            )
         ) + 1,
     )
+
+
+def automatic_context_message_token_estimator(
+    character_names: Mapping[str, str] | None = None,
+) -> Callable[[Message], int]:
+    names = dict(character_names or {})
+
+    def estimate(message: Message) -> int:
+        return automatic_context_message_tokens(message, character_names=names)
+
+    return estimate
 
 
 def messages_after_compression_boundary(
@@ -2925,6 +2944,7 @@ def should_update_scene_orchestration_summary(
     capacity: ContextCapacity | None = None,
     mandatory_prompt_tokens: int = 0,
     job_source_message_ids: Mapping[str, str] | None = None,
+    token_estimator: Callable[[Message], int] | None = None,
 ) -> bool:
     """Choose automatic pressure policy or the unchanged rollback cadence."""
     interval_turns = max(1, min(30, int(interval_turns or 5)))
@@ -2956,6 +2976,7 @@ def should_update_scene_orchestration_summary(
                 capacity=capacity or fallback_capacity,
                 mandatory_prompt_tokens=mandatory_prompt_tokens,
                 job_source_message_ids=job_source_message_ids,
+                token_estimator=token_estimator,
             )
         except ValueError:
             # A dangling boundary must be handled by maintenance, never hidden by cadence.

@@ -18,7 +18,7 @@ from app.db.models import Character, Message, SceneState
 from app.engine.llm_client import LLMClient, LLMUnavailableError, chat_with_optional_conversation_id
 from app.engine.output_contract import SEMANTIC_FIELD_MARKDOWN_DESCRIPTION, THOUGHT_MAX_CHARS
 from app.engine.output_guard import internal_control_token_reason
-from app.engine.prompt_harness import PromptHarness
+from app.engine.prompt_harness import PromptHarness, approx_tokens
 from app.engine.prompt_graph import build_prompt_generation_graph, run_prompt_generation_pipeline
 from app.engine.prompts import build_character_messages, build_multi_character_prompt_harness, is_silent_cast_role
 from app.schemas.dialogue import CharacterReply, MultiCharacterReply
@@ -51,6 +51,34 @@ def character_retry_instruction(min_bubbles: int) -> str:
         "Do not put the character's spoken response only in thought or action. "
         "Do not include markdown fences, explanations, or partial objects."
     )
+
+
+def format_runtime_source_message(
+    *,
+    speaker_type: str,
+    speaker_id: str | None,
+    content: str,
+    action: str | None = None,
+    speaker_name: str | None = None,
+) -> str:
+    if speaker_type == "system":
+        return f"[Scene direction / system message]\n{content}"
+    speaker_label = speaker_name or speaker_id or speaker_type
+    if speaker_type == "character":
+        if speaker_id and speaker_name:
+            speaker_label = f"{speaker_name}({speaker_id})"
+        parts = []
+        if action:
+            parts.append(f"[Character action: {speaker_label}]\n{action}")
+        if content:
+            parts.append(f"[Character dialogue: {speaker_label}]\n{content}")
+        return "\n\n".join(parts) or content
+    parts = []
+    if action:
+        parts.append(f"[User situation/action]\n{action}")
+    if content:
+        parts.append(f"[User dialogue]\n{content}")
+    return "\n\n".join(parts) or content
 
 
 def provider_name_for_client(client: Any) -> str:
@@ -164,6 +192,46 @@ def build_chat_replies_response_format(
             max_bubbles=min_bubbles if retry else max_bubbles,
         ),
     }
+
+
+def generation_control_reserve_tokens(
+    *,
+    speaker_type: str,
+    min_bubbles: int,
+    max_bubbles: int,
+) -> int:
+    """Reserve the larger of the initial and retry request-control envelopes."""
+
+    retry_instruction = character_retry_instruction(min_bubbles)
+    initial_response_tokens = approx_tokens(json.dumps(
+        build_chat_replies_response_format(
+            min_bubbles=min_bubbles,
+            max_bubbles=max_bubbles,
+        ),
+        ensure_ascii=False,
+        sort_keys=True,
+    ))
+    retry_response_tokens = approx_tokens(json.dumps(
+        build_chat_replies_response_format(
+            min_bubbles=min_bubbles,
+            max_bubbles=max_bubbles,
+            retry=True,
+        ),
+        ensure_ascii=False,
+        sort_keys=True,
+    ))
+    if speaker_type == "character":
+        initial_control_tokens = approx_tokens(CHARACTER_TURN_CONTINUATION_INSTRUCTION)
+        retry_control_tokens = approx_tokens(
+            f"{CHARACTER_TURN_CONTINUATION_INSTRUCTION}\n\n{retry_instruction}"
+        )
+    else:
+        initial_control_tokens = 0
+        retry_control_tokens = approx_tokens(f"\n\n{retry_instruction}") + 1
+    return max(
+        initial_control_tokens + initial_response_tokens,
+        retry_control_tokens + retry_response_tokens,
+    )
 
 
 CHARACTER_REPLY_RESPONSE_SCHEMA = CHAT_REPLIES_RESPONSE_SCHEMA["properties"]["replies"]["items"]

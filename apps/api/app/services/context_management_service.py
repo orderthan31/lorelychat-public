@@ -14,6 +14,7 @@ DEFAULT_HIGH_WATERMARK = 0.82
 DEFAULT_LOW_WATERMARK = 0.65
 DEFAULT_COMPRESSION_BATCH_MESSAGE_LIMIT = 48
 SYNC_TURN_GROUP_PREFIX = "sync_turn:"
+SYNC_TURN_GROUP_V2_PREFIX = "sync_turn:v2:"
 
 PressureStatus = Literal["low", "high", "hard"]
 CapacitySource = Literal["model_metadata", "conservative_fallback"]
@@ -21,15 +22,30 @@ MessageGroup = tuple[Message, ...]
 TokenEstimator = Callable[[Message], int]
 
 
-def sync_turn_group_id(source_message_id: str) -> str:
-    return f"{SYNC_TURN_GROUP_PREFIX}{source_message_id}"
+def sync_turn_group_id(source_message_id: str, attempt_id: str) -> str:
+    source_id = str(source_message_id or "")
+    attempt = str(attempt_id or "")
+    if not source_id:
+        raise ValueError("source_message_id is required")
+    if not attempt or ":" in attempt:
+        raise ValueError("attempt_id must be non-empty and colon-free")
+    return f"{SYNC_TURN_GROUP_V2_PREFIX}{attempt}:{source_id}"
 
 
 def sync_turn_source_message_id(turn_group_id: str | None) -> str | None:
     value = str(turn_group_id or "")
+    if value.startswith(SYNC_TURN_GROUP_V2_PREFIX):
+        payload = value[len(SYNC_TURN_GROUP_V2_PREFIX):]
+        attempt_id, separator, source_id = payload.partition(":")
+        if not separator or not attempt_id or not source_id:
+            return None
+        return source_id
     if not value.startswith(SYNC_TURN_GROUP_PREFIX):
         return None
     source_message_id = value[len(SYNC_TURN_GROUP_PREFIX):]
+    version_marker = source_message_id.partition(":")[0]
+    if version_marker.startswith("v") and version_marker[1:].isdigit():
+        return None
     return source_message_id or None
 
 
@@ -131,6 +147,30 @@ def resolve_model_context_capacity(
         source=source,
         used_fallback=used_fallback,
     )
+
+
+def resolve_safe_model_context_capacity(
+    primary_model_option: ModelOption | None,
+    fallback_model_option: ModelOption | None = None,
+    *,
+    room_prompt_budget_tokens: int | None = None,
+    mandatory_reserve_tokens: int = DEFAULT_MANDATORY_RESERVE_TOKENS,
+) -> ContextCapacity:
+    """Use the narrowest usable input capacity across reachable generation routes."""
+
+    options = [primary_model_option]
+    if fallback_model_option is not None:
+        options.append(fallback_model_option)
+    capacities = [
+        resolve_model_context_capacity(
+            option,
+            room_prompt_budget_tokens=room_prompt_budget_tokens,
+            completion_reserve_tokens=getattr(option, "max_output_tokens", None),
+            mandatory_reserve_tokens=mandatory_reserve_tokens,
+        )
+        for option in options
+    ]
+    return min(capacities, key=lambda candidate: candidate.working_input_tokens)
 
 
 def estimate_visible_message_tokens(message: Message) -> int:

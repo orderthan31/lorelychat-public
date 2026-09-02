@@ -16,8 +16,12 @@ from app.services.context_management_service import (
     estimate_visible_message_tokens,
     group_complete_turns,
     resolve_model_context_capacity,
+    resolve_safe_model_context_capacity,
     select_raw_tail_groups,
+    sync_turn_group_id,
+    sync_turn_source_message_id,
 )
+from app.services.conversation_service import automatic_context_message_token_estimator
 
 
 def _message(
@@ -79,6 +83,53 @@ def test_resolve_model_context_capacity_marks_unknown_model_fallback():
     assert capacity.working_input_tokens == 13_312
     assert capacity.source == "conservative_fallback"
     assert capacity.used_fallback is True
+
+
+def test_safe_model_context_capacity_uses_narrower_fallback_route():
+    primary = ModelOption(
+        id="model_primary",
+        key="model_primary_key",
+        provider_account_id="provider_primary",
+        provider_type="google",
+        model="primary",
+        label="Primary",
+        context_window_tokens=32_000,
+        max_output_tokens=4_000,
+    )
+    fallback = ModelOption(
+        id="model_fallback",
+        key="model_fallback_key",
+        provider_account_id="provider_fallback",
+        provider_type="openai_compatible",
+        model="fallback",
+        label="Fallback",
+        context_window_tokens=12_000,
+        max_output_tokens=2_000,
+    )
+
+    capacity = resolve_safe_model_context_capacity(
+        primary,
+        fallback,
+        room_prompt_budget_tokens=24_000,
+    )
+
+    assert capacity.model_option_key == fallback.key
+    assert capacity.working_input_tokens == 8_976
+
+
+def test_automatic_history_estimator_matches_character_name_rendering():
+    message = _message("reply_named", generation_job_id="job_named")
+    names = {"char_context": "아주 긴 캐릭터 표시 이름"}
+    estimator = automatic_context_message_token_estimator(names)
+
+    assert estimator(message) == approx_tokens(
+        format_message_for_context(
+            message,
+            include_thought=False,
+            character_names=names,
+        )
+    ) + 1
+    assert estimator(message) > automatic_context_message_token_estimator()(message)
 
 
 def test_visible_message_estimate_uses_visible_fields_but_not_metadata_content():
@@ -169,14 +220,41 @@ def test_complete_turn_groups_decode_noncontiguous_sync_source_mapping():
     messages = [
         _message("source_sync"),
         _message("intervening_message"),
-        _message("reply_sync_a", generation_job_id="sync_turn:source_sync"),
-        _message("reply_sync_b", generation_job_id="sync_turn:source_sync"),
+        _message("reply_sync_a", generation_job_id="sync_turn:v2:attempt_a:source_sync"),
+        _message("reply_sync_b", generation_job_id="sync_turn:v2:attempt_a:source_sync"),
     ]
 
     groups = group_complete_turns(messages)
 
     assert [[message.id for message in group] for group in groups] == [
         ["source_sync", "intervening_message", "reply_sync_a", "reply_sync_b"],
+    ]
+
+
+def test_sync_turn_codec_is_versioned_and_legacy_compatible():
+    encoded = sync_turn_group_id("source:with:colon", "reply_attempt")
+
+    assert encoded == "sync_turn:v2:reply_attempt:source:with:colon"
+    assert sync_turn_source_message_id(encoded) == "source:with:colon"
+    assert sync_turn_source_message_id("sync_turn:legacy_source") == "legacy_source"
+    assert sync_turn_source_message_id("sync_turn:v2::source") is None
+    assert sync_turn_source_message_id("sync_turn:v2:attempt:") is None
+    assert sync_turn_source_message_id("sync_turn:v2") is None
+    assert sync_turn_source_message_id("sync_turn:v3:attempt:source") is None
+
+
+def test_malformed_versioned_sync_turn_does_not_create_authoritative_edge():
+    messages = [
+        _message("v2"),
+        _message("intervening_message"),
+        _message("malformed_reply", generation_job_id="sync_turn:v2"),
+    ]
+
+    groups = group_complete_turns(messages)
+
+    assert [[message.id for message in group] for group in groups] == [
+        ["v2"],
+        ["intervening_message", "malformed_reply"],
     ]
 
 

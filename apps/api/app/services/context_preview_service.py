@@ -8,9 +8,10 @@ from sqlmodel import Session, select
 from app.core.config import get_settings
 from app.db.models import Character, CharacterMemory, Conversation, SceneState
 from app.engine import prompts
+from app.engine.character_runtime import format_runtime_source_message, generation_control_reserve_tokens
 from app.schemas.conversations import ConversationCompressionPreviewRead, ConversationContextPreviewRead, ContextPreviewSectionRead
 from app.services import conversation_service, domain_actor_service, external_memory_service, genre_domain_service, model_provider_service, runtime_settings_service, system_prompt_service
-from app.services.context_management_service import resolve_model_context_capacity
+from app.services.context_management_service import resolve_safe_model_context_capacity
 
 
 def approx_tokens(text: str) -> int:
@@ -83,17 +84,35 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
         runtime_setting = runtime_settings_service.get_effective_setting(session, conversation_id)
         conversation = session.get(Conversation, conversation_id)
         model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
-        capacity = resolve_model_context_capacity(
+        room_prompt_budget = prompts.prompt_budget_for_context(
+            genre_mode=getattr(conversation, "genre_mode", None),
+            is_multi_room=len(character_ids) >= 2,
+        )
+        fallback_model_option = model_provider_service.option_by_key(
+            session,
+            getattr(runtime_setting, "fallback_model_key", None),
+        )
+        capacity = resolve_safe_model_context_capacity(
             model_option,
-            room_prompt_budget_tokens=prompts.prompt_budget_for_context(
-                genre_mode=getattr(conversation, "genre_mode", None),
-                is_multi_room=len(character_ids) >= 2,
-            ),
+            fallback_model_option,
+            room_prompt_budget_tokens=room_prompt_budget,
+        )
+        characters = [
+            character
+            for character_id in character_ids
+            if (character := session.get(Character, character_id)) is not None
+        ]
+        history_token_estimator = conversation_service.automatic_context_message_token_estimator(
+            {character.id: character.name for character in characters}
         )
         try:
             context_preview = build_context_preview(session, conversation_id)
             recent_section = next(
                 (section for section in context_preview.sections if section.key == "recent_messages"),
+                None,
+            )
+            current_input_section = next(
+                (section for section in context_preview.sections if section.key == "current_user_input"),
                 None,
             )
             mandatory_prompt_tokens = max(
@@ -104,6 +123,30 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
                     int(getattr(recent_section, "approx_tokens", 0) or 0),
                 ),
             )
+            mandatory_prompt_tokens += int(getattr(current_input_section, "used_tokens", 0) or 0)
+            preview_source_message = (
+                messages[-1]
+                if messages and messages[-1].speaker_type in {"user", "system", "character"}
+                else None
+            )
+            if preview_source_message is not None:
+                preset_key = getattr(
+                    runtime_setting,
+                    "response_length_preset",
+                    runtime_settings_service.DEFAULT_RESPONSE_LENGTH_PRESET,
+                )
+                is_multi_room = len(character_ids) >= 2
+                mandatory_prompt_tokens += generation_control_reserve_tokens(
+                    speaker_type=preview_source_message.speaker_type,
+                    min_bubbles=runtime_settings_service.min_bubbles_for_preset(
+                        preset_key,
+                        is_multi_room=is_multi_room,
+                    ),
+                    max_bubbles=runtime_settings_service.max_bubbles_for_preset(
+                        preset_key,
+                        is_multi_room=is_multi_room,
+                    ),
+                )
             job_mapping = conversation_service.generation_job_source_message_ids(session, conversation_id)
             plan = conversation_service.automatic_context_plan(
                 scene,
@@ -111,6 +154,7 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
                 capacity=capacity,
                 mandatory_prompt_tokens=mandatory_prompt_tokens,
                 job_source_message_ids=job_mapping,
+                token_estimator=history_token_estimator,
             )
             if plan.pressure.status == "low":
                 selector_kwargs = None
@@ -118,7 +162,7 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
                 selector_kwargs = {
                     "raw_tail_token_budget": plan.raw_tail_token_budget,
                     "job_source_message_ids": job_mapping,
-                    "token_estimator": conversation_service.automatic_context_message_tokens,
+                    "token_estimator": history_token_estimator,
                 }
         except (ValueError, prompts.ContextCoverageError) as exc:
             coverage_valid = False
@@ -236,8 +280,19 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
     min_bubbles = runtime_settings_service.min_bubbles_for_preset(preset_key, is_multi_room=is_multi_room)
     max_bubbles = runtime_settings_service.max_bubbles_for_preset(preset_key, is_multi_room=is_multi_room)
     official_domain_context = genre_domain_service.get_official_context(session, conversation)
-    preview_source_message = messages[-1] if messages and messages[-1].speaker_type in {"user", "system"} else None
+    preview_source_message = messages[-1] if messages and messages[-1].speaker_type in {"user", "system", "character"} else None
     preview_history = messages[:-1] if preview_source_message else messages
+    preview_speaker_name = next(
+        (character.name for character in characters if character.id == getattr(preview_source_message, "speaker_id", None)),
+        None,
+    )
+    preview_source_text = format_runtime_source_message(
+        speaker_type=preview_source_message.speaker_type,
+        speaker_id=preview_source_message.speaker_id,
+        content=preview_source_message.content,
+        action=preview_source_message.action,
+        speaker_name=preview_speaker_name,
+    ) if preview_source_message else ""
     model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
     provider_type = getattr(model_option, "provider_type", None)
 
@@ -245,7 +300,7 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
         harness = prompts.build_multi_character_prompt_harness(
             characters=characters,
             recent_messages=preview_history,
-            user_message=preview_source_message.content if preview_source_message else "",
+            user_message=preview_source_text,
             scene_state=scene,
             directive=directive,
             conversation_mode="character_character" if is_multi_room else "user_character",
@@ -288,11 +343,15 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
     if preview_source_message:
         sections.append(make_section(
             "current_user_input",
-            "Current user input (role=user, outside system prompt)",
-            preview_source_message.content,
+            (
+                "Current source input (role=assistant, outside system prompt)"
+                if preview_source_message.speaker_type == "character"
+                else "Current source input (role=user, outside system prompt)"
+            ),
+            preview_source_text,
             source="conversation.messages.current_source",
             included_reason="single_role_user_payload",
-            budget_tokens=prompts.approx_tokens(preview_source_message.content),
+            budget_tokens=prompts.approx_tokens(preview_source_text),
         ))
 
     warnings: list[str] = []

@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session, col, select
 from app.db.models import BattleMatchRecord, CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, GenerationJobEvent, Message, MessageGenerationJob, PostCommitTask, SceneState
 from app.db.session import engine, get_session
-from app.engine.character_runtime import CHARACTER_TURN_CONTINUATION_INSTRUCTION, CharacterRuntime, CharacterRuntimeError, build_chat_replies_response_format, character_retry_instruction
+from app.engine.character_runtime import CharacterRuntime, CharacterRuntimeError, format_runtime_source_message, generation_control_reserve_tokens
 from app.engine import prompts
 from app.engine.llm_client import LLMClient, LLMUnavailableError
 from app.engine.prompt_harness import PromptHarness, approx_tokens
@@ -44,7 +44,7 @@ from app.schemas.conversations import (
 )
 from app.core.config import get_settings
 from app.services import asset_service, battle_ledger_service, character_service, chat_command_service, context_preview_service, conversation_service, domain_actor_service, genre_domain_service, model_provider_service, prompt_snapshot_service, runtime_settings_service, system_prompt_service, tts_service, usage_service
-from app.services.context_management_service import AutomaticContextPlan, ContextCapacity, resolve_model_context_capacity, sync_turn_group_id
+from app.services.context_management_service import AutomaticContextPlan, ContextCapacity, resolve_safe_model_context_capacity, sync_turn_group_id
 from app.services.generation_dispatcher import generation_dispatcher
 from app.services.post_commit_dispatcher import post_commit_dispatcher
 
@@ -638,67 +638,12 @@ def normalize_incoming_message(payload: MessageCreate) -> MessageCreate:
 
 
 def runtime_user_message(payload: MessageCreate, *, speaker_name: str | None = None) -> str:
-    if payload.speaker_type == "system":
-        return f"[Scene direction / system message]\n{payload.content}"
-    speaker_label = speaker_name or payload.speaker_id or payload.speaker_type
-    if payload.speaker_type == "character":
-        if payload.speaker_id and speaker_name:
-            speaker_label = f"{speaker_name}({payload.speaker_id})"
-        parts = []
-        if payload.action:
-            parts.append(f"[Character action: {speaker_label}]\n{payload.action}")
-        if payload.content:
-            parts.append(f"[Character dialogue: {speaker_label}]\n{payload.content}")
-        return "\n\n".join(parts) or payload.content
-    parts = []
-    if payload.action:
-        parts.append(f"[User situation/action]\n{payload.action}")
-    if payload.content:
-        parts.append(f"[User dialogue]\n{payload.content}")
-    return "\n\n".join(parts) or payload.content
-
-
-def generation_control_reserve_tokens(
-    *,
-    speaker_type: str,
-    min_bubbles: int,
-    max_bubbles: int,
-) -> int:
-    retry_instruction = character_retry_instruction(min_bubbles)
-    initial_response_tokens = approx_tokens(
-        json.dumps(
-            build_chat_replies_response_format(
-                min_bubbles=min_bubbles,
-                max_bubbles=max_bubbles,
-            ),
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-    )
-    retry_response_tokens = approx_tokens(
-        json.dumps(
-            build_chat_replies_response_format(
-                min_bubbles=min_bubbles,
-                max_bubbles=max_bubbles,
-                retry=True,
-            ),
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-    )
-    if speaker_type == "character":
-        initial_control_tokens = approx_tokens(CHARACTER_TURN_CONTINUATION_INSTRUCTION)
-        retry_control_tokens = approx_tokens(
-            f"{CHARACTER_TURN_CONTINUATION_INSTRUCTION}\n\n{retry_instruction}"
-        )
-    else:
-        initial_control_tokens = 0
-        # The retry is appended to the existing user message. Account for the
-        # separator and one ceil-boundary token without retaining that message.
-        retry_control_tokens = approx_tokens(f"\n\n{retry_instruction}") + 1
-    return max(
-        initial_control_tokens + initial_response_tokens,
-        retry_control_tokens + retry_response_tokens,
+    return format_runtime_source_message(
+        speaker_type=payload.speaker_type,
+        speaker_id=payload.speaker_id,
+        content=payload.content,
+        action=payload.action,
+        speaker_name=speaker_name,
     )
 
 
@@ -877,10 +822,16 @@ def build_generated_turn_post_commit_tasks(
     enqueue_compression: bool,
     character_ids: list[str],
     generation_job_id: str | None = None,
+    generation_attempt_id: str | None = None,
     compression_raw_tail_token_budget: int | None = None,
     compression_mandatory_prompt_tokens: int | None = None,
 ) -> list[dict]:
-    identity = f"job:{generation_job_id}" if generation_job_id else f"source:{incoming_message.id}"
+    if generation_job_id:
+        identity = f"job:{generation_job_id}"
+    elif generation_attempt_id:
+        identity = f"sync:{generation_attempt_id}"
+    else:
+        raise ValueError("generation attempt identity is required")
     tasks: list[dict] = []
     reserved_asset_ids: dict[str, set[str]] = {}
     for reply_index, message in enumerate(generated_messages):
@@ -949,15 +900,27 @@ async def _run_scene_compression_in_session(
     current_messages = conversation_service.list_messages(session, conversation_id)
     current_scene = session.get(SceneState, conversation_id) or SceneState(conversation_id=conversation_id)
     job_mapping = conversation_service.generation_job_source_message_ids(session, conversation_id)
+    character_names = {
+        character_id: character.name
+        for character_id in character_ids
+        if (character := character_service.get_character(session, character_id)) is not None
+    }
+    history_token_estimator = conversation_service.automatic_context_message_token_estimator(
+        character_names
+    )
     if get_settings().context_management_mode == "automatic":
         selected_model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
-        automatic_capacity = resolve_model_context_capacity(
+        fallback_model_option = model_provider_service.option_by_key(
+            session,
+            getattr(runtime_setting, "fallback_model_key", None),
+        )
+        automatic_capacity = resolve_safe_model_context_capacity(
             selected_model_option,
+            fallback_model_option,
             room_prompt_budget_tokens=prompts.prompt_budget_for_context(
                 genre_mode=getattr(conversation, "genre_mode", None),
                 is_multi_room=len(character_ids) >= 2,
             ),
-            completion_reserve_tokens=getattr(selected_model_option, "max_output_tokens", None),
         )
         execution_plan = conversation_service.automatic_context_plan(
             current_scene,
@@ -965,6 +928,7 @@ async def _run_scene_compression_in_session(
             capacity=automatic_capacity,
             mandatory_prompt_tokens=max(0, int(mandatory_prompt_tokens or 0)),
             job_source_message_ids=job_mapping,
+            token_estimator=history_token_estimator,
         )
         if execution_plan.pressure.status == "low":
             return True
@@ -972,6 +936,7 @@ async def _run_scene_compression_in_session(
     selector_kwargs = {
         "raw_tail_token_budget": raw_tail_token_budget,
         "job_source_message_ids": job_mapping,
+        "token_estimator": history_token_estimator,
     }
     try:
         pending_batch, _ = conversation_service.select_incremental_compression_batch(
@@ -1267,6 +1232,7 @@ async def generate_replies_from_message(
     if not room_characters:
         return replies
     active_character_ids = {character.id for character in room_characters}
+    character_names = {character.id: character.name for character in room_characters}
     payload_speaker_name = next((character.name for character in room_characters if character.id == payload.speaker_id), None)
     runtime_message_text = runtime_user_message(payload, speaker_name=payload_speaker_name)
 
@@ -1295,10 +1261,18 @@ async def generate_replies_from_message(
         genre_mode=genre_mode,
         is_multi_room=is_multi_room,
     )
-    capacity = resolve_model_context_capacity(
+    fallback_model_option = (
+        model_provider_service.option_by_key(
+            session,
+            getattr(runtime_setting, "fallback_model_key", None),
+        )
+        if fallback_client is not None
+        else None
+    )
+    capacity = resolve_safe_model_context_capacity(
         selected_model_option,
+        fallback_model_option,
         room_prompt_budget_tokens=room_prompt_budget,
-        completion_reserve_tokens=getattr(selected_model_option, "max_output_tokens", None),
     )
     job_mapping = conversation_service.generation_job_source_message_ids(
         session,
@@ -1358,13 +1332,14 @@ async def generate_replies_from_message(
         compression_overrides = runtime_settings_service.compression_llm_overrides_for_setting(runtime_setting, session=session)
         compression_fallback_overrides = runtime_settings_service.compression_fallback_llm_overrides_for_setting(runtime_setting, session=session)
 
+        rendered_history_token_estimator = conversation_service.automatic_context_message_token_estimator(
+            character_names
+        )
+
         def generation_history_token_estimator(message: Message) -> int:
             if message.id == incoming_message.id:
                 return 0
-            return max(
-                1,
-                approx_tokens(prompts.format_message_for_context(message, include_thought=False)) + 1,
-            )
+            return rendered_history_token_estimator(message)
 
         current_turn_control_tokens = generation_control_reserve_tokens(
             speaker_type=payload.speaker_type,
@@ -1576,6 +1551,11 @@ async def generate_replies_from_message(
         capacity=capacity,
         mandatory_prompt_tokens=generation_mandatory_without_current,
         job_source_message_ids=job_mapping,
+        token_estimator=(
+            rendered_history_token_estimator
+            if context_mode == "automatic"
+            else None
+        ),
     )
     compression_raw_tail_token_budget = None
     if enqueue_compression and context_mode == "automatic":
@@ -1588,6 +1568,7 @@ async def generate_replies_from_message(
             capacity=capacity,
             mandatory_prompt_tokens=generation_mandatory_without_current,
             job_source_message_ids=job_mapping,
+            token_estimator=rendered_history_token_estimator,
         )
         compression_raw_tail_token_budget = enqueue_plan.raw_tail_token_budget
     post_commit_tasks = build_generated_turn_post_commit_tasks(
@@ -1599,6 +1580,7 @@ async def generate_replies_from_message(
         enqueue_compression=enqueue_compression,
         character_ids=character_ids,
         generation_job_id=generation_job.id if generation_job else None,
+        generation_attempt_id=turn_group_id,
         compression_raw_tail_token_budget=compression_raw_tail_token_budget,
         compression_mandatory_prompt_tokens=(
             generation_mandatory_without_current if context_mode == "automatic" else None
@@ -1632,10 +1614,12 @@ def assign_generated_turn_group(
     incoming_message: Message,
     generation_job: MessageGenerationJob | None,
 ) -> str:
+    if not generated_messages:
+        raise ValueError("A generation attempt requires at least one reply")
     turn_group_id = (
         generation_job.id
         if generation_job is not None
-        else sync_turn_group_id(incoming_message.id)
+        else sync_turn_group_id(incoming_message.id, generated_messages[0].id)
     )
     for reply_index, generated_message in enumerate(generated_messages):
         generated_message.generation_job_id = turn_group_id
