@@ -1,5 +1,5 @@
 from app.engine.prompt_harness import PromptSection, compile_prompt_harness
-from app.engine.prompts import build_character_prompt_harness, build_multi_character_prompt_harness, format_message_for_context, prompt_budget_for_context
+from app.engine.prompts import build_character_prompt_harness, build_multi_character_prompt_harness, format_message_for_context, prompt_budget_for_context, select_prompt_recent_messages
 from app.db.models import Character, Message, SceneState
 
 
@@ -66,6 +66,25 @@ def test_recent_character_messages_include_character_name_to_prevent_user_misatt
 
     assert "character:서모아(char_harin)" in line
     assert "character:char_harin |" not in line
+
+
+def test_automatic_context_keeps_contiguous_boundary_suffix_instead_of_count_tail():
+    messages = [
+        Message(
+            id=f"m_{index:02d}",
+            conversation_id="conv",
+            speaker_type="user" if index % 2 == 0 else "character",
+            speaker_id="user_001" if index % 2 == 0 else "char_aria",
+            content=f"message {index}",
+        )
+        for index in range(16)
+    ]
+
+    legacy = select_prompt_recent_messages(messages)
+    automatic = select_prompt_recent_messages(messages, context_management_mode="automatic")
+
+    assert len(legacy) == 10
+    assert [message.id for message in automatic] == [message.id for message in messages]
 
 
 def test_multi_character_prompt_harness_routes_sections_with_ledger_metadata():

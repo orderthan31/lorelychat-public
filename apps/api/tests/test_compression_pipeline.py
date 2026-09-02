@@ -150,6 +150,59 @@ def test_incremental_compression_resumes_strictly_after_persisted_boundary():
     assert raw_tail[-1].id == "msg_29"
 
 
+def test_automatic_compression_tail_uses_token_budget_and_complete_turns():
+    messages = []
+    job_sources = {}
+    for index in range(3):
+        source = make_message(index * 2, "user", f"source {index}")
+        reply = make_message(index * 2 + 1, "character", f"reply {index}")
+        reply.generation_job_id = f"job_{index}"
+        messages.extend([source, reply])
+        job_sources[reply.generation_job_id] = source.id
+
+    batch, raw_tail = conversation_service.select_incremental_compression_batch(
+        SceneState(conversation_id="conv_compress"),
+        messages,
+        raw_tail_token_budget=40,
+        batch_limit=48,
+        job_source_message_ids=job_sources,
+        token_estimator=lambda _message: 10,
+    )
+
+    assert [message.id for message in batch] == ["msg_00", "msg_01"]
+    assert [message.id for message in raw_tail] == ["msg_02", "msg_03", "msg_04", "msg_05"]
+
+
+def test_automatic_compression_batch_limit_never_splits_complete_turn():
+    messages = []
+    job_sources = {}
+    for index in range(4):
+        source = make_message(index * 2, "user", f"source {index}")
+        reply = make_message(index * 2 + 1, "character", f"reply {index}")
+        reply.generation_job_id = f"job_{index}"
+        messages.extend([source, reply])
+        job_sources[reply.generation_job_id] = source.id
+
+    batch, raw_tail = conversation_service.select_incremental_compression_batch(
+        SceneState(conversation_id="conv_compress"),
+        messages,
+        raw_tail_token_budget=20,
+        batch_limit=3,
+        job_source_message_ids=job_sources,
+        token_estimator=lambda _message: 10,
+    )
+
+    assert [message.id for message in batch] == ["msg_00", "msg_01"]
+    assert [message.id for message in raw_tail] == [
+        "msg_02",
+        "msg_03",
+        "msg_04",
+        "msg_05",
+        "msg_06",
+        "msg_07",
+    ]
+
+
 def test_generation_history_contains_only_messages_after_summary_boundary():
     messages = [make_message(i) for i in range(20)]
     scene = SceneState(

@@ -621,6 +621,7 @@ class CharacterRuntime:
             official_domain_context=official_domain_context,
             room_cast_roles=room_cast_roles,
             provider_type=provider_name_for_client(self.llm_client),
+            context_management_mode=getattr(getattr(self.llm_client, "settings", None), "context_management_mode", "shadow"),
         )
         speaking_characters = [character for character in characters if not is_silent_cast_role((room_cast_roles or {}).get(character.id))]
         output_characters = speaking_characters or characters
@@ -869,6 +870,7 @@ class CharacterRuntime:
             prompt_settings=prompt_settings,
             min_output_tokens=min_output_tokens,
             provider_type=provider_name_for_client(self.llm_client),
+            context_management_mode=getattr(getattr(self.llm_client, "settings", None), "context_management_mode", "shadow"),
         )
         last_error: Exception | None = None
         active_llm_client = self.llm_client

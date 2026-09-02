@@ -128,12 +128,18 @@ def format_message_for_context(message: Message, *, include_thought: bool = True
     return " | ".join(parts)
 
 
-def select_prompt_recent_messages(recent_messages: list[Message]) -> list[Message]:
+def select_prompt_recent_messages(
+    recent_messages: list[Message],
+    *,
+    context_management_mode: str = "legacy",
+) -> list[Message]:
     """Use an adaptive small window instead of blindly injecting the last 24 messages.
 
     Keep the latest conversational tail plus up to two older user/system anchors so
     explicit scene directions survive without carrying a long transcript.
     """
+    if context_management_mode.strip().lower() == "automatic":
+        return list(recent_messages)
     if len(recent_messages) <= PROMPT_RECENT_TAIL_LIMIT + PROMPT_RECENT_ANCHOR_LIMIT:
         return recent_messages
     indexed = list(enumerate(recent_messages))
@@ -146,8 +152,16 @@ def select_prompt_recent_messages(recent_messages: list[Message]) -> list[Messag
     return [selected[idx] for idx in sorted(selected)]
 
 
-def build_prompt_history(recent_messages: list[Message], *, character_names: dict[str, str] | None = None) -> str:
-    selected = select_prompt_recent_messages(recent_messages)
+def build_prompt_history(
+    recent_messages: list[Message],
+    *,
+    character_names: dict[str, str] | None = None,
+    context_management_mode: str = "legacy",
+) -> str:
+    selected = select_prompt_recent_messages(
+        recent_messages,
+        context_management_mode=context_management_mode,
+    )
     return "\n".join(
         format_message_for_context(message, include_thought=False, character_names=character_names)
         for message in selected
@@ -509,10 +523,15 @@ def build_multi_character_prompt_harness(
     room_cast_roles: RoomCastRoles | None = None,
     provider_type: str | None = None,
     total_budget_tokens: int | None = None,
+    context_management_mode: str = "legacy",
 ) -> PromptHarness:
     character_names = {character.id: character.name for character in characters}
     raw_messages = messages_after_scene_summary_boundary(recent_messages, scene_state)
-    history = build_prompt_history(raw_messages, character_names=character_names)
+    history = build_prompt_history(
+        raw_messages,
+        character_names=character_names,
+        context_management_mode=context_management_mode,
+    )
     character_cards = format_multi_character_cards(characters, room_cast_roles=room_cast_roles)
     speaking_characters = [character for character in characters if not is_silent_cast_role((room_cast_roles or {}).get(character.id))]
     output_characters = speaking_characters or characters
@@ -586,6 +605,7 @@ def build_multi_character_messages(
     official_domain_context: str | None = None,
     room_cast_roles: RoomCastRoles | None = None,
     provider_type: str | None = None,
+    context_management_mode: str = "legacy",
 ) -> list[dict]:
     harness = build_multi_character_prompt_harness(
         characters=characters,
@@ -607,6 +627,7 @@ def build_multi_character_messages(
         official_domain_context=official_domain_context,
         room_cast_roles=room_cast_roles,
         provider_type=provider_type,
+        context_management_mode=context_management_mode,
     )
     return [
         {"role": "system", "content": harness.compiled_text},
@@ -629,13 +650,18 @@ def build_character_prompt_sections(
     prompt_settings: PromptSettings | None = None,
     min_output_tokens: int | None = None,
     provider_type: str | None = None,
+    context_management_mode: str = "legacy",
 ) -> list[PromptSection]:
     scene = build_scene_text(scene_state)
     character_names = {character.id: character.name}
     for room_character in room_characters or []:
         character_names[room_character.id] = room_character.name
     raw_messages = messages_after_scene_summary_boundary(recent_messages, scene_state)
-    history = build_prompt_history(raw_messages, character_names=character_names)
+    history = build_prompt_history(
+        raw_messages,
+        character_names=character_names,
+        context_management_mode=context_management_mode,
+    )
     identity_card = format_character_card(character, mark=" ← you")
     trait_scores = format_trait_scores(character)
     room_context = format_room_context(character=character, conversation_mode=conversation_mode, room_characters=room_characters, prompt_settings=prompt_settings)
@@ -726,6 +752,7 @@ def build_character_prompt_harness(
     min_output_tokens: int | None = None,
     provider_type: str | None = None,
     total_budget_tokens: int | None = None,
+    context_management_mode: str = "legacy",
 ) -> PromptHarness:
     sections = build_character_prompt_sections(
         character=character,
@@ -742,6 +769,7 @@ def build_character_prompt_harness(
         prompt_settings=prompt_settings,
         min_output_tokens=min_output_tokens,
         provider_type=provider_type,
+        context_management_mode=context_management_mode,
     )
     budget = total_budget_tokens or prompt_budget_for_context(genre_mode=genre_mode, is_multi_room=False)
     return compile_prompt_sections(sections=sections, total_budget_tokens=budget)
@@ -764,6 +792,7 @@ def build_character_messages(
     prompt_settings: PromptSettings | None = None,
     min_output_tokens: int | None = None,
     provider_type: str | None = None,
+    context_management_mode: str = "legacy",
 ) -> list[dict]:
     harness = build_character_prompt_harness(
         character=character,
@@ -781,6 +810,7 @@ def build_character_messages(
         prompt_settings=prompt_settings,
         min_output_tokens=min_output_tokens,
         provider_type=provider_type,
+        context_management_mode=context_management_mode,
     )
     return [
         {"role": "system", "content": harness.compiled_text},

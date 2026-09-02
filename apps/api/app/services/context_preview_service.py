@@ -5,6 +5,7 @@ from datetime import datetime
 
 from sqlmodel import Session, select
 
+from app.core.config import get_settings
 from app.db.models import Character, CharacterMemory, Conversation, SceneState
 from app.engine import prompts
 from app.schemas.conversations import ConversationCompressionPreviewRead, ConversationContextPreviewRead, ContextPreviewSectionRead
@@ -194,6 +195,7 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
             official_domain_context=official_domain_context,
             room_cast_roles=room_cast_roles,
             provider_type=provider_type,
+            context_management_mode=get_settings().context_management_mode,
         )
         raw_sections = harness.sections
         ledger = harness.ledger

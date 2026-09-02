@@ -2,7 +2,7 @@ import json
 import logging
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 from uuid import uuid4
 from datetime import datetime, timedelta, timezone
@@ -13,6 +13,7 @@ from sqlalchemy import text, update as sa_update
 from app.db.models import Character, Conversation, ConversationParticipant, ConversationReadState, GenerationJobEvent, MessageGenerationJob, PostCommitTask, ConversationRelationshipState, CharacterMemory, Message, SceneState, MessageAsset, BattleMatchRecord, BattleStanding, RuntimeSetting, WorldSetting
 from app.schemas.conversations import ConversationCreate, ConversationUpdate, MessageCreate, ParticipantCreate
 from app.services import external_memory_service, genre_domain_service, system_prompt_service
+from app.services.context_management_service import group_complete_turns, select_raw_tail_groups
 
 
 MAX_SCENE_MEMORY_CHARS = 2200
@@ -2134,6 +2135,9 @@ def select_incremental_compression_batch(
     *,
     raw_tail_limit: int = COMPRESSION_RECENT_MESSAGE_LIMIT,
     batch_limit: int = COMPRESSION_BATCH_MESSAGE_LIMIT,
+    raw_tail_token_budget: int | None = None,
+    job_source_message_ids: Mapping[str, str] | None = None,
+    token_estimator: Callable[[Message], int] | None = None,
 ) -> tuple[list[Message], list[Message]]:
     """Split history into the oldest foldable prefix and untouched raw suffix.
 
@@ -2142,6 +2146,40 @@ def select_incremental_compression_batch(
     compression runs continue from the persisted boundary without gaps.
     """
     uncompressed = messages_after_compression_boundary(scene_state, messages)
+    if raw_tail_token_budget is not None:
+        complete_turns = group_complete_turns(
+            uncompressed,
+            job_source_message_ids=job_source_message_ids,
+        )
+        raw_turns = select_raw_tail_groups(
+            complete_turns,
+            token_budget=max(0, int(raw_tail_token_budget)),
+            token_estimator=token_estimator,
+        )
+        foldable_turn_count = len(complete_turns) - len(raw_turns)
+        if foldable_turn_count <= 0:
+            return [], uncompressed
+
+        batch_turns: list[list[Message]] = []
+        batch_message_count = 0
+        normalized_batch_limit = max(1, int(batch_limit))
+        for turn in complete_turns[:foldable_turn_count]:
+            if batch_turns and batch_message_count + len(turn) > normalized_batch_limit:
+                break
+            batch_turns.append(turn)
+            batch_message_count += len(turn)
+            if batch_message_count >= normalized_batch_limit:
+                break
+
+        taken_turn_count = len(batch_turns)
+        batch = [message for turn in batch_turns for message in turn]
+        untouched = [
+            message
+            for turn in complete_turns[taken_turn_count:]
+            for message in turn
+        ]
+        return batch, untouched
+
     foldable_count = compression_raw_tail_start(uncompressed, raw_tail_limit=raw_tail_limit)
     if foldable_count <= 0:
         return [], uncompressed
