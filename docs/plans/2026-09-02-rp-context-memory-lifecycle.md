@@ -93,8 +93,9 @@
 4. Replace `should_update_scene_orchestration_summary` primary decision with pressure/coverage report in automatic mode. The deprecated interval is a debounce/cost guard only.
 5. Add a bounded pre-generation coverage check. Refresh `SceneState` and message suffix after each successful catch-up batch.
 6. Add a typed recoverable API error when a hard gap remains after retries; never fabricate continuity.
-7. Persist only sanitized counters/ratios to `SceneState` and task metadata.
-8. Verify focused tests.
+7. Treat a background compression task as successful only when the boundary/revision actually advances, or when a fresh selector proves there is no foldable backlog. Persisted `last_compression_error` with unchanged coverage must requeue/fail the task instead of being marked `completed`.
+8. Persist only sanitized counters/ratios to `SceneState` and task metadata.
+9. Verify focused tests.
 
 **Commit:** `feat: enforce token-pressure compression coverage`
 
