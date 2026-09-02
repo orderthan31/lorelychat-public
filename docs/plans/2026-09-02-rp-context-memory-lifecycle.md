@@ -242,7 +242,9 @@
 
 ### Live league-room compression quality gate
 
-Synthetic replay is a regression safety net, not the final RP-quality verdict. At every compression-behavior milestone, discover the live room titled `리그` through the running API and use the shipped `POST /conversations/{id}/compress-now` path. Do not hard-code a stale room ID in source.
+Synthetic replay is a regression safety net, not the final RP-quality verdict. At every compression-behavior milestone, discover the live room titled `리그` through the running API and exercise the shipped `POST /conversations/{id}/compress-now` path against a fresh online-backup clone. Do not hard-code a stale room ID in source and do not advance the live room for feature-branch comparisons.
+
+**Controlled-comparison rule:** within each before/after compression-logic experiment, keep the selected provider/model fixed across all compared arms so that the measured difference is attributable to compression logic rather than a model change. The current controlled cohort uses `model_google_gemini_flash_latest` / `gemini-flash-latest` because that is the user-selected test model for this cohort; this is not a permanent product-model decision and does not require future cohorts to use Gemini. Every arm in the same cohort must also use the same frozen DB snapshot, prior Arc, boundary, selected source batch, runtime prompt settings, response preset and output limits. Run repeated same-input trials to expose model variance. Results from different models, different fold batches or different runtime settings—including the stable 71-point baseline and later clone runs—are directional workload evidence only and must never be reported as a measured compression-logic improvement.
 
 1. Before each call, capture content-free metadata from `/context` and `/compression-preview`: revision, boundary, error state, summary chars/lines, total backlog and next fold-batch count.
 2. Inspect the exact folded source and returned Arc ephemerally for scoring, but never write raw messages, Arc text, personal names, provider payloads or credentials to Git, QA artifacts or chat reports.
