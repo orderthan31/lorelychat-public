@@ -9,8 +9,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
-from app.api.conversations import _execute_claimed_post_commit_task
-from app.db.models import Conversation, ConversationRelationshipState, Message, PostCommitTask
+from app.api.conversations import _execute_claimed_post_commit_task, _run_scene_compression_in_session
+from app.db.models import Conversation, ConversationRelationshipState, Message, PostCommitTask, SceneState
 from app.services import conversation_service
 from app.services.post_commit_dispatcher import PostCommitDispatcher
 
@@ -215,3 +215,69 @@ def test_retired_continuity_task_is_noop_when_completion_commit_fails(session):
     refreshed_task = session.get(PostCommitTask, task.id)
     assert relationship is None
     assert refreshed_task is not None and refreshed_task.status == "processing"
+
+
+def _compression_room_with_backlog(session: Session, conversation_id: str) -> None:
+    session.add(Conversation(id=conversation_id, mode="user_character"))
+    session.add(SceneState(conversation_id=conversation_id))
+    session.add_all([
+        Message(
+            id=f"{conversation_id}_msg_{index:02d}",
+            conversation_id=conversation_id,
+            speaker_type="user",
+            speaker_id="user_001",
+            content=f"source {index}",
+        )
+        for index in range(13)
+    ])
+    session.commit()
+
+
+@pytest.mark.asyncio
+async def test_scene_compression_worker_rejects_completed_without_progress(monkeypatch, session):
+    conversation_id = "conv_compression_no_progress"
+    _compression_room_with_backlog(session, conversation_id)
+
+    async def no_progress(*args, **kwargs):
+        return session.get(SceneState, conversation_id)
+
+    monkeypatch.setattr(conversation_service, "update_scene_orchestration_summary", no_progress)
+
+    with pytest.raises(RuntimeError, match="without boundary or revision progress"):
+        await _run_scene_compression_in_session(
+            session,
+            conversation_id,
+            generated_character_count=1,
+            character_ids=["char_a"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_scene_compression_worker_accepts_persisted_boundary_progress(monkeypatch, session):
+    conversation_id = "conv_compression_progress"
+    _compression_room_with_backlog(session, conversation_id)
+    scene = session.get(SceneState, conversation_id)
+    scene.last_compression_attempt_at = datetime.now(timezone.utc)
+    session.add(scene)
+    session.commit()
+    called = False
+
+    async def advance(*args, **kwargs):
+        nonlocal called
+        called = True
+        scene = session.get(SceneState, conversation_id)
+        scene.compression_revision = 1
+        scene.last_compression_source_message_id = f"{conversation_id}_msg_00"
+        session.add(scene)
+        session.commit()
+        return scene
+
+    monkeypatch.setattr(conversation_service, "update_scene_orchestration_summary", advance)
+
+    assert await _run_scene_compression_in_session(
+        session,
+        conversation_id,
+        generated_character_count=1,
+        character_ids=["char_a"],
+    ) is True
+    assert called is True

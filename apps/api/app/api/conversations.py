@@ -791,38 +791,67 @@ async def _run_scene_compression_in_session(
     *,
     generated_character_count: int,
     character_ids: list[str],
-) -> None:
+) -> bool:
     if generated_character_count <= 0:
-        return
+        return True
     conversation = conversation_service.get_conversation(session, conversation_id)
     if not conversation:
-        return
+        return True
     runtime_setting = runtime_settings_service.get_effective_setting(session, conversation_id)
-    if not conversation_service.should_update_scene_orchestration_summary(
+    current_messages = conversation_service.list_messages(session, conversation_id)
+    current_scene = session.get(SceneState, conversation_id) or SceneState(conversation_id=conversation_id)
+    try:
+        pending_batch, _ = conversation_service.select_incremental_compression_batch(
+            current_scene,
+            current_messages,
+        )
+    except ValueError:
+        # Let the compression service persist the dangling-boundary diagnostic;
+        # the post-run verification below will reject completion.
+        pending_batch = current_messages
+    if not pending_batch:
+        return True
+
+    before = session.get(SceneState, conversation_id)
+    before_revision = int(getattr(before, "compression_revision", 0) or 0)
+    before_boundary = getattr(before, "last_compression_source_message_id", None)
+    compression_overrides = runtime_settings_service.compression_llm_overrides_for_setting(runtime_setting, session=session)
+    compression_fallback_overrides = runtime_settings_service.compression_fallback_llm_overrides_for_setting(runtime_setting, session=session)
+    await conversation_service.update_scene_orchestration_summary(
         session,
         conversation_id,
-        generated_character_messages=generated_character_count,
-        interval_turns=runtime_settings_service.clamp_compression_interval_turns(
-            getattr(runtime_setting, "compression_interval_turns", runtime_settings_service.DEFAULT_COMPRESSION_INTERVAL_TURNS)
+        conversation_service.list_messages(session, conversation_id),
+        llm_client=LLMClient(profile="compression", purpose="conversation_compression", overrides=compression_overrides),
+        fallback_llm_client=(
+            LLMClient(profile="compression", purpose="conversation_compression_fallback", overrides=compression_fallback_overrides)
+            if compression_fallback_overrides else None
         ),
-    ):
-        return
+        character_ids=character_ids,
+    )
+
+    session.expire_all()
+    after = session.get(SceneState, conversation_id)
+    after_revision = int(getattr(after, "compression_revision", 0) or 0)
+    after_boundary = getattr(after, "last_compression_source_message_id", None)
+    if after_revision > before_revision and after_boundary != before_boundary:
+        return True
+
+    selector_scene = after or SceneState(conversation_id=conversation_id)
     try:
-        compression_overrides = runtime_settings_service.compression_llm_overrides_for_setting(runtime_setting, session=session)
-        compression_fallback_overrides = runtime_settings_service.compression_fallback_llm_overrides_for_setting(runtime_setting, session=session)
-        await conversation_service.update_scene_orchestration_summary(
-            session,
-            conversation_id,
+        remaining_batch, _ = conversation_service.select_incremental_compression_batch(
+            selector_scene,
             conversation_service.list_messages(session, conversation_id),
-            llm_client=LLMClient(profile="compression", purpose="conversation_compression", overrides=compression_overrides),
-            fallback_llm_client=(
-                LLMClient(profile="compression", purpose="conversation_compression_fallback", overrides=compression_fallback_overrides)
-                if compression_fallback_overrides else None
-            ),
-            character_ids=character_ids,
         )
-    except Exception:
-        logger.exception("Non-critical background scene compression failed for conversation %s", conversation_id)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"compression boundary validation failed for conversation {conversation_id}"
+        ) from exc
+    if not remaining_batch:
+        return True
+    raise RuntimeError(
+        "compression completed without boundary or revision progress "
+        f"for conversation {conversation_id}; foldable_messages={len(remaining_batch)}"
+    )
 
 
 async def _run_scene_compression(conversation_id: str, *, generated_character_count: int, character_ids: list[str]) -> None:
