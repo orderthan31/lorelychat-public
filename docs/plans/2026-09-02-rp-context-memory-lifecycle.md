@@ -237,6 +237,26 @@
 7. Compression LLM unavailable and CAS conflict/retry.
 8. One oversized indivisible turn.
 
+### Live league-room compression quality gate
+
+Synthetic replay is a regression safety net, not the final RP-quality verdict. At every compression-behavior milestone, discover the live room titled `리그` through the running API and use the shipped `POST /conversations/{id}/compress-now` path. Do not hard-code a stale room ID in source.
+
+1. Before each call, capture content-free metadata from `/context` and `/compression-preview`: revision, boundary, error state, summary chars/lines, total backlog and next fold-batch count.
+2. Inspect the exact folded source and returned Arc ephemerally for scoring, but never write raw messages, Arc text, personal names, provider payloads or credentials to Git, QA artifacts or chat reports.
+3. POST exactly once per scored run, then verify API read-back: revision/boundary advance, error state, next batch and structural Arc metrics.
+4. Score every result out of 100 with the fixed rubric:
+   - factual/key-event preservation 25
+   - chronology/causality 15
+   - official league ledger contamination avoidance 15
+   - active-vs-closed lifecycle distinction 15
+   - next-turn continuity usefulness 10
+   - compression density/no raw copy 10
+   - Rolling Story Arc structure 5
+   - revision/boundary operational health 5
+5. PASS requires `>= 85` and no critical flag. Invented winner/ranking, a closed event reactivated as current, uncovered folded source, malformed/blank Arc, or raw-copy leakage is an automatic failure.
+6. Keep only a redacted score ledger outside Git: implementation commit, runtime build identity, provider/model key, pre/post revision, whether the boundary advanced, batch counts, numeric subscores, critical flags and short paraphrased defect codes.
+7. Compare the current stable baseline with the feature-branch verification instance under the same room/model contract. Do not assume a working-tree edit is active; restart the intended verification service and verify `/ready`, `/health` and runtime build identity first.
+
 **Commands**
 ```bash
 cd apps/api
@@ -252,6 +272,7 @@ npm audit --omit=dev
 **Review gates**
 - Requirements review against this plan.
 - Code-quality/security/privacy review.
+- Live league-room score is at least 85 with no critical flag.
 - Inspect `git diff --check`, changed-file list and commit history.
 - Push only the feature branch; do not merge or modify `dev`/`main`.
 
