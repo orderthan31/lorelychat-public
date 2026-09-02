@@ -148,16 +148,19 @@
 
 **Steps**
 1. Add failing tests for strict extraction validation, evidence rejection, closed-by-default episode creation, ADD/UPDATE/SUPERSEDE/NOOP, deduplication and rollback when artifact persistence fails.
-2. Add an editable system-prompt setting for memory-artifact extraction.
-3. Re-enable the compression graph's memory branch with a strict JSON contract:
+2. Add explicit regression fixtures from the live league baseline failure: reject official outcome/points/streak/placement contamination in the Arc, and reject a fold whose terminal unresolved hook is absent from both the Arc and an open thread artifact.
+3. Add an editable system-prompt setting for memory-artifact extraction.
+4. Re-enable the compression graph's memory branch with a strict JSON contract:
    - one episode projection for the exact fold range;
    - zero or more fact/thread operations;
    - evidence IDs restricted to the folded source range;
    - no relationship scores, battle standings/results, ordinary dialogue, mood or temporary actions.
-4. Validate operations before DB writes. Unknown targets/entities/evidence are rejected, not repaired by guessing.
-5. Apply episode + lifecycle operations in the same transaction as the summary boundary CAS. If dual-write fails, the boundary does not advance.
-6. Use deterministic source-range uniqueness for retry safety.
-7. Verify focused tests.
+5. Validate operations before DB writes. Unknown targets/entities/evidence are rejected, not repaired by guessing.
+6. Run a source-vs-draft semantic coverage critic before the CAS. It must report missing unresolved hooks, unsupported active-state claims, official-ledger contamination and excessive source copying without reproducing raw text in persistence/logs.
+7. Allow a bounded repair pass using only the failed draft, critic defect codes and exact source window. Re-run deterministic and semantic validation after repair.
+8. Apply episode + lifecycle operations in the same transaction as the summary boundary CAS. If dual-write or quality validation fails, the previous Arc/revision/boundary stays intact and the task is retryable/failed rather than `completed`.
+9. Use deterministic source-range uniqueness for retry safety.
+10. Verify focused tests.
 
 **Commit:** `feat: dual-write episodic compression artifacts`
 
