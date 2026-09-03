@@ -9,6 +9,13 @@ def test_system_prompts_are_version_controlled_backend_source(client):
     assert 'generation_core_contract' in settings
     assert 'scene_relevance_gate' in settings
     assert 'appearance_reference_rules' in settings
+    assert {
+        'compression_fast_strategy',
+        'compression_quality_extraction',
+        'compression_quality_critic',
+        'compression_quality_final',
+        'compression_battle_guard',
+    }.issubset(settings)
     assert 'lexicon_section_rules' not in settings
     assert 'Appearance/body/proportions/clothing are low-priority visual reference' in settings['scene_relevance_gate']
     assert 'actual room participants override character-card sample honorifics' in settings['dialogue_engine_base']

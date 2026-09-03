@@ -287,7 +287,7 @@ def test_scene_memory_source_excludes_thought_and_uses_visible_fields_only():
     assert "이 속마음은 압축에 들어가면 안 된다" not in source
 
 
-async def test_scene_summary_retries_with_semantic_rewrite_without_pretruncating_source():
+async def test_fast_scene_summary_rejects_invalid_draft_without_second_primary_call_or_pretruncation():
     scene = SceneState(
         conversation_id="conv_semantic_repair",
         summary="[Rolling Story Arc]\n- " + ("이전 사건 전체 " * 260) + "FULL_PREVIOUS_ARC_TAIL",
@@ -305,11 +305,8 @@ async def test_scene_summary_retries_with_semantic_rewrite_without_pretruncating
 
     summary = await summarize_scene_memory_with_llm(scene, recent, llm_client=llm)  # type: ignore[arg-type]
 
-    assert len(llm.calls) == 2
-    assert summary == (
-        "[Rolling Story Arc]\n"
-        "- 아리아와 루나은 반복된 대치 끝에 서로의 입장을 확인하고 다음 진행을 함께 정리하기로 했다."
-    )
+    assert len(llm.calls) == 1
+    assert summary is None
 
 
 async def test_scene_summary_pass_ignores_custom_compression_focus():

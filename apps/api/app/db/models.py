@@ -319,6 +319,7 @@ class RuntimeSetting(SQLModel, table=True):
     fallback_model_key: Optional[str] = None
     compression_model_key: Optional[str] = None
     compression_fallback_model_key: Optional[str] = None
+    compression_strategy: str = Field(default="quality")
     response_length_preset: str = Field(default="medium")
     min_output_tokens: int = Field(default=768)
     compression_interval_turns: int = Field(default=5)

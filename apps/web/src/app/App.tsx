@@ -46,6 +46,7 @@ import { assetUrlFor, avatarUrlFor } from '../utils/assets';
 import { normalizeCharacterForApi } from '../utils/character';
 import { genreModeLabel, normalizeGenreMode } from '../utils/genre';
 import { pageCount } from '../utils/pagination';
+import { normalizeRuntimeSetting, normalizeRuntimeSettingUpdatePayload } from '../utils/runtimeSettings';
 import { arrayToLines, compactText, linesToArray, parseInputMarkup, parseTagInput, safeJsonParse, tagText } from '../utils/text';
 import {
   API_BASE,
@@ -204,7 +205,7 @@ export function App() {
 
   async function refetchRuntimeDefaultSetting() {
     const result = await bootstrap.runtimeDefault.refetch();
-    if (result.data) setRuntimeDefaultSetting(result.data as any);
+    if (result.data) setRuntimeDefaultSetting(normalizeRuntimeSetting(result.data as any));
     return result.data;
   }
 
@@ -317,7 +318,7 @@ export function App() {
   async function loadTtsModels() { const list = await settingsApi.ttsModels() as any[]; setTtsModels(list?.length ? list : FALLBACK_TTS_MODELS); return list; }
   async function loadConversationRuntimeSetting(conversationId = selectedConversationId) {
     if (!conversationId) return null;
-    const setting = await conversationApi.runtimeSetting(conversationId) as any;
+    const setting = normalizeRuntimeSetting((await conversationApi.runtimeSetting(conversationId)) || {});
     setConversationRuntimeSetting(setting);
     return setting;
   }
@@ -325,10 +326,13 @@ export function App() {
     if (!selectedConversationId) return;
     setBusy(true);
     try {
-      const savedSetting = await (conversationMutations.saveRuntimeSetting.mutateAsync({ conversationId: selectedConversationId, payload: { model_key: conversationRuntimeSetting.model_key, fallback_model_key: conversationRuntimeSetting.fallback_model_key || null, compression_model_key: conversationRuntimeSetting.compression_model_key || DEFAULT_RUNTIME_SETTING.compression_model_key, compression_fallback_model_key: conversationRuntimeSetting.compression_fallback_model_key || null, response_length_preset: conversationRuntimeSetting.response_length_preset || DEFAULT_RUNTIME_SETTING.response_length_preset, compression_interval_turns: Number(conversationRuntimeSetting.compression_interval_turns || DEFAULT_RUNTIME_SETTING.compression_interval_turns) } }) as any);
+      const savedSetting = await (conversationMutations.saveRuntimeSetting.mutateAsync({
+        conversationId: selectedConversationId,
+        payload: normalizeRuntimeSettingUpdatePayload(conversationRuntimeSetting, DEFAULT_RUNTIME_SETTING),
+      }) as any);
       const savedRoom = await (conversationMutations.updateConversation.mutateAsync({ id: selectedConversationId, payload: { tts_enabled: !!conversation?.tts_enabled } }) as any);
       setConversation(savedRoom);
-      setConversationRuntimeSetting(savedSetting);
+      setConversationRuntimeSetting(normalizeRuntimeSetting(savedSetting || conversationRuntimeSetting));
       setChatSettingsOpen(false);
       setStatus(t('이 방 채팅 설정 저장 완료'));
     } finally { setBusy(false); }
@@ -460,7 +464,7 @@ export function App() {
     setMessages(roomMessages);
     setHasOlderMessages(roomMessages.length > 0);
     setParticipants(roomParticipants);
-    setConversationRuntimeSetting(runtimeSetting);
+    setConversationRuntimeSetting(normalizeRuntimeSetting(runtimeSetting || {}));
     setConversationContext(null);
     if (room.genre_mode === 'battle') await loadBattleState(conversationId, room, true);
     else {

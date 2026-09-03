@@ -1,10 +1,12 @@
 import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 import { conversationApi } from '../api/resources';
 import { queryKeys } from './useBootstrapResources';
+import type { RuntimeSettingUpdatePayload } from '../types/domain';
 
 type ConversationMutation<TVariables = unknown> = UseMutationResult<unknown, Error, TVariables, unknown>;
 type IdPayload = { id: string; payload: unknown };
 type ConversationPayload = { conversationId: string; payload: unknown };
+type ConversationRuntimeSettingPayload = { conversationId: string; payload: RuntimeSettingUpdatePayload };
 type MessagePayload = { conversationId: string; messageId: string };
 type RegeneratePayload = MessagePayload & { replaceExisting?: boolean };
 type BulkDeletePayload = { conversationId: string; messageIds: string[] };
@@ -19,7 +21,7 @@ export type ConversationMutationsState = {
   regenerateMessage: ConversationMutation<RegeneratePayload>;
   deleteMessage: ConversationMutation<MessagePayload>;
   bulkDeleteMessages: ConversationMutation<BulkDeletePayload>;
-  saveRuntimeSetting: ConversationMutation<ConversationPayload>;
+  saveRuntimeSetting: ConversationMutation<ConversationRuntimeSettingPayload>;
 };
 
 export function useConversationMutations(): ConversationMutationsState {
@@ -63,7 +65,7 @@ export function useConversationMutations(): ConversationMutationsState {
       onSuccess: invalidateConversations,
     }),
     saveRuntimeSetting: useMutation({
-      mutationFn: ({ conversationId, payload }: ConversationPayload) => conversationApi.saveRuntimeSetting(conversationId, payload),
+      mutationFn: ({ conversationId, payload }: ConversationRuntimeSettingPayload) => conversationApi.saveRuntimeSetting(conversationId, payload),
     }),
   };
 }

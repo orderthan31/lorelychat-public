@@ -270,6 +270,9 @@ def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
                 connection.execute(text("ALTER TABLE runtime_settings ADD COLUMN compression_model_key VARCHAR"))
             if "compression_fallback_model_key" not in columns:
                 connection.execute(text("ALTER TABLE runtime_settings ADD COLUMN compression_fallback_model_key VARCHAR"))
+            if "compression_strategy" not in columns:
+                connection.execute(text("ALTER TABLE runtime_settings ADD COLUMN compression_strategy VARCHAR NOT NULL DEFAULT 'quality'"))
+                connection.execute(text("UPDATE runtime_settings SET compression_strategy = 'quality' WHERE compression_strategy IS NULL OR compression_strategy NOT IN ('fast', 'quality')"))
             if "fallback_model_key" not in columns:
                 connection.execute(text("ALTER TABLE runtime_settings ADD COLUMN fallback_model_key VARCHAR"))
             if "compression_interval_turns" not in columns:

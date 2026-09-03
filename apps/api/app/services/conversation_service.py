@@ -13,6 +13,7 @@ from sqlalchemy import text, update as sa_update
 from app.db.models import Character, Conversation, ConversationParticipant, ConversationReadState, GenerationJobEvent, MessageGenerationJob, PostCommitTask, ConversationRelationshipState, CharacterMemory, Message, SceneState, MessageAsset, BattleMatchRecord, BattleStanding, RuntimeSetting, WorldSetting
 from app.schemas.conversations import ConversationCreate, ConversationUpdate, MessageCreate, ParticipantCreate
 from app.services import external_memory_service, genre_domain_service, system_prompt_service
+from app.services.runtime_settings_service import DEFAULT_COMPRESSION_STRATEGY
 
 
 MAX_SCENE_MEMORY_CHARS = 2200
@@ -2499,6 +2500,185 @@ def build_scene_memory_source(
     return "\n".join(lines)
 
 
+FAST_COMPRESSION_CONTRACT = system_prompt_service.DEFAULT_COMPRESSION_FAST_STRATEGY
+QUALITY_EXTRACTION_SYSTEM = system_prompt_service.DEFAULT_COMPRESSION_QUALITY_EXTRACTION
+QUALITY_CRITIC_SYSTEM = system_prompt_service.DEFAULT_COMPRESSION_QUALITY_CRITIC
+QUALITY_FINAL_SYSTEM = system_prompt_service.DEFAULT_COMPRESSION_QUALITY_FINAL
+BATTLE_COMPRESSION_CONTRACT = system_prompt_service.DEFAULT_COMPRESSION_BATTLE_GUARD
+
+QUALITY_EXTRACTION_RESPONSE_FORMAT = {
+    "type": "json_object",
+    "name": "compression_continuity_extraction",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "events": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "event": {"type": "string"},
+                        "actors": {"type": "array", "items": {"type": "string"}},
+                        "chronology_causality": {"type": "string"},
+                        "lifecycle_state": {"type": "string"},
+                        "source_support": {"type": "string"},
+                    },
+                    "required": ["event", "actors", "chronology_causality", "lifecycle_state", "source_support"],
+                },
+            },
+            "open_hooks": {"type": "array", "items": {"type": "string"}},
+            "do_not_promote_to_fact": {"type": "array", "items": {"type": "string"}},
+            "terminal_state": {"type": "string"},
+        },
+        "required": ["events", "open_hooks", "do_not_promote_to_fact", "terminal_state"],
+    },
+}
+
+QUALITY_CRITIC_RESPONSE_FORMAT = {
+    "type": "json_object",
+    "name": "compression_independent_critic",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "repair_required": {"type": "boolean"},
+            "missing_or_weak_items": {"type": "array", "items": {"type": "string"}},
+            "unsupported_or_promoted_items": {"type": "array", "items": {"type": "string"}},
+            "chronology_lifecycle_corrections": {"type": "array", "items": {"type": "string"}},
+            "terminal_hook_requirements": {"type": "array", "items": {"type": "string"}},
+            "final_guidance": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["repair_required", "missing_or_weak_items", "unsupported_or_promoted_items", "chronology_lifecycle_corrections", "terminal_hook_requirements", "final_guidance"],
+    },
+}
+
+
+def normalize_compression_strategy(value: str | None) -> str:
+    return value if value in {"fast", "quality"} else DEFAULT_COMPRESSION_STRATEGY
+
+
+def compression_genre_contract(genre_mode: str | None, prompt_settings: Mapping[str, str] | None = None) -> str:
+    """Return only the domain guard needed by the selected room genre.
+
+    Chronology, lifecycle, attribution, and open-hook retention remain the
+    genre-neutral core. Battle ledger language is intentionally conditional so
+    romance, mystery, fantasy, slice-of-life, and custom rooms are not prompted
+    as if every conversation were a league.
+    """
+    if not genre_mode:
+        return ""
+    if normalize_genre_mode(genre_mode) != "battle":
+        return ""
+    settings = prompt_settings or system_prompt_service.default_prompt_settings_map()
+    return settings.get("compression_battle_guard", BATTLE_COMPRESSION_CONTRACT)
+
+
+def build_quality_compression_evidence_source(scene_state: SceneState, recent_messages: list[Message]) -> str:
+    lines = [
+        "Previous Conversation Summary (covers only messages through the persisted compression boundary):",
+        (scene_state.summary or "").strip() or "- none",
+        "Chronological Messages To Fold Into The Summary:",
+    ]
+    for message in recent_messages:
+        parts = [
+            f"message_id={message.id}",
+            f"speaker_type={message.speaker_type}",
+            f"speaker_id={message.speaker_id}",
+        ]
+        if message.emotion:
+            parts.append(f"emotion={message.emotion}")
+        if message.action:
+            parts.append(f"action={message.action}")
+        parts.append(f"dialogue/directive={message.content}")
+        lines.append("- " + " | ".join(parts))
+    return "\n".join(lines)
+
+
+def _parse_compression_json_object(content: str) -> dict:
+    value = (content or "").strip()
+    if value.startswith("```") and value.endswith("```"):
+        first_newline = value.find("\n")
+        if first_newline >= 0:
+            value = value[first_newline + 1:-3].strip()
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise ValueError("structured compression stage did not return an object")
+    return parsed
+
+
+def _require_compression_string_list(value: Any, field_name: str) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+        raise ValueError(f"invalid compression field: {field_name}")
+    return value
+
+
+def _validate_quality_extraction(value: dict) -> dict:
+    required = {"events", "open_hooks", "do_not_promote_to_fact", "terminal_state"}
+    if set(value) != required or not isinstance(value["events"], list):
+        raise ValueError("compression extraction contract failed")
+    if not isinstance(value["terminal_state"], str) or not value["terminal_state"].strip():
+        raise ValueError("compression extraction terminal state is missing")
+    event_fields = {"event", "actors", "chronology_causality", "lifecycle_state", "source_support"}
+    for event in value["events"]:
+        if not isinstance(event, dict) or set(event) != event_fields:
+            raise ValueError("compression extraction event contract failed")
+        for field_name in event_fields - {"actors"}:
+            if not isinstance(event[field_name], str) or not event[field_name].strip():
+                raise ValueError(f"compression extraction event field is invalid: {field_name}")
+        _require_compression_string_list(event["actors"], "actors")
+    _require_compression_string_list(value["open_hooks"], "open_hooks")
+    _require_compression_string_list(value["do_not_promote_to_fact"], "do_not_promote_to_fact")
+    return value
+
+
+def _validate_quality_critic(value: dict) -> dict:
+    required = {"repair_required", "missing_or_weak_items", "unsupported_or_promoted_items", "chronology_lifecycle_corrections", "terminal_hook_requirements", "final_guidance"}
+    if set(value) != required or type(value["repair_required"]) is not bool:
+        raise ValueError("compression critic contract failed")
+    for field_name in required - {"repair_required"}:
+        _require_compression_string_list(value[field_name], field_name)
+    return value
+
+
+def _record_compression_stage(
+    client: Any,
+    response: Any,
+    *,
+    strategy: str,
+    stage: str,
+    status: str,
+    parse_code: str,
+    validation_code: str,
+) -> None:
+    recorder = getattr(client, "record_response_outcome", None)
+    if not callable(recorder):
+        return
+    recorder(
+        response,
+        status=status,
+        parse_code=parse_code,
+        validation_code=validation_code,
+        metadata_updates={"compression_strategy": strategy, "compression_stage": stage},
+    )
+
+
+async def _call_compression_stage(
+    client: Any,
+    scene_state: SceneState,
+    messages: list[dict[str, str]],
+    *,
+    response_format: dict | None = None,
+):
+    try:
+        return await chat_with_optional_conversation_id(
+            client,
+            messages,
+            response_format=response_format,
+            conversation_id=scene_state.conversation_id,
+        )
+    except LLMUnavailableError as exc:
+        raise RuntimeError(f"scene compression LLM unavailable: {compression_error_summary(exc)}") from exc
+
+
 async def summarize_scene_memory_with_llm(
     scene_state: SceneState,
     recent_messages: list[Message],
@@ -2506,11 +2686,14 @@ async def summarize_scene_memory_with_llm(
     *,
     memories: list[CharacterMemory] | None = None,
     prompt_settings: dict[str, str] | None = None,
+    compression_strategy: str = "fast",
+    genre_mode: str | None = None,
 ) -> str | None:
+    del memories  # Durable notes remain a separate source and are never compression evidence.
     client = llm_client or LLMClient(profile="compression", purpose="scene_compression")
-    source = build_scene_memory_source(scene_state, recent_messages, include_compression_focus=False, memories=memories or [])
+    strategy = normalize_compression_strategy(compression_strategy)
     settings = prompt_settings or system_prompt_service.default_prompt_settings_map()
-    system_prompt = "\n\n".join(
+    base_system_prompt = "\n\n".join(
         part.strip()
         for part in [
             settings.get("compression_scene_base", ""),
@@ -2518,51 +2701,98 @@ async def summarize_scene_memory_with_llm(
         ]
         if part and part.strip()
     )
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": source},
-    ]
-    invalid_draft = ""
-    invalid_reason = ""
-    for attempt in range(2):
-        attempt_messages = messages
-        if attempt:
-            attempt_messages = [
-                *messages,
-                {"role": "assistant", "content": invalid_draft},
-                {
-                    "role": "user",
-                    "content": (
-                        "[System retry instruction]\n"
-                        f"The previous draft failed validation ({invalid_reason}). Rewrite it semantically from the original sources. "
-                        "Do not cut sentences, truncate bullets, or merely keep the first 18 bullets. Merge neighboring details into larger major events and rewrite each event as one complete line. "
-                        "Return one complete [Rolling Story Arc] with at most 18 bullets, at most 180 characters per bullet, at most 2200 characters total, and no other headings or body lines."
-                    ),
-                },
-            ]
-        try:
-            response = await chat_with_optional_conversation_id(
-                client,
-                attempt_messages,
-                conversation_id=scene_state.conversation_id,
-            )
-        except LLMUnavailableError as exc:
-            raise RuntimeError(f"scene compression LLM unavailable: {compression_error_summary(exc)}") from exc
-        invalid_draft = response.content or ""
-        summary = validate_scene_memory_summary(invalid_draft)
-        copied_raw = bool(summary and scene_summary_copies_recent_raw_text(summary, recent_messages))
-        if summary and not copied_raw:
-            return summary
-        invalid_reason = "copied recent raw text" if copied_raw else "format/density limits"
-        logger.warning(
-            "Scene compression response failed validation for conversation %s: attempt=%s reason=%s len=%s preview=%r",
-            scene_state.conversation_id,
-            attempt + 1,
-            invalid_reason,
-            len(response.content or ""),
-            compact_text(response.content, 300),
+    fast_contract = settings.get("compression_fast_strategy", FAST_COMPRESSION_CONTRACT)
+    quality_extraction_system = settings.get("compression_quality_extraction", QUALITY_EXTRACTION_SYSTEM)
+    quality_critic_system = settings.get("compression_quality_critic", QUALITY_CRITIC_SYSTEM)
+    quality_final_system = settings.get("compression_quality_final", QUALITY_FINAL_SYSTEM)
+    genre_contract = compression_genre_contract(genre_mode, settings)
+
+    if strategy == "fast":
+        source = build_scene_memory_source(scene_state, recent_messages, include_compression_focus=False, memories=[])
+        response = await _call_compression_stage(
+            client,
+            scene_state,
+            [
+                {"role": "system", "content": "\n\n".join(part for part in [base_system_prompt, fast_contract, genre_contract] if part)},
+                {"role": "user", "content": source},
+            ],
         )
-    return None
+        summary = validate_scene_memory_summary(response.content or "")
+        copied_raw = bool(summary and scene_summary_copies_recent_raw_text(summary, recent_messages))
+        valid = bool(summary and not copied_raw)
+        _record_compression_stage(
+            client,
+            response,
+            strategy=strategy,
+            stage="audited_one_pass",
+            status="validated" if valid else "validation_failed",
+            parse_code="plain_text",
+            validation_code="arc_valid" if valid else ("copied_recent_raw" if copied_raw else "arc_invalid"),
+        )
+        return summary if valid else None
+
+    evidence = build_quality_compression_evidence_source(scene_state, recent_messages)
+    extraction_response = await _call_compression_stage(
+        client,
+        scene_state,
+        [
+            {"role": "system", "content": "\n\n".join(part for part in [quality_extraction_system, genre_contract] if part)},
+            {"role": "user", "content": evidence},
+        ],
+        response_format=QUALITY_EXTRACTION_RESPONSE_FORMAT,
+    )
+    try:
+        extraction = _validate_quality_extraction(_parse_compression_json_object(extraction_response.content or ""))
+    except (json.JSONDecodeError, ValueError) as exc:
+        _record_compression_stage(client, extraction_response, strategy=strategy, stage="structured_extraction", status="validation_failed", parse_code="json_invalid", validation_code="extraction_invalid")
+        raise ValueError("quality compression extraction failed validation") from exc
+    _record_compression_stage(client, extraction_response, strategy=strategy, stage="structured_extraction", status="validated", parse_code="json_ok", validation_code="extraction_valid")
+
+    extraction_json = json.dumps(extraction, ensure_ascii=False)
+    critic_response = await _call_compression_stage(
+        client,
+        scene_state,
+        [
+            {"role": "system", "content": "\n\n".join(part for part in [quality_critic_system, genre_contract] if part)},
+            {"role": "user", "content": "SOURCE EVIDENCE:\n" + evidence + "\n\nSTRUCTURED EXTRACTION:\n" + extraction_json},
+        ],
+        response_format=QUALITY_CRITIC_RESPONSE_FORMAT,
+    )
+    try:
+        critic = _validate_quality_critic(_parse_compression_json_object(critic_response.content or ""))
+    except (json.JSONDecodeError, ValueError) as exc:
+        _record_compression_stage(client, critic_response, strategy=strategy, stage="independent_critic", status="validation_failed", parse_code="json_invalid", validation_code="critic_invalid")
+        raise ValueError("quality compression critic failed validation") from exc
+    _record_compression_stage(client, critic_response, strategy=strategy, stage="independent_critic", status="validated", parse_code="json_ok", validation_code="critic_valid")
+
+    final_response = await _call_compression_stage(
+        client,
+        scene_state,
+        [
+            {"role": "system", "content": "\n\n".join(part for part in [base_system_prompt, quality_final_system, genre_contract] if part)},
+            {
+                "role": "user",
+                "content": (
+                    "SOURCE EVIDENCE:\n" + evidence
+                    + "\n\nSTRUCTURED EXTRACTION:\n" + extraction_json
+                    + "\n\nINDEPENDENT CRITIC:\n" + json.dumps(critic, ensure_ascii=False)
+                ),
+            },
+        ],
+    )
+    summary = validate_scene_memory_summary(final_response.content or "")
+    copied_raw = bool(summary and scene_summary_copies_recent_raw_text(summary, recent_messages))
+    valid = bool(summary and not copied_raw)
+    _record_compression_stage(
+        client,
+        final_response,
+        strategy=strategy,
+        stage="final_synthesis",
+        status="validated" if valid else "validation_failed",
+        parse_code="plain_text",
+        validation_code="arc_valid" if valid else ("copied_recent_raw" if copied_raw else "arc_invalid"),
+    )
+    return summary if valid else None
 
 
 def relationship_archetype_blocks_memory(content: str, relationship_archetype: str | None) -> bool:
@@ -2760,12 +2990,21 @@ async def summarize_conversation_state_with_llm(
     official_domain_context: str | None = None,
     room_cast_roles: dict[str, str] | None = None,
     prompt_settings: dict[str, str] | None = None,
+    compression_strategy: str = "fast",
 ) -> dict | None:
     """Run graph-orchestrated compression so timeline, memory, and relationships do not contaminate each other."""
     from app.engine.compression_graph import run_compression_graph
 
     async def summarize_scene_callback(state: dict) -> str:
-        scene_summary = await summarize_scene_memory_with_llm(scene_state, recent_messages, llm_client=llm_client, memories=memories, prompt_settings=prompt_settings)
+        scene_summary = await summarize_scene_memory_with_llm(
+            scene_state,
+            recent_messages,
+            llm_client=llm_client,
+            memories=memories,
+            prompt_settings=prompt_settings,
+            compression_strategy=compression_strategy,
+            genre_mode=genre_mode,
+        )
         if not scene_summary:
             raise RuntimeError("scene compression returned empty summary")
         if scene_summary_copies_recent_raw_text(scene_summary, recent_messages):
@@ -3137,6 +3376,7 @@ async def update_scene_orchestration_summary(
     llm_client: LLMClient | None = None,
     fallback_llm_client: LLMClient | None = None,
     character_ids: list[str] | None = None,
+    compression_strategy: str = DEFAULT_COMPRESSION_STRATEGY,
 ) -> SceneState:
     scene_state = session.get(SceneState, conversation_id)
     if not scene_state:
@@ -3203,6 +3443,7 @@ async def update_scene_orchestration_summary(
                     official_domain_context=official_domain_context,
                     room_cast_roles=room_cast_roles,
                     prompt_settings=prompt_settings,
+                    compression_strategy=normalize_compression_strategy(compression_strategy),
                 )
                 llm_update = validate_compression_update_for_persistence(candidate)
                 break

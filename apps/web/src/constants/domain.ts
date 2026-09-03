@@ -1,3 +1,5 @@
+import type { CompressionStrategy } from '../types/domain';
+
 const viteEnv = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env;
 export const API_BASE: string = viteEnv?.VITE_API_BASE_URL || '/api';
 export const USER_ID = 'user_001';
@@ -74,7 +76,7 @@ export const FALLBACK_TTS_MODELS = [
   { key: 'gemini-3.1-flash-tts-preview', label: 'Gemini 3.1 Flash TTS Preview · 고품질/API', provider: 'gemini', cost_hint: 'Google API 과금' },
 ];
 
-export type RuntimeSettingDefaults = { model_key: string | null; fallback_model_key: string | null; compression_model_key: string | null; compression_fallback_model_key: string | null; effective_compression_fallback_model_key: string | null; compression_fallback_source: string; response_length_preset: string; min_output_tokens: number; compression_interval_turns: number; options: unknown[]; compression_options: unknown[]; response_length_presets: unknown[]; compression_interval_options: unknown[] };
+export type RuntimeSettingDefaults = { model_key: string | null; fallback_model_key: string | null; compression_model_key: string | null; compression_fallback_model_key: string | null; effective_compression_fallback_model_key: string | null; compression_fallback_source: string; response_length_preset: string; min_output_tokens: number; compression_interval_turns: number; compression_strategy: CompressionStrategy; options: unknown[]; compression_options: unknown[]; response_length_presets: unknown[]; compression_interval_options: unknown[] };
 export const FALLBACK_COMPRESSION_INTERVAL_OPTIONS = [
   { turns: 2, label: '2턴마다 · 강한 기억 유지', description: '새 방/관계 초반처럼 첫 상황과 말맛을 자주 고정해야 할 때' },
   { turns: 3, label: '3턴마다 · 자주/안전', description: '중요 장면, 리그 초반, 관계 변화가 잦은 방' },
@@ -82,7 +84,7 @@ export const FALLBACK_COMPRESSION_INTERVAL_OPTIONS = [
   { turns: 8, label: '8턴마다 · 비용 절약', description: '긴 흐름은 유지하되 압축 호출을 줄이고 싶을 때' },
   { turns: 12, label: '12턴마다 · 최소 압축', description: '테스트나 저비용 장시간 대화용' },
 ];
-export const DEFAULT_RUNTIME_SETTING: RuntimeSettingDefaults = { model_key: null, fallback_model_key: null, compression_model_key: null, compression_fallback_model_key: null, effective_compression_fallback_model_key: null, compression_fallback_source: 'none', response_length_preset: 'medium', min_output_tokens: 768, compression_interval_turns: 5, options: [], compression_options: [], response_length_presets: [], compression_interval_options: FALLBACK_COMPRESSION_INTERVAL_OPTIONS };
+export const DEFAULT_RUNTIME_SETTING: RuntimeSettingDefaults = { model_key: null, fallback_model_key: null, compression_model_key: null, compression_fallback_model_key: null, effective_compression_fallback_model_key: null, compression_fallback_source: 'none', response_length_preset: 'medium', min_output_tokens: 768, compression_interval_turns: 5, compression_strategy: 'quality', options: [], compression_options: [], response_length_presets: [], compression_interval_options: FALLBACK_COMPRESSION_INTERVAL_OPTIONS };
 export const FALLBACK_RESPONSE_LENGTH_PRESETS = [
   { key: 'short', label: '짧게', description: '비용 절약/빠른 티키타카. 보통 1~2버블.', target_output_tokens: 320 },
   { key: 'medium', label: '중간', description: '기본 역할놀이 밸런스. 감정선은 살리되 과출력 방지.', target_output_tokens: 768 },

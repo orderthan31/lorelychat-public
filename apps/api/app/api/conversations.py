@@ -386,6 +386,9 @@ async def compress_conversation_now(conversation_id: str, session: Session = Dep
             if compression_fallback_overrides else None
         ),
         character_ids=character_ids,
+        compression_strategy=conversation_service.normalize_compression_strategy(
+            getattr(runtime_setting, "compression_strategy", runtime_settings_service.DEFAULT_COMPRESSION_STRATEGY)
+        ),
     )
     return SceneStateRead(
         location=scene.location,
@@ -820,6 +823,9 @@ async def _run_scene_compression_in_session(
                 if compression_fallback_overrides else None
             ),
             character_ids=character_ids,
+            compression_strategy=conversation_service.normalize_compression_strategy(
+                getattr(runtime_setting, "compression_strategy", runtime_settings_service.DEFAULT_COMPRESSION_STRATEGY)
+            ),
         )
     except Exception:
         logger.exception("Non-critical background scene compression failed for conversation %s", conversation_id)

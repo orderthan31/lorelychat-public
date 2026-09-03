@@ -133,3 +133,30 @@ def test_additive_generation_schema_migration_preserves_existing_rows(tmp_path):
             "SELECT status, attempt_count, state_version FROM message_generation_jobs WHERE id='job_legacy'"
         )).one()
         assert tuple(row) == ("queued", 0, 0)
+
+
+def test_runtime_setting_compression_strategy_migration_defaults_to_quality_and_preserves_rows(tmp_path):
+    test_engine = make_engine(f"sqlite:///{tmp_path / 'legacy-runtime-setting.db'}")
+    configure_sqlite_runtime(test_engine)
+    with test_engine.begin() as connection:
+        connection.execute(text(
+            "CREATE TABLE runtime_settings ("
+            "id VARCHAR PRIMARY KEY, conversation_id VARCHAR, model_key VARCHAR, "
+            "response_length_preset VARCHAR NOT NULL DEFAULT 'medium', "
+            "min_output_tokens INTEGER NOT NULL DEFAULT 768, updated_at DATETIME NOT NULL)"
+        ))
+        connection.execute(text(
+            "INSERT INTO runtime_settings "
+            "(id, conversation_id, model_key, response_length_preset, min_output_tokens, updated_at) "
+            "VALUES ('global', NULL, 'keep-model', 'medium', 768, CURRENT_TIMESTAMP)"
+        ))
+
+    migrate_sqlite_columns(test_engine)
+
+    columns = {column["name"] for column in inspect(test_engine).get_columns("runtime_settings")}
+    assert "compression_strategy" in columns
+    with test_engine.connect() as connection:
+        row = connection.execute(text(
+            "SELECT model_key, compression_strategy FROM runtime_settings WHERE id = 'global'"
+        )).one()
+    assert tuple(row) == ("keep-model", "quality")

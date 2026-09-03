@@ -1165,7 +1165,7 @@ async def test_scene_memory_summarizer_uses_llm_compaction_format():
 
 
 @pytest.mark.asyncio
-async def test_scene_memory_summarizer_retries_once_after_empty_response():
+async def test_fast_scene_memory_summarizer_does_not_retry_after_empty_response():
     scene = SceneState(conversation_id="conv_retry_summary")
     recent = [
         Message(
@@ -1180,10 +1180,8 @@ async def test_scene_memory_summarizer_retries_once_after_empty_response():
 
     summary = await summarize_scene_memory_with_llm(scene, recent, llm_client=llm)
 
-    assert summary
-    assert summary.startswith("[Rolling Story Arc]")
-    assert len(llm.calls) == 2
-    assert "System retry instruction" in llm.calls[1][-1]["content"]
+    assert summary is None
+    assert len(llm.calls) == 1
 
 
 def test_prompt_requests_structured_dialogue_action_thought_and_keeps_broader_context():

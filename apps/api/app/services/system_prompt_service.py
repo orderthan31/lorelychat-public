@@ -9,6 +9,23 @@ from app.engine.output_contract import DEFAULT_MULTI_OUTPUT_RULES
 from app.engine.prompts import DEFAULT_GENERATION_CORE_CONTRACT, DEFAULT_XAI_ROLEPLAY_RENDERING_CONTRACT
 
 
+DEFAULT_COMPRESSION_FAST_STRATEGY = """## Fast compression: coverage, terminal, and provenance audit
+Before drafting, silently build one chronological coverage ledger containing every durable previous-summary event and every independent major event or transition in the new batch. Assign each item resolved, active, prospective, or superseded state, and retain its cause, outcome, durable consequence, and unresolved hook. Do not output the ledger.
+Reserve enough bullets for the newest batch; never merge independent events only to reduce length. The final bullet must describe the actual terminal source state. Never append an older promise, forecast, or hook after the terminal state; preserve older hooks inside their chronological event bullet.
+Treat headings, IDs, speaker metadata, and tracking metadata only as navigation, not narrative proof. Do not infer facts, completion, or later outcomes that are not explicitly visible in the previous summary or supplied dialogue, directive, visible action, or visible consequence.
+Before returning, silently audit that every ledger item has coverage, terminal order matches the final supplied messages, active/prospective items remain unresolved, every factual claim has allowed narrative provenance, and no raw transcript wording is copied.
+Return one Korean [Rolling Story Arc] with 8-18 complete one-line bullets according to actual durable event density, at most 180 characters per bullet, and no more than 2200 characters total. For a dense source with at least 12 independent durable events, use 12-18 bullets and target 1200-1800 characters. For a sparse source, use fewer bullets rather than inventing filler. Output no other section or commentary."""
+
+DEFAULT_COMPRESSION_QUALITY_EXTRACTION = """You extract only source-grounded roleplay continuity evidence. Do not continue the story and do not write the final Rolling Story Arc. Preserve every independent major event, chronology and causality, lifecycle state, attribution, durable consequence, and terminal unresolved hook. Treat IDs and speaker metadata only as evidence navigation. Never promote tracking metadata, private thought, unsupported inference, or later outcomes to narrative fact. Return only the required JSON."""
+
+DEFAULT_COMPRESSION_QUALITY_CRITIC = """You are an independent adversarial continuity critic. Compare the structured extraction against the complete original source evidence. Identify missing major events, unsupported promotions, chronology or lifecycle errors, and terminal-hook loss. Never draft the final summary. Return only the required JSON."""
+
+DEFAULT_COMPRESSION_QUALITY_FINAL = """Create the final Korean [Rolling Story Arc] from the complete source evidence, structured extraction, and independent critic. This is the one final synthesis call: do not continue the story or invent outcomes. Preserve source-grounded chronology, causality, lifecycle, durable consequences, and terminal unresolved hooks. Return exactly one header [Rolling Story Arc] followed by 8-18 complete one-line bullets according to actual durable event density, at most 180 characters per bullet, and no more than 2200 characters total. For a dense source with at least 12 independent durable events, use 12-18 bullets and target 1200-1800 Korean characters. For a sparse source, use fewer bullets rather than inventing filler. Output no other section or commentary."""
+
+DEFAULT_COMPRESSION_BATTLE_GUARD = """## Battle-domain provenance guard
+Official standings, points, rankings, streaks, winners, match completion, or later results are allowed only when explicitly visible in the previous Rolling Story Arc or supplied narrative dialogue, directive, action, or consequence. Tracking metadata is not narrative proof. Keep prospective matches and challenges unresolved until the supplied narrative visibly completes them."""
+
+
 SYSTEM_PROMPT_REGISTRY = (
     {
         "key": "generation_core_contract",
@@ -107,6 +124,46 @@ Rules: Return 8-18 bullets when enough history exists, target 1200-1800 Korean c
 **World Setting** is user-authored setting text; do not rewrite **Character Card / Intrinsic Identity** from **World Setting** alone. If intrinsic background and current room role differ, preserve them as scoped facts.
 Do not convert temporary scene framing into permanent identity.""",
         "description": "압축 시 유저페르소나/장르정책/세계관/캐릭터 정체성 섞임 방지",
+    },
+    {
+        "key": "compression_fast_strategy",
+        "title": "빠른 압축(E) 계약",
+        "order_index": 29,
+        "category": "compression",
+        "content": DEFAULT_COMPRESSION_FAST_STRATEGY,
+        "description": "단일 호출 압축의 사건·종단 상태·근거 감사 규칙",
+    },
+    {
+        "key": "compression_quality_extraction",
+        "title": "정밀 압축(F) 구조화 추출",
+        "order_index": 30,
+        "category": "compression",
+        "content": DEFAULT_COMPRESSION_QUALITY_EXTRACTION,
+        "description": "정밀 압축 1단계의 범용 연속성 증거 추출 규칙",
+    },
+    {
+        "key": "compression_quality_critic",
+        "title": "정밀 압축(F) 독립 검토",
+        "order_index": 31,
+        "category": "compression",
+        "content": DEFAULT_COMPRESSION_QUALITY_CRITIC,
+        "description": "정밀 압축 2단계의 누락·왜곡·종단 상태 검토 규칙",
+    },
+    {
+        "key": "compression_quality_final",
+        "title": "정밀 압축(F) 최종 합성",
+        "order_index": 32,
+        "category": "compression",
+        "content": DEFAULT_COMPRESSION_QUALITY_FINAL,
+        "description": "정밀 압축 3단계의 Rolling Story Arc 합성 규칙",
+    },
+    {
+        "key": "compression_battle_guard",
+        "title": "배틀 장르 압축 근거 규칙",
+        "order_index": 33,
+        "category": "compression",
+        "content": DEFAULT_COMPRESSION_BATTLE_GUARD,
+        "description": "배틀방에서만 적용하는 공식 결과·순위·예정 경기 오염 방지 규칙",
     },
     {
         "key": "command_generation_prompt_intro",

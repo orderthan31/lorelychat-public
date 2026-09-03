@@ -1,5 +1,6 @@
 import { useEffect, type Dispatch, type SetStateAction } from 'react';
 import type { BootstrapResourcesState } from './useBootstrapResources';
+import { normalizeRuntimeSetting } from '../utils/runtimeSettings';
 
 type Setter<T> = Dispatch<SetStateAction<T>>;
 type NamedEntity = { id?: string; name?: string };
@@ -72,8 +73,9 @@ export function useBootstrapSync({
   useEffect(() => {
     const setting = bootstrap.runtimeDefault.data as RuntimeSetting | undefined | null;
     if (!setting) return;
-    setRuntimeDefaultSetting(setting);
-    setConversationRuntimeSetting((current) => ({ ...setting, ...(current?.scope === 'conversation' ? current : {}) }));
+    const normalizedSetting = normalizeRuntimeSetting(setting);
+    setRuntimeDefaultSetting(normalizedSetting);
+    setConversationRuntimeSetting((current) => normalizeRuntimeSetting({ ...normalizedSetting, ...(current?.scope === 'conversation' ? current : {}) }));
   }, [bootstrap.runtimeDefault.data, setRuntimeDefaultSetting, setConversationRuntimeSetting]);
 
   useEffect(() => {

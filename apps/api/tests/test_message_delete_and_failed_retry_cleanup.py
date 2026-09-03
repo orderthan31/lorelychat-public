@@ -111,7 +111,8 @@ def test_manual_compress_now_updates_scene_state(client, monkeypatch):
         ],
     }).json()
 
-    async def fake_update(session, conversation_id, recent_messages, llm_client=None, fallback_llm_client=None, character_ids=None):
+    async def fake_update(session, conversation_id, recent_messages, llm_client=None, fallback_llm_client=None, character_ids=None, compression_strategy=None):
+        assert compression_strategy == "quality"
         scene = session.get(SceneState, conversation_id) or SceneState(conversation_id=conversation_id)
         scene.summary = "수동 압축 테스트 요약"
         scene.last_event = "manual compress"

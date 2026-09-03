@@ -1,5 +1,47 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { normalizeCompressionStrategy, normalizeRuntimeSetting, normalizeRuntimeSettingUpdatePayload } from '../src/utils/runtimeSettings.ts';
+
+assert.equal(normalizeCompressionStrategy(undefined), 'quality');
+assert.equal(normalizeCompressionStrategy('legacy-unknown'), 'quality');
+assert.equal(normalizeCompressionStrategy('fast'), 'fast');
+assert.deepEqual(normalizeRuntimeSetting({ scope: 'conversation' }), { scope: 'conversation', compression_strategy: 'quality' });
+const runtimePayloadDefaults = { response_length_preset: 'medium', compression_interval_turns: 5 };
+const fullRuntimeSetting = {
+  model_key: 'chat-model',
+  fallback_model_key: 'chat-fallback',
+  compression_model_key: 'compression-model',
+  compression_fallback_model_key: 'compression-fallback',
+  default_tts_model_option_key: 'tts-model',
+  safety_preset: 'high',
+  response_length_preset: 'long',
+  compression_interval_turns: '8',
+  compression_strategy: 'fast',
+};
+assert.deepEqual(normalizeRuntimeSettingUpdatePayload(fullRuntimeSetting, runtimePayloadDefaults), {
+  model_key: 'chat-model',
+  fallback_model_key: 'chat-fallback',
+  compression_model_key: 'compression-model',
+  compression_fallback_model_key: 'compression-fallback',
+  default_tts_model_option_key: 'tts-model',
+  safety_preset: 'high',
+  response_length_preset: 'long',
+  compression_interval_turns: 8,
+  compression_strategy: 'fast',
+});
+assert.deepEqual(normalizeRuntimeSettingUpdatePayload({}, runtimePayloadDefaults), {
+  model_key: null,
+  fallback_model_key: null,
+  compression_model_key: null,
+  compression_fallback_model_key: null,
+  default_tts_model_option_key: null,
+  safety_preset: 'medium',
+  response_length_preset: 'medium',
+  compression_interval_turns: 5,
+  compression_strategy: 'quality',
+});
+assert.equal(normalizeRuntimeSettingUpdatePayload({ compression_strategy: 'quality' }, runtimePayloadDefaults).compression_strategy, 'quality');
+assert.equal(normalizeRuntimeSettingUpdatePayload({ compression_strategy: 'invalid' }, runtimePayloadDefaults).compression_strategy, 'quality');
 
 function readSourceTree(pathUrl) {
   const path = pathUrl instanceof URL ? pathUrl : new URL(pathUrl, import.meta.url);
@@ -57,6 +99,10 @@ const operationsViewSource = readFileSync(new URL('../src/views/Operations/index
 const navigationDrawerSource = readFileSync(new URL('../src/components/organisms/Drawer.tsx', import.meta.url), 'utf8');
 const drawerSource = readFileSync(new URL('../src/components/organisms/ConversationInfoDrawer.tsx', import.meta.url), 'utf8');
 const appRootSource = readFileSync(new URL('../src/app/App.tsx', import.meta.url), 'utf8');
+const runtimeSettingsSource = readFileSync(new URL('../src/components/organisms/RuntimeSettings.tsx', import.meta.url), 'utf8');
+const runtimeDefaultHookSource = readFileSync(new URL('../src/hooks/useRuntimeDefaultSetting.ts', import.meta.url), 'utf8');
+const bootstrapSyncSource = readFileSync(new URL('../src/hooks/useBootstrapSync.ts', import.meta.url), 'utf8');
+const conversationDetailSource = readFileSync(new URL('../src/views/ConversationDetail/index.tsx', import.meta.url), 'utf8');
 const appErrorBoundarySource = readFileSync(new URL('../src/app/AppErrorBoundary.tsx', import.meta.url), 'utf8');
 const generationJobEventsSource = readFileSync(new URL('../src/api/generationJobEvents.ts', import.meta.url), 'utf8');
 const viteConfig = readFileSync(new URL('../vite.config.js', import.meta.url), 'utf8');
@@ -170,6 +216,24 @@ assert.match(settingsViewSource, /SettingsNavItem/);
 assert.doesNotMatch(settingsViewSource, /RuntimeSettingsPanel|\/lexicon|단어집|\/system-prompts|시스템 프롬프트|\/uiux|UI\/UX 가이드/);
 assert.match(modelSettingsViewSource, /RuntimeSettingsPanel/);
 assert.match(modelSettingsViewSource, /title=\{t\('모델 설정'\)\}/);
+assert.match(conversationDetailSource, /ChatSettingsBubble/);
+assert.equal([...runtimeSettingsSource.matchAll(/<RuntimeSettingFields/g)].length, 2, 'Global and room settings must share the same runtime fields');
+assert.match(runtimeSettingsSource, /<fieldset[^>]*aria-label=\{t\('압축 방식'\)\}/);
+assert.match(runtimeSettingsSource, /t\('빠른 압축 \(E\)'\)/);
+assert.match(runtimeSettingsSource, /t\('정밀 압축 \(F · 추천\)'\)/);
+assert.match(runtimeSettingsSource, /보통 1회 LLM 호출/);
+assert.match(runtimeSettingsSource, /시간순서나 열린 사건·복선을 놓칠 수 있습니다/);
+assert.match(runtimeSettingsSource, /보통 3회 LLM 호출\(추출→독립 검토→최종\)/);
+assert.match(runtimeSettingsSource, /배틀 고정 코호트/);
+assert.match(runtimeSettingsSource, /약 2\.85배/);
+assert.match(runtimeSettingsSource, /실제 비용과 결과 품질은 달라질 수 있습니다/);
+assert.doesNotMatch(runtimeSettingsSource, /연속성과 정확도가 가장 좋습니다/);
+assert.match(runtimeSettingsSource, /compression_strategy: normalizeCompressionStrategy\(event\.currentTarget\.value\)/);
+assert.match(genreSource, /compression_strategy: 'quality'/);
+assert.match(runtimeDefaultHookSource, /normalizeRuntimeSettingUpdatePayload\(setting, DEFAULT_RUNTIME_SETTING\)/);
+assert.match(appRootSource, /payload: normalizeRuntimeSettingUpdatePayload\(conversationRuntimeSetting, DEFAULT_RUNTIME_SETTING\)/);
+assert.match(bootstrapSyncSource, /normalizeRuntimeSetting\(setting\)/);
+assert.match(appRootSource, /normalizeRuntimeSetting\(\(await conversationApi\.runtimeSetting\(conversationId\)\) \|\| \{\}\)/);
 assert.match(modelSettingsViewSource, /data-settings-section="runtime"/);
 assert.match(modelSettingsViewSource, /data-settings-section="providers"/);
 assert.match(modelSettingsViewSource, /data-settings-section="models"/);

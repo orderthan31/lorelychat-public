@@ -1,5 +1,6 @@
 import { api } from './http';
 import { FALLBACK_TTS_MODELS, FALLBACK_TTS_VOICES, MESSAGE_PAGE_TURNS } from '../constants/domain';
+import type { RuntimeSetting, RuntimeSettingUpdatePayload } from '../types/domain';
 
 type Id = string;
 type Payload = unknown;
@@ -113,8 +114,8 @@ export const conversationApi = {
   inviteParticipant: (id: Id, characterId: Id) => api(`/conversations/${id}/participants`, { method: 'POST', body: JSON.stringify({ type: 'character', id: characterId }) }),
   updateParticipantRole: (id: Id, characterId: Id, role: string | null) => api(`/conversations/${id}/participants/character/${characterId}`, { method: 'PATCH', body: JSON.stringify({ role }) }),
   removeCharacterParticipant: (id: Id, characterId: Id) => api(`/conversations/${id}/participants/character/${characterId}`, { method: 'DELETE' }),
-  runtimeSetting: (id: Id) => api(`/runtime-settings/conversations/${id}`),
-  saveRuntimeSetting: (id: Id, payload: Payload) => api(`/runtime-settings/conversations/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  runtimeSetting: (id: Id) => api<RuntimeSetting>(`/runtime-settings/conversations/${id}`),
+  saveRuntimeSetting: (id: Id, payload: RuntimeSettingUpdatePayload) => api<RuntimeSetting>(`/runtime-settings/conversations/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   context: (id: Id) => api(`/conversations/${id}/context`),
   usage: (id: Id, params?: UsageQuery) => api(`/conversations/${id}/usage${usageQuery(params)}`),
   usageSummary: (params?: UsageQuery) => api(`/conversations/usage/summary${usageQuery(params)}`),
@@ -124,8 +125,8 @@ export const conversationApi = {
 };
 
 export const settingsApi = {
-  runtimeDefault: () => api('/runtime-settings/default'),
-  updateRuntimeDefault: (payload: Payload) => api('/runtime-settings/default', { method: 'PATCH', body: JSON.stringify(payload) }),
+  runtimeDefault: () => api<RuntimeSetting>('/runtime-settings/default'),
+  updateRuntimeDefault: (payload: RuntimeSettingUpdatePayload) => api<RuntimeSetting>('/runtime-settings/default', { method: 'PATCH', body: JSON.stringify(payload) }),
   ttsVoices: async () => {
     const list = await api<RuntimeOption[]>('/tts/voices');
     return list?.length ? list : FALLBACK_TTS_VOICES;

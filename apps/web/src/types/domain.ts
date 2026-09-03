@@ -42,10 +42,30 @@ export interface ConversationSummary {
   tts_enabled?: boolean;
 }
 
+export type CompressionStrategy = 'fast' | 'quality';
+
 export interface RuntimeSetting {
   scope?: 'default' | 'conversation' | string;
-  model_key?: string;
-  compression_model_key?: string;
+  model_key?: string | null;
+  fallback_model_key?: string | null;
+  compression_model_key?: string | null;
+  compression_fallback_model_key?: string | null;
+  default_tts_model_option_key?: string | null;
+  safety_preset?: string;
   response_length_preset?: string;
-  compression_interval_turns?: number;
+  compression_interval_turns?: number | string;
+  compression_strategy?: CompressionStrategy;
+  [key: string]: unknown;
 }
+
+export type RuntimeSettingUpdatePayload = {
+  model_key: string | null;
+  fallback_model_key: string | null;
+  compression_model_key: string | null;
+  compression_fallback_model_key: string | null;
+  default_tts_model_option_key: string | null;
+  safety_preset: string;
+  response_length_preset: string;
+  compression_interval_turns: number;
+  compression_strategy: CompressionStrategy;
+};

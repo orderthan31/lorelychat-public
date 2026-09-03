@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import {
   DEFAULT_RUNTIME_SETTING,
   FALLBACK_COMPRESSION_INTERVAL_OPTIONS,
@@ -11,6 +12,8 @@ import { Switch } from '../atoms';
 import { cn } from '../../lib/utils';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { Translator } from '../../i18n/core';
+import type { CompressionStrategy } from '../../types/domain';
+import { normalizeCompressionStrategy } from '../../utils/runtimeSettings';
 
 type RuntimeOption = { key?: string; label?: string; provider_account_id?: string | null; provider_account_alias?: string | null; provider?: string; model?: string };
 type CompressionIntervalOption = { turns?: number | string; label?: string; description?: string };
@@ -25,6 +28,7 @@ export type RuntimeSettingValue = {
   safety_preset?: 'high' | 'medium' | 'low' | string;
   response_length_preset?: string;
   compression_interval_turns?: string | number;
+  compression_strategy?: CompressionStrategy;
   options?: RuntimeOption[];
   compression_options?: RuntimeOption[];
   tts_options?: RuntimeOption[];
@@ -84,6 +88,7 @@ function localizedCompressionInterval(option: CompressionIntervalOption, t: Tran
 }
 function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compact = false }: RuntimeSettingFieldsProps) {
   const { t } = useI18n();
+  const compressionStrategyGroupName = useId();
   const options = runtimeModelOptions(value);
   const fallbackOptions = options.filter((option) => option.key !== value.model_key);
   const compressionOptions = compressionModelOptions(value);
@@ -98,6 +103,7 @@ function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compa
   const chatOptionsForAccount = selectedChatAccountId ? options.filter((option) => option.provider_account_id === selectedChatAccountId) : [];
   const fallbackOptionsForAccount = selectedFallbackAccountId ? fallbackOptions.filter((option) => option.provider_account_id === selectedFallbackAccountId) : [];
   const compressionOptionsForAccount = selectedCompressionAccountId ? compressionOptions.filter((option) => option.provider_account_id === selectedCompressionAccountId) : [];
+  const normalizedCompressionStrategy = normalizeCompressionStrategy(value.compression_strategy);
   const update = (patch: Partial<RuntimeSettingValue>) => onChange?.({ ...DEFAULT_RUNTIME_SETTING, ...(value || {}), ...patch });
   return <div className={cn('grid grid-cols-1 gap-2.5 min-[720px]:grid-cols-[minmax(0,1.25fr)_minmax(160px,.75fr)]', compact && 'gap-2')}>
     <Field label={t('채팅 Provider')}><Select value={selectedChatAccountId} disabled={!chatAccounts.length} onChange={(e) => {
@@ -127,6 +133,32 @@ function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compa
       <option value="">{t('채팅 폴백 상속')}{inheritedCompressionFallback ? ` · ${inheritedCompressionFallback.label || inheritedCompressionFallback.key}` : ` · ${t('설정 없음')}`}</option>
       {compressionFallbackOptions.map((option) => <option key={option.key} value={option.key}>{option.provider_account_alias ? `${option.provider_account_alias} · ` : ''}{option.label || option.key}</option>)}
     </Select><p className="context-muted">{t('전용 모델이 없으면 채팅 폴백을 재사용합니다. 파싱·검증·빈 요약도 실패로 보고 이 모델로 다시 압축합니다.')}</p></Field>
+    <fieldset className="grid min-w-0 gap-2 min-[720px]:col-span-2" aria-label={t('압축 방식')}>
+      <legend className="mb-1 text-sm font-medium text-foreground">{t('압축 방식')}</legend>
+      <div className={cn('grid grid-cols-1 gap-2', !compact && 'min-[560px]:grid-cols-2')}>
+        {([
+          {
+            key: 'fast',
+            label: t('빠른 압축 (E)'),
+            description: t('보통 1회 LLM 호출로 비용과 대기 시간을 줄입니다. 시간순서나 열린 사건·복선을 놓칠 수 있습니다.'),
+          },
+          {
+            key: 'quality',
+            label: t('정밀 압축 (F · 추천)'),
+            description: t('보통 3회 LLM 호출(추출→독립 검토→최종)을 사용합니다. 배틀 고정 코호트 측정에서는 생성 토큰 비용이 E의 약 2.85배였으며, 대화와 모델에 따라 실제 비용과 결과 품질은 달라질 수 있습니다.'),
+          },
+        ] satisfies Array<{ key: CompressionStrategy; label: string; description: string }>).map((option) => {
+          const selected = normalizedCompressionStrategy === option.key;
+          const descriptionId = `${compressionStrategyGroupName}-${option.key}-description`;
+          return <label key={option.key} className={cn('relative grid cursor-pointer gap-1 rounded-xl border border-border bg-background/35 p-3 transition-colors hover:border-primary/60', selected && 'border-primary bg-primary/10 ring-1 ring-primary/30')}>
+            <input className="peer sr-only" type="radio" name={compressionStrategyGroupName} value={option.key} checked={selected} aria-describedby={descriptionId} onChange={(event) => update({ compression_strategy: normalizeCompressionStrategy(event.currentTarget.value) })} />
+            <span className="flex items-center gap-2 text-sm font-semibold text-foreground"><span className={cn('h-3.5 w-3.5 shrink-0 rounded-full border border-muted-foreground/60', selected && 'border-[4px] border-primary')} aria-hidden="true" />{option.label}</span>
+            <span id={descriptionId} className="text-xs leading-relaxed text-muted-foreground">{option.description}</span>
+            <span className="pointer-events-none absolute inset-0 rounded-xl ring-offset-background peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2" aria-hidden="true" />
+          </label>;
+        })}
+      </div>
+    </fieldset>
     <Field label={t('TTS 모델')}><Select value={String(value.default_tts_model_option_key || '')} onChange={(e) => update({ default_tts_model_option_key: e.target.value || null })}><option value="">{t('TTS 모델 미설정')}</option>{ttsModelOptions(value).map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
     <Field label={t('대화 길이')}><Select value={String(value.response_length_preset || DEFAULT_RUNTIME_SETTING.response_length_preset)} onChange={(e) => update({ response_length_preset: e.target.value })}>{responseLengthPresets(value).map((preset) => <option key={preset.key} value={preset.key}>{localizedResponseLengthLabel(preset, t)}</option>)}</Select></Field>
     <Field label={t('압축 빈도')}><Select value={String(value.compression_interval_turns || DEFAULT_RUNTIME_SETTING.compression_interval_turns)} onChange={(e) => update({ compression_interval_turns: Number(e.target.value) })}>{compressionIntervalOptions(value).map((option) => <option key={String(option.turns)} value={String(option.turns)}>{localizedCompressionInterval(option, t).label}</option>)}</Select></Field>

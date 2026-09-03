@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -37,6 +39,7 @@ class RuntimeSettingRead(BaseModel):
     compression_fallback_model_key: str | None = None
     effective_compression_fallback_model_key: str | None = None
     compression_fallback_source: str = "none"
+    compression_strategy: Literal["fast", "quality"] = "quality"
     response_length_preset: str
     default_tts_model_option_key: str | None = None
     safety_preset: str = "medium"
@@ -54,6 +57,7 @@ class RuntimeSettingUpdate(BaseModel):
     fallback_model_key: str | None = None
     compression_model_key: str | None = None
     compression_fallback_model_key: str | None = None
+    compression_strategy: Literal["fast", "quality"] | None = None
     response_length_preset: str | None = None
     default_tts_model_option_key: str | None = None
     safety_preset: str | None = Field(default=None, pattern="^(high|medium|low)$")

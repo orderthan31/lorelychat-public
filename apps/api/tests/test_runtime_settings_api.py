@@ -4,6 +4,7 @@ def test_runtime_settings_default_and_conversation_override(client):
     default_data = default_response.json()
     assert default_data['model_key'] is None
     assert default_data['compression_model_key'] is None
+    assert default_data['compression_strategy'] == 'quality'
     assert default_data['response_length_preset'] == 'medium'
     assert default_data['min_output_tokens'] == 768
     assert default_data['compression_interval_turns'] == 5
@@ -17,13 +18,14 @@ def test_runtime_settings_default_and_conversation_override(client):
     patched_default = client.patch('/runtime-settings/default', json={'model_key': 'local-gemma', 'compression_model_key': 'gemini-3-flash', 'response_length_preset': 'short', 'compression_interval_turns': 8})
     assert patched_default.status_code == 400
 
-    patched_default = client.patch('/runtime-settings/default', json={'response_length_preset': 'short', 'compression_interval_turns': 8})
+    patched_default = client.patch('/runtime-settings/default', json={'response_length_preset': 'short', 'compression_interval_turns': 8, 'compression_strategy': 'fast'})
     assert patched_default.status_code == 200
     assert patched_default.json()['model_key'] is None
     assert patched_default.json()['compression_model_key'] is None
     assert patched_default.json()['response_length_preset'] == 'short'
     assert patched_default.json()['min_output_tokens'] == 320
     assert patched_default.json()['compression_interval_turns'] == 8
+    assert patched_default.json()['compression_strategy'] == 'fast'
 
     character = client.post('/characters', json={'name': '설정테스트', 'persona': '대화 설정 테스트용'}).json()
     conversation = client.post('/conversations', json={
@@ -41,9 +43,21 @@ def test_runtime_settings_default_and_conversation_override(client):
     assert inherited.json()['response_length_preset'] == 'short'
     assert inherited.json()['min_output_tokens'] == 320
     assert inherited.json()['compression_interval_turns'] == 8
+    assert inherited.json()['compression_strategy'] == 'fast'
 
     room_patch = client.patch(f"/runtime-settings/conversations/{conversation['id']}", json={'model_key': 'gemini-3-pro', 'compression_model_key': 'gemini-3-pro', 'response_length_preset': 'long', 'compression_interval_turns': 3})
     assert room_patch.status_code == 400
+
+    invalid_strategy = client.patch('/runtime-settings/default', json={'compression_strategy': 'balanced'})
+    assert invalid_strategy.status_code == 422
+
+    room_strategy = client.patch(
+        f"/runtime-settings/conversations/{conversation['id']}",
+        json={'compression_strategy': 'quality'},
+    )
+    assert room_strategy.status_code == 200
+    assert room_strategy.json()['compression_strategy'] == 'quality'
+    assert client.get('/runtime-settings/default').json()['compression_strategy'] == 'fast'
 
 
 def test_flavor_and_world_rooms_inherit_global_compression_cadence(client):

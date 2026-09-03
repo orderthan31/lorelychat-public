@@ -14,6 +14,7 @@ GLOBAL_RUNTIME_SETTING_ID = "global"
 DEFAULT_MODEL_KEY = None
 DEFAULT_FALLBACK_MODEL_KEY = None
 DEFAULT_COMPRESSION_MODEL_KEY = None
+DEFAULT_COMPRESSION_STRATEGY = "quality"
 DEFAULT_RESPONSE_LENGTH_PRESET = "medium"
 DEFAULT_COMPRESSION_INTERVAL_TURNS = 5
 MIN_OUTPUT_TOKEN_LOW = 64
@@ -194,6 +195,7 @@ def get_global_setting(session: Session) -> RuntimeSetting:
         fallback_model_key=None,
         compression_model_key=None,
         compression_fallback_model_key=None,
+        compression_strategy=DEFAULT_COMPRESSION_STRATEGY,
         response_length_preset=DEFAULT_RESPONSE_LENGTH_PRESET,
         min_output_tokens=DEFAULT_MIN_OUTPUT_TOKENS,
         compression_interval_turns=DEFAULT_COMPRESSION_INTERVAL_TURNS,
@@ -246,6 +248,11 @@ def serialize_setting(setting: RuntimeSetting, *, scope: str, options: bool = Tr
         compression_fallback_model_key=dedicated_compression_fallback_option.key if dedicated_compression_fallback_option else None,
         effective_compression_fallback_model_key=effective_compression_fallback_option.key if effective_compression_fallback_option else None,
         compression_fallback_source=compression_fallback_source,
+        compression_strategy=(
+            getattr(setting, "compression_strategy", DEFAULT_COMPRESSION_STRATEGY)
+            if getattr(setting, "compression_strategy", DEFAULT_COMPRESSION_STRATEGY) in {"fast", "quality"}
+            else DEFAULT_COMPRESSION_STRATEGY
+        ),
         response_length_preset=preset.key,
         default_tts_model_option_key=getattr(setting, "default_tts_model_option_key", None),
         safety_preset=getattr(setting, "safety_preset", "medium") or "medium",
@@ -279,6 +286,7 @@ def update_conversation_setting(session: Session, conversation_id: str, payload:
             fallback_model_key=getattr(global_setting, "fallback_model_key", None),
             compression_model_key=getattr(global_setting, "compression_model_key", None),
             compression_fallback_model_key=getattr(global_setting, "compression_fallback_model_key", None),
+            compression_strategy=getattr(global_setting, "compression_strategy", DEFAULT_COMPRESSION_STRATEGY) or DEFAULT_COMPRESSION_STRATEGY,
             response_length_preset=getattr(global_setting, "response_length_preset", DEFAULT_RESPONSE_LENGTH_PRESET),
             min_output_tokens=global_setting.min_output_tokens,
             compression_interval_turns=clamp_compression_interval_turns(getattr(global_setting, "compression_interval_turns", DEFAULT_COMPRESSION_INTERVAL_TURNS)),
@@ -317,6 +325,10 @@ def apply_update(setting: RuntimeSetting, payload: RuntimeSettingUpdate, *, sess
     )
     if effective_compression_fallback_key and effective_compression_fallback_key == setting.compression_model_key:
         raise ValueError("Compression fallback model must differ from the primary compression model")
+    if payload.compression_strategy is not None:
+        setting.compression_strategy = payload.compression_strategy
+    elif getattr(setting, "compression_strategy", None) not in {"fast", "quality"}:
+        setting.compression_strategy = DEFAULT_COMPRESSION_STRATEGY
     if payload.response_length_preset is not None:
         preset = response_length_preset_by_key(payload.response_length_preset)
         setting.response_length_preset = preset.key
