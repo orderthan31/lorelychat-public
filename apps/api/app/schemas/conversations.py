@@ -137,6 +137,7 @@ class MessageGenerationJobRead(BaseModel):
     incoming_message_id: str
     status: str
     error_message: str | None = None
+    error_code: str | None = None
     generated_message_ids: list[str] = Field(default_factory=list)
     attempt_count: int = 0
     state_version: int = 0
@@ -258,6 +259,7 @@ class ContextPreviewSectionRead(BaseModel):
     title: str
     char_count: int
     approx_tokens: int
+    used_tokens: int = 0
     included: bool = True
     content: str
     source: str = ""
@@ -273,6 +275,8 @@ class ConversationContextPreviewRead(BaseModel):
     response_length_preset: str | None = None
     recent_message_count: int
     selected_recent_message_count: int
+    total_budget_tokens: int = 0
+    used_tokens: int = 0
     sections: list[ContextPreviewSectionRead] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 

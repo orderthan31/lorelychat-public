@@ -66,6 +66,5 @@ export type RuntimeSettingUpdatePayload = {
   default_tts_model_option_key: string | null;
   safety_preset: string;
   response_length_preset: string;
-  compression_interval_turns: number;
   compression_strategy: CompressionStrategy;
 };

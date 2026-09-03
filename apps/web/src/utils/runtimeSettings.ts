@@ -16,7 +16,7 @@ export function normalizeRuntimeSetting<T extends RuntimeSettingWithStrategy>(se
   };
 }
 
-type RuntimeSettingPayloadDefaults = Pick<RuntimeSettingUpdatePayload, 'response_length_preset' | 'compression_interval_turns'>;
+type RuntimeSettingPayloadDefaults = Pick<RuntimeSettingUpdatePayload, 'response_length_preset'>;
 
 export function normalizeRuntimeSettingUpdatePayload(
   setting: RuntimeSetting,
@@ -30,7 +30,6 @@ export function normalizeRuntimeSettingUpdatePayload(
     default_tts_model_option_key: setting.default_tts_model_option_key || null,
     safety_preset: setting.safety_preset || 'medium',
     response_length_preset: setting.response_length_preset || defaults.response_length_preset,
-    compression_interval_turns: Number(setting.compression_interval_turns || defaults.compression_interval_turns),
     compression_strategy: normalizeCompressionStrategy(setting.compression_strategy),
   };
 }

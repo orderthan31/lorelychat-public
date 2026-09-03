@@ -18,6 +18,7 @@ from app.db.models import Character, Message, SceneState
 from app.engine.llm_client import LLMClient, LLMUnavailableError, chat_with_optional_conversation_id
 from app.engine.output_contract import SEMANTIC_FIELD_MARKDOWN_DESCRIPTION, THOUGHT_MAX_CHARS
 from app.engine.output_guard import internal_control_token_reason
+from app.engine.prompt_harness import PromptHarness, approx_tokens
 from app.engine.prompt_graph import build_prompt_generation_graph, run_prompt_generation_pipeline
 from app.engine.prompts import build_character_messages, build_multi_character_prompt_harness, is_silent_cast_role
 from app.schemas.dialogue import CharacterReply, MultiCharacterReply
@@ -32,6 +33,52 @@ Continue naturally from the preceding character-authored turn.
 The preceding assistant/model-role message was spoken or acted by the named room character, not by the human user.
 The human user did not speak or act in this turn. Do not attribute that character's dialogue, action, intention, or proposal to the human user.
 Generate the next natural room replies under the system prompt and structured output contract."""
+
+
+def character_retry_instruction(min_bubbles: int) -> str:
+    return (
+        "[System retry instruction]\n"
+        "The previous model response was invalid, incomplete JSON, contained a degenerate repetition loop, "
+        "used an oversized thought, or returned too few bubbles. "
+        "Return one complete JSON object matching the replies schema only. "
+        f"Return exactly {min_bubbles} reply bubbles. Correct only the JSON structure, required IDs, field placement, bubble count, and invalid repetition. "
+        "Preserve the intended roleplay wording and emotional specificity; do not compress or summarize valid prose merely to make it easier to validate. "
+        f"Each thought must be at most {THOUGHT_MAX_CHARS} characters and add a distinct private beat rather than repeating dialogue or action. "
+        "Write each dialogue and action once without repeating phrases to fill space. "
+        "Every character reply must include the exact character_id and speaker_name for the actual speaking room character. "
+        "Every storytelling reply must include character_id and speaker_name as empty strings. "
+        "Every character reply must include a non-empty dialogue string. "
+        "Do not put the character's spoken response only in thought or action. "
+        "Do not include markdown fences, explanations, or partial objects."
+    )
+
+
+def format_runtime_source_message(
+    *,
+    speaker_type: str,
+    speaker_id: str | None,
+    content: str,
+    action: str | None = None,
+    speaker_name: str | None = None,
+) -> str:
+    if speaker_type == "system":
+        return f"[Scene direction / system message]\n{content}"
+    speaker_label = speaker_name or speaker_id or speaker_type
+    if speaker_type == "character":
+        if speaker_id and speaker_name:
+            speaker_label = f"{speaker_name}({speaker_id})"
+        parts = []
+        if action:
+            parts.append(f"[Character action: {speaker_label}]\n{action}")
+        if content:
+            parts.append(f"[Character dialogue: {speaker_label}]\n{content}")
+        return "\n\n".join(parts) or content
+    parts = []
+    if action:
+        parts.append(f"[User situation/action]\n{action}")
+    if content:
+        parts.append(f"[User dialogue]\n{content}")
+    return "\n\n".join(parts) or content
 
 
 def provider_name_for_client(client: Any) -> str:
@@ -129,6 +176,62 @@ def build_chat_replies_response_schema(*, min_bubbles: int = 1, max_bubbles: int
     replies_schema["minItems"] = minimum
     replies_schema["maxItems"] = maximum
     return schema
+
+
+def build_chat_replies_response_format(
+    *,
+    min_bubbles: int = 1,
+    max_bubbles: int = 8,
+    retry: bool = False,
+) -> dict:
+    return {
+        "type": "json_object",
+        "name": "character_chat_replies_retry" if retry else "character_chat_replies",
+        "schema": build_chat_replies_response_schema(
+            min_bubbles=min_bubbles,
+            max_bubbles=min_bubbles if retry else max_bubbles,
+        ),
+    }
+
+
+def generation_control_reserve_tokens(
+    *,
+    speaker_type: str,
+    min_bubbles: int,
+    max_bubbles: int,
+) -> int:
+    """Reserve the larger of the initial and retry request-control envelopes."""
+
+    retry_instruction = character_retry_instruction(min_bubbles)
+    initial_response_tokens = approx_tokens(json.dumps(
+        build_chat_replies_response_format(
+            min_bubbles=min_bubbles,
+            max_bubbles=max_bubbles,
+        ),
+        ensure_ascii=False,
+        sort_keys=True,
+    ))
+    retry_response_tokens = approx_tokens(json.dumps(
+        build_chat_replies_response_format(
+            min_bubbles=min_bubbles,
+            max_bubbles=max_bubbles,
+            retry=True,
+        ),
+        ensure_ascii=False,
+        sort_keys=True,
+    ))
+    if speaker_type == "character":
+        initial_control_tokens = approx_tokens(CHARACTER_TURN_CONTINUATION_INSTRUCTION)
+        retry_control_tokens = approx_tokens(
+            f"{CHARACTER_TURN_CONTINUATION_INSTRUCTION}\n\n{retry_instruction}"
+        )
+    else:
+        initial_control_tokens = 0
+        retry_control_tokens = approx_tokens(f"\n\n{retry_instruction}") + 1
+    return max(
+        initial_control_tokens + initial_response_tokens,
+        retry_control_tokens + retry_response_tokens,
+    )
 
 
 CHARACTER_REPLY_RESPONSE_SCHEMA = CHAT_REPLIES_RESPONSE_SCHEMA["properties"]["replies"]["items"]
@@ -596,12 +699,13 @@ class CharacterRuntime:
         source_message_id: str | None = None,
         source_speaker_type: str = "user",
         prompt_snapshot_callback: Callable[[dict], Any | Awaitable[Any]] | None = None,
+        prepared_harness: PromptHarness | None = None,
     ) -> list[CharacterReply] | Any:
         if not characters:
             return []
         max_bubbles = max(1, min(8, int(max_bubbles)))
         min_bubbles = max(1, min(max_bubbles, int(min_bubbles)))
-        harness = build_multi_character_prompt_harness(
+        harness = prepared_harness or build_multi_character_prompt_harness(
             characters=characters,
             recent_messages=recent_messages,
             user_message=user_message,
@@ -621,6 +725,7 @@ class CharacterRuntime:
             official_domain_context=official_domain_context,
             room_cast_roles=room_cast_roles,
             provider_type=provider_name_for_client(self.llm_client),
+            context_management_mode=getattr(getattr(self.llm_client, "settings", None), "context_management_mode", "shadow"),
         )
         speaking_characters = [character for character in characters if not is_silent_cast_role((room_cast_roles or {}).get(character.id))]
         output_characters = speaking_characters or characters
@@ -699,43 +804,22 @@ class CharacterRuntime:
                 )
             return replies
 
-        response_format = {
-            "type": "json_object",
-            "name": "character_chat_replies",
-            "schema": build_chat_replies_response_schema(
-                min_bubbles=min_bubbles,
-                max_bubbles=max_bubbles,
-            ),
-        }
+        response_format = build_chat_replies_response_format(
+            min_bubbles=min_bubbles,
+            max_bubbles=max_bubbles,
+        )
         last_error: Exception | None = None
         last_response_content = ""
         result = None
         parse_attempts = 0
         for attempt in range(2):
             parse_attempts = attempt + 1
-            attempt_response_format = response_format if attempt == 0 else {
-                "type": "json_object",
-                "name": "character_chat_replies_retry",
-                "schema": build_chat_replies_response_schema(
-                    min_bubbles=min_bubbles,
-                    max_bubbles=min_bubbles,
-                ),
-            }
-            retry_instruction = "" if attempt == 0 else (
-                "[System retry instruction]\n"
-                "The previous model response was invalid, incomplete JSON, contained a degenerate repetition loop, "
-                "used an oversized thought, or returned too few bubbles. "
-                "Return one complete JSON object matching the replies schema only. "
-                f"Return exactly {min_bubbles} reply bubbles. Correct only the JSON structure, required IDs, field placement, bubble count, and invalid repetition. "
-                "Preserve the intended roleplay wording and emotional specificity; do not compress or summarize valid prose merely to make it easier to validate. "
-                f"Each thought must be at most {THOUGHT_MAX_CHARS} characters and add a distinct private beat rather than repeating dialogue or action. "
-                "Write each dialogue and action once without repeating phrases to fill space. "
-                "Every character reply must include the exact character_id and speaker_name for the actual speaking room character. "
-                "Every storytelling reply must include character_id and speaker_name as empty strings. "
-                "Every character reply must include a non-empty dialogue string. "
-                "Do not put the character's spoken response only in thought or action. "
-                "Do not include markdown fences, explanations, or partial objects."
+            attempt_response_format = response_format if attempt == 0 else build_chat_replies_response_format(
+                min_bubbles=min_bubbles,
+                max_bubbles=max_bubbles,
+                retry=True,
             )
+            retry_instruction = "" if attempt == 0 else character_retry_instruction(min_bubbles)
             current_turn_role = "assistant" if source_speaker_type == "character" else "user"
             attempt_user_message = user_message
             continuation_instruction = ""
@@ -869,6 +953,7 @@ class CharacterRuntime:
             prompt_settings=prompt_settings,
             min_output_tokens=min_output_tokens,
             provider_type=provider_name_for_client(self.llm_client),
+            context_management_mode=getattr(getattr(self.llm_client, "settings", None), "context_management_mode", "shadow"),
         )
         last_error: Exception | None = None
         active_llm_client = self.llm_client

@@ -1,5 +1,7 @@
-from app.engine.prompt_harness import PromptSection, compile_prompt_harness
-from app.engine.prompts import build_character_prompt_harness, build_multi_character_prompt_harness, format_message_for_context, prompt_budget_for_context
+from app.engine.prompt_harness import PromptSection, approx_tokens, compile_prompt_harness
+import pytest
+
+from app.engine.prompts import ContextCoverageError, build_character_prompt_harness, build_multi_character_prompt_harness, format_message_for_context, messages_after_scene_summary_boundary, prompt_budget_for_context, select_prompt_recent_messages
 from app.db.models import Character, Message, SceneState
 
 
@@ -56,7 +58,8 @@ def test_prompt_harness_ledger_keeps_complete_sections_even_when_diagnostic_budg
     assert continuity_entry.budget_tokens == 40
 
     assert harness.total_budget_tokens == 35
-    assert harness.used_tokens <= harness.total_budget_tokens
+    assert harness.used_tokens == approx_tokens(harness.compiled_text)
+    assert harness.used_tokens > harness.total_budget_tokens
 
 
 def test_recent_character_messages_include_character_name_to_prevent_user_misattribution():
@@ -66,6 +69,77 @@ def test_recent_character_messages_include_character_name_to_prevent_user_misatt
 
     assert "character:서모아(char_harin)" in line
     assert "character:char_harin |" not in line
+
+
+def test_automatic_context_keeps_contiguous_boundary_suffix_instead_of_count_tail():
+    messages = [
+        Message(
+            id=f"m_{index:02d}",
+            conversation_id="conv",
+            speaker_type="user" if index % 2 == 0 else "character",
+            speaker_id="user_001" if index % 2 == 0 else "char_aria",
+            content=f"message {index}",
+        )
+        for index in range(16)
+    ]
+
+    legacy = select_prompt_recent_messages(messages)
+    automatic = select_prompt_recent_messages(messages, context_management_mode="automatic")
+
+    assert len(legacy) == 10
+    assert [message.id for message in automatic] == [message.id for message in messages]
+
+
+def test_automatic_prompt_harness_never_compacts_middle_of_verified_suffix():
+    character = Character(id="char_aria", name="아리아", persona="차분하다")
+    messages = [
+        Message(
+            id=f"m_long_{index:02d}",
+            conversation_id="conv",
+            speaker_type="user" if index % 2 == 0 else "character",
+            speaker_id="user_001" if index % 2 == 0 else character.id,
+            content=f"UNIQUE_{index:02d}_" + ("긴 대화 내용 " * 35),
+        )
+        for index in range(20)
+    ]
+
+    harness = build_multi_character_prompt_harness(
+        characters=[character],
+        recent_messages=messages,
+        user_message="현재 입력",
+        context_management_mode="automatic",
+    )
+
+    recent_entry = next(entry for entry in harness.ledger if entry.key == "recent_messages")
+    assert recent_entry.approx_tokens > 1800
+    assert "section compacted to prompt budget" not in harness.compiled_text
+    for index in range(20):
+        assert f"UNIQUE_{index:02d}_" in harness.compiled_text
+
+
+def test_automatic_context_rejects_dangling_summary_boundary_instead_of_failing_open():
+    messages = [
+        Message(
+            id="m_current",
+            conversation_id="conv",
+            speaker_type="user",
+            speaker_id="user_001",
+            content="current",
+        )
+    ]
+    scene = SceneState(
+        conversation_id="conv",
+        summary="[Rolling Story Arc]\n- prior covered event",
+        last_compression_source_message_id="m_missing",
+    )
+
+    assert messages_after_scene_summary_boundary(messages, scene) == messages
+    with pytest.raises(ContextCoverageError, match="context coverage boundary is missing"):
+        messages_after_scene_summary_boundary(
+            messages,
+            scene,
+            context_management_mode="automatic",
+        )
 
 
 def test_multi_character_prompt_harness_routes_sections_with_ledger_metadata():

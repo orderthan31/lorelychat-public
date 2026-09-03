@@ -3,14 +3,16 @@ from __future__ import annotations
 import asyncio
 import threading
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
-from app.api.conversations import _execute_claimed_post_commit_task
-from app.db.models import Conversation, ConversationRelationshipState, Message, PostCommitTask
+from app.api import conversations as conversations_api
+from app.api.conversations import _execute_claimed_post_commit_task, _run_scene_compression_in_session
+from app.db.models import Conversation, ConversationRelationshipState, Message, PostCommitTask, SceneState
 from app.services import conversation_service
 from app.services.post_commit_dispatcher import PostCommitDispatcher
 
@@ -215,3 +217,223 @@ def test_retired_continuity_task_is_noop_when_completion_commit_fails(session):
     refreshed_task = session.get(PostCommitTask, task.id)
     assert relationship is None
     assert refreshed_task is not None and refreshed_task.status == "processing"
+
+
+def _compression_room_with_backlog(session: Session, conversation_id: str) -> None:
+    session.add(Conversation(id=conversation_id, mode="user_character"))
+    session.add(SceneState(conversation_id=conversation_id))
+    session.add_all([
+        Message(
+            id=f"{conversation_id}_msg_{index:02d}",
+            conversation_id=conversation_id,
+            speaker_type="user",
+            speaker_id="user_001",
+            content=f"source {index}",
+        )
+        for index in range(13)
+    ])
+    session.commit()
+
+
+@pytest.mark.asyncio
+async def test_scene_compression_worker_rejects_completed_without_progress(monkeypatch, session):
+    conversation_id = "conv_compression_no_progress"
+    _compression_room_with_backlog(session, conversation_id)
+    monkeypatch.setattr(
+        conversations_api,
+        "get_settings",
+        lambda: SimpleNamespace(context_management_mode="shadow"),
+    )
+
+    async def no_progress(*args, **kwargs):
+        return session.get(SceneState, conversation_id)
+
+    monkeypatch.setattr(conversation_service, "update_scene_orchestration_summary", no_progress)
+
+    with pytest.raises(RuntimeError, match="without boundary or revision progress"):
+        await _run_scene_compression_in_session(
+            session,
+            conversation_id,
+            generated_character_count=1,
+            character_ids=["char_a"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_scene_compression_worker_accepts_persisted_boundary_progress(monkeypatch, session):
+    conversation_id = "conv_compression_progress"
+    _compression_room_with_backlog(session, conversation_id)
+    monkeypatch.setattr(
+        conversations_api,
+        "get_settings",
+        lambda: SimpleNamespace(context_management_mode="shadow"),
+    )
+    scene = session.get(SceneState, conversation_id)
+    scene.last_compression_attempt_at = datetime.now(timezone.utc)
+    session.add(scene)
+    session.commit()
+    called = False
+
+    async def advance(*args, **kwargs):
+        nonlocal called
+        called = True
+        scene = session.get(SceneState, conversation_id)
+        scene.compression_revision = 1
+        scene.last_compression_source_message_id = f"{conversation_id}_msg_00"
+        session.add(scene)
+        session.commit()
+        return scene
+
+    monkeypatch.setattr(conversation_service, "update_scene_orchestration_summary", advance)
+
+    assert await _run_scene_compression_in_session(
+        session,
+        conversation_id,
+        generated_character_count=1,
+        character_ids=["char_a"],
+    ) is True
+    assert called is True
+
+
+@pytest.mark.asyncio
+async def test_scene_compression_worker_forwards_the_same_token_selector_to_update(monkeypatch, session):
+    conversation_id = "conv_compression_selector_parity"
+    _compression_room_with_backlog(session, conversation_id)
+    monkeypatch.setattr(
+        conversations_api,
+        "get_settings",
+        lambda: SimpleNamespace(context_management_mode="shadow"),
+    )
+    seen: dict[str, object] = {}
+
+    async def advance(*args, **kwargs):
+        seen["raw_tail_token_budget"] = kwargs.get("raw_tail_token_budget")
+        seen["job_source_message_ids"] = kwargs.get("job_source_message_ids")
+        scene = session.get(SceneState, conversation_id)
+        scene.compression_revision = 1
+        scene.last_compression_source_message_id = f"{conversation_id}_msg_11"
+        session.add(scene)
+        session.commit()
+        return scene
+
+    monkeypatch.setattr(conversation_service, "update_scene_orchestration_summary", advance)
+
+    assert await _run_scene_compression_in_session(
+        session,
+        conversation_id,
+        generated_character_count=1,
+        character_ids=["char_a"],
+        raw_tail_token_budget=1,
+    ) is True
+    assert seen == {
+        "raw_tail_token_budget": 1,
+        "job_source_message_ids": {},
+    }
+
+
+@pytest.mark.asyncio
+async def test_automatic_scene_compression_worker_recomputes_selector_from_current_model(
+    monkeypatch,
+    session,
+):
+    conversation_id = "conv_compression_automatic_recompute"
+    _compression_room_with_backlog(session, conversation_id)
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        conversations_api,
+        "get_settings",
+        lambda: SimpleNamespace(context_management_mode="automatic"),
+    )
+    monkeypatch.setattr(
+        conversations_api.runtime_settings_service,
+        "get_effective_setting",
+        lambda *_args, **_kwargs: SimpleNamespace(model_key="model_current"),
+    )
+    monkeypatch.setattr(
+        conversations_api.model_provider_service,
+        "option_by_key",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def recompute_plan(*_args, **kwargs):
+        seen["mandatory_prompt_tokens"] = kwargs["mandatory_prompt_tokens"]
+        return SimpleNamespace(
+            raw_tail_token_budget=1,
+            pressure=SimpleNamespace(status="high"),
+        )
+
+    async def advance(*_args, **kwargs):
+        seen["update_raw_tail_token_budget"] = kwargs.get("raw_tail_token_budget")
+        scene = session.get(SceneState, conversation_id)
+        scene.compression_revision = 1
+        scene.last_compression_source_message_id = f"{conversation_id}_msg_11"
+        session.add(scene)
+        session.commit()
+        return scene
+
+    monkeypatch.setattr(conversation_service, "automatic_context_plan", recompute_plan)
+    monkeypatch.setattr(conversation_service, "update_scene_orchestration_summary", advance)
+
+    assert await _run_scene_compression_in_session(
+        session,
+        conversation_id,
+        generated_character_count=1,
+        character_ids=["char_a"],
+        raw_tail_token_budget=999,
+        mandatory_prompt_tokens=37,
+    ) is True
+    assert seen == {
+        "mandatory_prompt_tokens": 37,
+        "update_raw_tail_token_budget": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_automatic_scene_compression_worker_skips_stale_task_at_low_pressure(
+    monkeypatch,
+    session,
+):
+    conversation_id = "conv_compression_automatic_low_noop"
+    _compression_room_with_backlog(session, conversation_id)
+    monkeypatch.setattr(
+        conversations_api,
+        "get_settings",
+        lambda: SimpleNamespace(context_management_mode="automatic"),
+    )
+    monkeypatch.setattr(
+        conversations_api.runtime_settings_service,
+        "get_effective_setting",
+        lambda *_args, **_kwargs: SimpleNamespace(model_key="model_current"),
+    )
+    monkeypatch.setattr(
+        conversations_api.model_provider_service,
+        "option_by_key",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        conversation_service,
+        "automatic_context_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            raw_tail_token_budget=1,
+            pressure=SimpleNamespace(status="low"),
+        ),
+    )
+
+    async def unexpected_update(*_args, **_kwargs):
+        raise AssertionError("low-pressure stale task must not call compression")
+
+    monkeypatch.setattr(
+        conversation_service,
+        "update_scene_orchestration_summary",
+        unexpected_update,
+    )
+
+    assert await _run_scene_compression_in_session(
+        session,
+        conversation_id,
+        generated_character_count=1,
+        character_ids=["char_a"],
+        raw_tail_token_budget=999,
+        mandatory_prompt_tokens=37,
+    ) is True

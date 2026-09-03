@@ -70,7 +70,7 @@ export function UiuxView() {
   const [memo, setMemo] = useState('UI 가이드는 실제 앱 컴포넌트를 그대로 렌더링해서 drift를 줄인다.');
   const [enabled, setEnabled] = useState(true);
   const [traitScores, setTraitScores] = useState<TraitScores>({ confidence: 4, kindness: 4, jealousy: 2, eros: 2, aggression: 1, playfulness: 4, shyness: 2, initiative: 4 });
-  const [runtimeSetting, setRuntimeSetting] = useState<RuntimeSettingValue>({ model_key: 'gemini-2.5-flash', compression_model_key: 'gemini-2.5-flash-lite', response_length_preset: 'standard', compression_interval_turns: 20 });
+  const [runtimeSetting, setRuntimeSetting] = useState<RuntimeSettingValue>({ model_key: 'gemini-2.5-flash', compression_model_key: 'gemini-2.5-flash-lite', response_length_preset: 'standard' });
   const guideThreadRef = useRef<HTMLDivElement>(null);
   const guideBottomRef = useRef<HTMLDivElement>(null);
 

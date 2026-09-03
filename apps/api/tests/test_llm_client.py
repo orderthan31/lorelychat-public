@@ -20,6 +20,10 @@ def test_default_llm_timeout_allows_slow_local_models():
     assert Settings().llm_timeout_seconds == 120.0
 
 
+def test_context_management_defaults_to_automatic_pressure_policy():
+    assert Settings(_env_file=None).context_management_mode == "automatic"
+
+
 def test_json_object_response_format_is_preserved_for_structured_outputs():
     client = LLMClient(Settings(llm_mock=False))
     assert client.normalize_response_format({"type": "json_object"}) == {"type": "json_object"}

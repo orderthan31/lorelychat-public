@@ -150,6 +150,59 @@ def test_incremental_compression_resumes_strictly_after_persisted_boundary():
     assert raw_tail[-1].id == "msg_29"
 
 
+def test_automatic_compression_tail_uses_token_budget_and_complete_turns():
+    messages = []
+    job_sources = {}
+    for index in range(3):
+        source = make_message(index * 2, "user", f"source {index}")
+        reply = make_message(index * 2 + 1, "character", f"reply {index}")
+        reply.generation_job_id = f"job_{index}"
+        messages.extend([source, reply])
+        job_sources[reply.generation_job_id] = source.id
+
+    batch, raw_tail = conversation_service.select_incremental_compression_batch(
+        SceneState(conversation_id="conv_compress"),
+        messages,
+        raw_tail_token_budget=40,
+        batch_limit=48,
+        job_source_message_ids=job_sources,
+        token_estimator=lambda _message: 10,
+    )
+
+    assert [message.id for message in batch] == ["msg_00", "msg_01"]
+    assert [message.id for message in raw_tail] == ["msg_02", "msg_03", "msg_04", "msg_05"]
+
+
+def test_automatic_compression_batch_limit_never_splits_complete_turn():
+    messages = []
+    job_sources = {}
+    for index in range(4):
+        source = make_message(index * 2, "user", f"source {index}")
+        reply = make_message(index * 2 + 1, "character", f"reply {index}")
+        reply.generation_job_id = f"job_{index}"
+        messages.extend([source, reply])
+        job_sources[reply.generation_job_id] = source.id
+
+    batch, raw_tail = conversation_service.select_incremental_compression_batch(
+        SceneState(conversation_id="conv_compress"),
+        messages,
+        raw_tail_token_budget=20,
+        batch_limit=3,
+        job_source_message_ids=job_sources,
+        token_estimator=lambda _message: 10,
+    )
+
+    assert [message.id for message in batch] == ["msg_00", "msg_01"]
+    assert [message.id for message in raw_tail] == [
+        "msg_02",
+        "msg_03",
+        "msg_04",
+        "msg_05",
+        "msg_06",
+        "msg_07",
+    ]
+
+
 def test_generation_history_contains_only_messages_after_summary_boundary():
     messages = [make_message(i) for i in range(20)]
     scene = SceneState(
@@ -593,6 +646,53 @@ async def test_compression_applies_old_prefix_when_new_message_arrives_during_ll
     assert persisted_scene.last_compression_error is None
     assert persisted_relationship.trust_level == 0
     assert session.get(Message, "msg_stale_newer") is not None
+
+
+@pytest.mark.asyncio
+async def test_compression_update_uses_the_planned_token_estimator_for_exact_prefix(session, monkeypatch):
+    conversation_id = "conv_exact_selector_estimator"
+    conversation = Conversation(id=conversation_id, title="selector estimator", mode="user_character")
+    messages = [
+        Message(
+            id=f"msg_exact_selector_{index}",
+            conversation_id=conversation_id,
+            speaker_type="user",
+            speaker_id="user_001",
+            content=f"source {index}",
+        )
+        for index in range(4)
+    ]
+    scene = SceneState(conversation_id=conversation_id, summary="기존 요약")
+    session.add_all([conversation, *messages, scene])
+    session.commit()
+
+    async def fake_compression(**kwargs):
+        assert [message.id for message in kwargs["recent_messages"]] == [
+            "msg_exact_selector_0",
+            "msg_exact_selector_1",
+        ]
+        return {
+            "scene": {"summary": "[Rolling Story Arc]\n- 계획된 prefix만 반영한 요약"},
+            "memories": [],
+            "relationships": [],
+            "battle_events": [],
+        }
+
+    monkeypatch.setattr(conversation_service, "summarize_conversation_state_with_llm", fake_compression)
+
+    await conversation_service.update_scene_orchestration_summary(
+        session,
+        conversation_id,
+        messages,
+        llm_client=object(),
+        character_ids=["char_a"],
+        raw_tail_token_budget=1,
+        token_estimator=lambda message: 0 if message.id == "msg_exact_selector_3" else 1,
+    )
+
+    session.expire_all()
+    persisted = session.get(SceneState, conversation_id)
+    assert persisted.last_compression_source_message_id == "msg_exact_selector_1"
 
 
 def test_compression_skips_relationship_pair_changed_after_snapshot(session):

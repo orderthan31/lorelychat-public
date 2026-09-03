@@ -1,0 +1,300 @@
+# RP Context Pressure and Memory Lifecycle Implementation Plan
+
+**Goal:** Replace user-visible turn-count compression as the primary policy with model-aware context pressure, guarantee prompt coverage at generation time, and add lifecycle-aware RP memory that keeps closed scenes out of the active prompt unless explicitly recalled.
+
+**Branch:** Implemented on `feature/rp-context-memory-lifecycle` from `origin/dev@8cb709a9678ab2efd293327e84d0a37a7affe300`; integrated into `dev` on 2026-09-03 together with the E/F compression strategies.
+
+**Safety / rollout:** Additive schema only. Existing `compression_interval_turns` remains an accepted deprecated rollback value in the API/database but is absent from the web UI and web PATCH payload. `CONTEXT_MANAGEMENT_MODE=legacy|shadow|automatic` controls rollback; after transcript replay, full regression, and deployment verification, the integrated `dev` default is `automatic`. Do not read or log message bodies, summaries, provider payloads, credentials, or extracted memory content in diagnostics.
+
+**Non-goals:** No embeddings/vector database in this branch; no automatic relationship score resurrection; no changes to manual `CharacterMemory` user notes; no destructive rewrite of legacy `SceneState.summary`; no direct production DB mutation while developing.
+
+---
+
+## Architecture
+
+### Memory levels
+
+- **L0 raw complete turns:** contiguous suffix after the compression boundary. Source and generated reply bubbles remain one indivisible group.
+- **L1 immutable episodes:** one source range per successful fold, closed by default, with evidence IDs and a unique range key.
+- **L2 active rolling arc / scene:** existing `SceneState` stays the current-scene projection and backward-compatible prompt source.
+- **L3 facts and threads:** typed lifecycle rows (`fact|thread`) with `current|open|resolved|superseded|expired`, validity timestamps, evidence and provenance.
+- **Manual notes:** existing `CharacterMemory` remains user-authored only and is not mixed with automatic memory.
+
+### Context policy
+
+1. Resolve the selected chat model's context window. Prefer model metadata; otherwise use a clearly marked conservative fallback.
+2. Derive the product working input budget as the minimum of model capacity minus completion/mandatory reserve and the existing room prompt budget (12k/16k/18k).
+3. Estimate the same section set used by generation, then substitute the full uncompressed raw suffix for the legacy 8+2 selector.
+4. `shadow`: persist sanitized pressure/coverage diagnostics but use legacy cadence.
+5. `automatic`: enqueue at high watermark, catch up to low watermark, and perform bounded synchronous preflight catch-up when the next generation would have a raw coverage gap or cross the hard watermark.
+6. If compression cannot restore coverage, do not silently omit middle history. Return a recoverable context-maintenance error and preserve raw messages.
+
+### Retrieval policy
+
+- Active lane: current facts and open threads only, filtered by conversation, branch, entity and validity.
+- Historical lane: closed episodes only when the user explicitly requests retrospective recall, or a current thread explicitly depends on that episode.
+- Every closed episode is rendered with a scope warning that it is historical and must not be continued unless reopened.
+- Lexical retrieval is sufficient for the first safe rollout; vector retrieval is deferred until lifecycle gates and replay metrics are proven.
+
+---
+
+## Task 1: Model capability metadata and context-pressure primitives
+
+**Files**
+- Add `apps/api/app/services/context_management_service.py`
+- Modify `apps/api/app/db/models.py`
+- Modify `apps/api/app/schemas/model_providers.py`
+- Modify `apps/api/app/services/model_provider_service.py`
+- Modify `apps/api/app/db/session.py`
+- Add `apps/api/tests/test_context_management_service.py`
+- Extend `apps/api/tests/test_model_providers_api.py`
+
+**Steps**
+1. Add failing tests for model context metadata serialization, update, provider-metadata derivation and unknown-model fallback.
+2. Add nullable `context_window_tokens` and `max_output_tokens` to `ModelOption`; migrate SQLite columns additively.
+3. Extend provider/manual schemas and serializers without changing existing option keys.
+4. Parse common provider metadata keys conservatively; never overwrite a manually configured non-null value with unknown data.
+5. Implement pure dataclasses/functions:
+   - `ContextCapacity`
+   - `ContextPressureReport`
+   - `resolve_model_context_capacity`
+   - `estimate_visible_message_tokens`
+   - `group_complete_turns`
+   - `select_raw_tail_groups`
+   - `estimate_context_pressure`
+6. Keep diagnostics sanitized: IDs/counts/token estimates/status only.
+7. Verify focused tests.
+
+**Commit:** `feat: add model-aware context pressure primitives`
+
+---
+
+## Task 2: Complete-turn compression and coverage invariant
+
+**Files**
+- Modify `apps/api/app/services/conversation_service.py`
+- Modify `apps/api/app/engine/prompts.py`
+- Modify `apps/api/app/api/conversations.py`
+- Modify `apps/api/app/services/post_commit_dispatcher.py`
+- Extend `apps/api/tests/test_compression_pipeline.py`
+- Extend `apps/api/tests/test_compression_contract.py`
+- Extend `apps/api/tests/test_character_runtime.py`
+
+**Steps**
+1. Add failing tests that prove:
+   - source + generated bubbles are never split at the protected-tail or 48-message boundary;
+   - the prompt raw suffix is contiguous after `last_compression_source_message_id`;
+   - no 8+2 anchor selector may silently omit a middle message in automatic mode;
+   - an oversized single turn remains intact and produces an explicit hard-pressure state;
+   - catch-up continues across multiple bounded batches until low watermark or no progress;
+   - CAS/retry remains idempotent.
+2. Replace count-first folding in automatic mode with complete-turn/token-tail selection. Keep legacy selector for rollback tests.
+3. Change generation history selection so automatic mode receives the entire verified suffix; preserve legacy bounded selection only in legacy/shadow runtime behavior.
+4. Replace `should_update_scene_orchestration_summary` primary decision with pressure/coverage report in automatic mode. The deprecated interval is a debounce/cost guard only.
+5. Add a bounded pre-generation coverage check. Refresh `SceneState` and message suffix after each successful catch-up batch.
+6. Add a typed recoverable API error when a hard gap remains after retries; never fabricate continuity.
+7. Treat a background compression task as successful only when the boundary/revision actually advances, or when a fresh selector proves there is no foldable backlog. Persisted `last_compression_error` with unchanged coverage must requeue/fail the task instead of being marked `completed`.
+8. Persist only sanitized counters/ratios to `SceneState` and task metadata.
+9. Verify focused tests.
+
+**Commit:** `feat: enforce token-pressure compression coverage`
+
+---
+
+## Task 3: Additive episode and lifecycle schema
+
+**Files**
+- Modify `apps/api/app/db/models.py`
+- Modify `apps/api/app/db/session.py`
+- Add `apps/api/app/schemas/conversation_memory.py`
+- Add `apps/api/app/services/conversation_memory_service.py`
+- Modify `apps/api/app/schemas/conversations.py`
+- Modify `apps/api/app/api/conversations.py`
+- Add `apps/api/tests/test_conversation_memory_lifecycle.py`
+
+**Steps**
+1. Add failing CRUD/lifecycle/CAS/isolation tests.
+2. Add `ConversationEpisode`:
+   - conversation/branch
+   - immutable source start/end/count
+   - summary/outcome/entities/evidence
+   - `closed|reopened`
+   - token/version/revision timestamps
+   - unique conversation+branch+source range
+3. Add `ConversationMemoryItem`:
+   - `fact|thread`
+   - subject/entity tags/content
+   - `current|open|resolved|superseded|expired`
+   - `valid_from`, `valid_until`, `source_episode_id`, evidence IDs
+   - `superseded_by_id`, confidence, extraction version, revision
+4. Add sanitized context read models and revision-checked manual correction endpoints. Source ranges remain immutable.
+5. Ensure conversation deletion cascades/explicitly deletes new rows.
+6. Existing rooms need no destructive backfill. Mark coverage as `legacy_uncertain` until new dual-write artifacts establish reliable ranges.
+7. Verify focused tests.
+
+**Commit:** `feat: add lifecycle-aware conversation memory schema`
+
+---
+
+## Task 4: Dual-write extraction and atomic artifact persistence
+
+**Files**
+- Modify `apps/api/app/engine/compression_graph.py`
+- Modify `apps/api/app/services/conversation_service.py`
+- Modify `apps/api/app/services/system_prompt_service.py`
+- Modify `apps/api/app/services/conversation_memory_service.py`
+- Extend `apps/api/tests/test_compression_pipeline.py`
+- Extend `apps/api/tests/test_compression_contract.py`
+
+**Steps**
+1. Add failing tests for strict extraction validation, evidence rejection, closed-by-default episode creation, ADD/UPDATE/SUPERSEDE/NOOP, deduplication and rollback when artifact persistence fails.
+2. Add explicit regression fixtures from the live league baseline failure: reject official outcome/points/streak/placement contamination in the Arc, and reject a fold whose terminal unresolved hook is absent from both the Arc and an open thread artifact.
+3. Add an editable system-prompt setting for memory-artifact extraction.
+4. Re-enable the compression graph's memory branch with a strict JSON contract:
+   - one episode projection for the exact fold range;
+   - zero or more fact/thread operations;
+   - evidence IDs restricted to the folded source range;
+   - no relationship scores, battle standings/results, ordinary dialogue, mood or temporary actions.
+5. Validate operations before DB writes. Unknown targets/entities/evidence are rejected, not repaired by guessing.
+6. Run a source-vs-draft semantic coverage critic before the CAS. It must report missing unresolved hooks, unsupported active-state claims, official-ledger contamination and excessive source copying without reproducing raw text in persistence/logs.
+7. Allow a bounded repair pass using only the failed draft, critic defect codes and exact source window. Re-run deterministic and semantic validation after repair.
+8. Apply episode + lifecycle operations in the same transaction as the summary boundary CAS. If dual-write or quality validation fails, the previous Arc/revision/boundary stays intact and the task is retryable/failed rather than `completed`.
+9. Use deterministic source-range uniqueness for retry safety.
+10. Verify focused tests.
+
+**Commit:** `feat: dual-write episodic compression artifacts`
+
+---
+
+## Task 5: Lifecycle-aware retrieval and prompt routing
+
+**Files**
+- Modify `apps/api/app/services/conversation_memory_service.py`
+- Modify `apps/api/app/engine/prompts.py`
+- Modify `apps/api/app/engine/character_runtime.py`
+- Modify `apps/api/app/services/context_preview_service.py`
+- Modify `apps/api/app/api/conversations.py`
+- Extend `apps/api/tests/test_prompt_harness.py`
+- Extend `apps/api/tests/test_character_runtime.py`
+- Extend `apps/api/tests/test_context_preview_api.py`
+
+**Steps**
+1. Add failing tests proving closed episodes are excluded from normal generation and only enter an explicitly labeled historical lane on recall/reopen/dependency.
+2. Implement conservative Korean/English retrospective-intent detection.
+3. Retrieve current facts/open threads first; filter by validity/entity/branch before ranking.
+4. Retrieve at most a small bounded number of closed episodes by lexical overlap and recency only after the hard gate passes.
+5. Add distinct prompt sections:
+   - `Current facts and open threads`
+   - `Historical episodes — closed`
+6. Include provenance IDs/status in rendering, but no hidden/provider data.
+7. Make context preview use the same retrieval and pressure estimator as production.
+8. Verify focused tests.
+
+**Commit:** `feat: gate historical episode recall by lifecycle`
+
+---
+
+## Task 6: Remove turn UI and add pressure/coverage observability
+
+**Integration status (2026-09-03):** The turn-count control and its web PATCH field were removed during the `dev` integration. Pressure/coverage observability in the context drawer remains follow-up work and is not claimed as complete here.
+
+**Files**
+- Modify `apps/api/app/schemas/runtime_settings.py`
+- Modify `apps/api/app/services/runtime_settings_service.py`
+- Modify `apps/api/app/schemas/conversations.py`
+- Modify `apps/api/app/api/conversations.py`
+- Modify `apps/web/src/components/organisms/RuntimeSettings.tsx`
+- Modify `apps/web/src/components/organisms/ConversationInfoDrawer.tsx`
+- Modify `apps/web/src/app/App.tsx`
+- Modify `apps/web/tests/frontend-contract.test.mjs`
+- Extend API runtime/context tests
+
+**Steps**
+1. Keep deprecated `compression_interval_turns` accepted by API/database for rollback, but remove editable turn-frequency options from web payload and UI.
+2. Return mode, pressure ratio, projected/capacity/reserve tokens, coverage status/gap count, backlog groups, last success/error, and artifact counts from the conversation context endpoint.
+3. Show `자동 컨텍스트 관리` state in the drawer:
+   - shadow/automatic/legacy badge
+   - normal/high/hard pressure
+   - coverage healthy/legacy uncertain/gap
+   - last compression/error and manual recovery action
+4. Show active facts/open threads separately from historical closed episodes. Do not merge them with user notes.
+5. Preserve existing Story Arc and manual note editing for rollback/correction.
+6. Update frontend/i18n contracts, test, typecheck and build.
+
+**Commit:** `feat: expose automatic context management status`
+
+---
+
+## Task 7: Migration, replay and final verification
+
+**Files**
+- Add `apps/api/tests/fixtures/rp_context_replay.py` or a privacy-safe synthetic fixture
+- Add `apps/api/tests/test_rp_context_replay.py`
+- Update docs in this plan with measured results
+
+**Synthetic replay scenarios**
+1. Variable-length turns that cross pressure between cadence boundaries.
+2. Multi-bubble generation whose source/reply group crosses the old 48-message boundary.
+3. Closed conflict followed by calm current scene; ensure no false active recall.
+4. Explicit “그때 기억나?” recall; ensure historical lane appears with closed warning.
+5. Resolved thread superseded by a new fact; ensure old fact excluded from active lane.
+6. Legacy summary with no boundary, dangling boundary and large backlog.
+7. Compression LLM unavailable and CAS conflict/retry.
+8. One oversized indivisible turn.
+
+### Live league-room compression quality gate
+
+Synthetic replay is a regression safety net, not the final RP-quality verdict. At every compression-behavior milestone, discover the live room titled `리그` through the running API and exercise the shipped `POST /conversations/{id}/compress-now` path against a fresh online-backup clone. Do not hard-code a stale room ID in source and do not advance the live room for feature-branch comparisons.
+
+**Controlled-comparison rule:** within each before/after compression-logic experiment, keep the selected provider/model fixed across all compared arms so that the measured difference is attributable to compression logic rather than a model change. The current controlled cohort uses `model_google_gemini_flash_latest` / `gemini-flash-latest` because that is the user-selected test model for this cohort; this is not a permanent product-model decision and does not require future cohorts to use Gemini. Every arm in the same cohort must also use the same frozen DB snapshot, prior Arc, boundary, selected source batch, runtime prompt settings, response preset and output limits. Run repeated same-input trials to expose model variance. Results from different models, different fold batches or different runtime settings—including the stable 71-point baseline and later clone runs—are directional workload evidence only and must never be reported as a measured compression-logic improvement.
+
+1. Before each call, capture content-free metadata from `/context` and `/compression-preview`: revision, boundary, error state, summary chars/lines, total backlog and next fold-batch count.
+2. Inspect the exact folded source and returned Arc ephemerally for scoring, but never write raw messages, Arc text, personal names, provider payloads or credentials to Git, QA artifacts or chat reports.
+3. POST exactly once per scored run, then verify API read-back: revision/boundary advance, error state, next batch and structural Arc metrics.
+4. Score every result out of 100 with the fixed rubric:
+   - factual/key-event preservation 25
+   - chronology/causality 15
+   - official league ledger contamination avoidance 15
+   - active-vs-closed lifecycle distinction 15
+   - unresolved/open-hook retention 10
+   - next-turn continuity usefulness 10
+   - semantic density/no raw copy 5
+   - Rolling Story Arc structure 5
+5. Treat revision/boundary advancement, pipeline completion, format validity, usage completeness and production apply/abort behavior as separate fail-closed operational gates rather than quality points.
+6. PASS requires `>= 85` and no critical flag. Invented winner/ranking, a closed event reactivated as current, uncovered folded source, malformed/blank Arc, or raw-copy leakage is an automatic failure.
+7. Keep only a redacted score ledger outside Git: implementation commit, runtime build identity, provider/model key, pre/post revision, whether the boundary advanced, batch counts, numeric subscores, critical flags and short paraphrased defect codes.
+8. Compare the current stable baseline with the feature-branch verification instance under the same room/model contract. Do not assume a working-tree edit is active; restart the intended verification service and verify `/ready`, `/health` and runtime build identity first.
+
+#### 2026-09-02 frozen Gemini cohort result
+
+The first exploratory 12-candidate run is excluded from causal evidence because C and D did not share the same upstream draft. The corrected v2 harness (`a56230314afa685162286907580fe1f8b16f8c7cedb379afe4f655f3608d3175`) received independent controlled-validity and privacy PASS verdicts before execution. It used revision 81, the exact 52-message fold batch, the same prior Arc/boundary/runtime/model contract, three repetitions per arm, and a shared C→D upstream draft. Three reviewers locked blind scores before unblinding; redaction, arithmetic and no-mapping-access checks passed.
+
+| Arm | Mean score | Critical candidates | Domain contract | Mean calls | Mean total tokens | Mean wall time |
+|---|---:|---:|---:|---:|---:|---:|
+| A — current one-pass | 68.56 | 3/3 | 0/3 | 1.00 | 10,105.67 | 12.64 s |
+| B — stronger one-pass contract | 85.33 | 3/3 | 3/3 | 1.00 | 12,396.67 | 18.64 s |
+| C — structured extraction/render | 83.56 | 3/3 | 1/3 | 4.00 | 35,459.67 | 51.27 s |
+| D — shared C draft + critic/repair | 84.89 | 3/3 | 2/3 | 6.33 | 64,653.33 | 66.82 s |
+
+No arm passed the required `>=85 and zero critical flags` gate, so automatic rollout remains blocked. B is the best cost/quality baseline for the next implementation iteration, but its mean above 85 is not a PASS because all three candidates retained at least one critical defect. C→D improved only one of three paired repetitions (`+4.0`, then `0.0`, `0.0`) while adding an average 2.33 calls, 29,193.67 tokens and 15.55 seconds. D's runtime gate accepted one candidate that human reviewers still flagged for terminal chronology distortion and unsupported official-ledger content, so the critic/gate is not yet trustworthy for boundary advancement.
+
+**Commands**
+```bash
+cd apps/api
+.venv/bin/python -m pytest -q
+
+cd ../web
+npm test
+npm run typecheck
+npm run build
+npm audit --omit=dev
+```
+
+**Review gates**
+- Requirements review against this plan.
+- Code-quality/security/privacy review.
+- Live league-room score is at least 85 with no critical flag.
+- Inspect `git diff --check`, changed-file list and commit history.
+- Push only the feature branch; do not merge or modify `dev`/`main`.
+
+**Final commit:** fixes from review only, then push `origin/feature/rp-context-memory-lifecycle`.

@@ -104,6 +104,8 @@ class ProviderModel:
     supports_compression: bool = True
     supports_tts: bool = False
     supports_json: bool = True
+    context_window_tokens: int | None = None
+    max_output_tokens: int | None = None
 
 
 def _now() -> datetime:
@@ -139,6 +141,61 @@ def _metadata_text(model: str, metadata: dict | None = None, *extra: str | None)
 
 def _contains_any(value: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern in value for pattern in patterns)
+
+
+def _positive_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float) and value.is_integer():
+        converted = int(value)
+        return converted if converted > 0 else None
+    if isinstance(value, str):
+        normalized = value.strip().replace("_", "")
+        if normalized.isdigit():
+            converted = int(normalized)
+            return converted if converted > 0 else None
+    return None
+
+
+def _first_positive_int(metadata: dict, keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = _positive_int(metadata.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _context_metadata(metadata: dict | None) -> tuple[int | None, int | None]:
+    metadata = metadata or {}
+    context_window_tokens = _first_positive_int(
+        metadata,
+        (
+            "inputTokenLimit",
+            "input_token_limit",
+            "context_length",
+            "context_window",
+            "context_window_tokens",
+            "max_context_length",
+        ),
+    )
+    max_output_tokens = _first_positive_int(
+        metadata,
+        (
+            "outputTokenLimit",
+            "output_token_limit",
+            "max_output_tokens",
+            "max_completion_tokens",
+        ),
+    )
+    top_provider = metadata.get("top_provider")
+    if max_output_tokens is None and isinstance(top_provider, dict):
+        max_output_tokens = _first_positive_int(
+            top_provider,
+            ("max_completion_tokens", "max_output_tokens"),
+        )
+    return context_window_tokens, max_output_tokens
 
 
 def _family_for_provider(provider_type: str, model: str) -> str:
@@ -203,6 +260,7 @@ def _capabilities_for_model(provider_type: str, model: str, metadata: dict | Non
 
 def _provider_model(model: str, label: str | None, provider_type: str, metadata: dict | None = None) -> ProviderModel:
     supports_chat, supports_compression, supports_tts, supports_json = _capabilities_for_model(provider_type, model, metadata)
+    context_window_tokens, max_output_tokens = _context_metadata(metadata)
     return ProviderModel(
         model=model,
         label=label or model,
@@ -211,6 +269,8 @@ def _provider_model(model: str, label: str | None, provider_type: str, metadata:
         supports_compression=supports_compression,
         supports_tts=supports_tts,
         supports_json=supports_json,
+        context_window_tokens=context_window_tokens,
+        max_output_tokens=max_output_tokens,
     )
 
 
@@ -417,6 +477,10 @@ def sync_models(session: Session, account_id: str) -> list[ModelOptionRead]:
         option.supports_tts = fetched.supports_tts
         option.supports_json = fetched.supports_json
         option.model_family = fetched.family
+        if fetched.context_window_tokens is not None:
+            option.context_window_tokens = fetched.context_window_tokens
+        if fetched.max_output_tokens is not None:
+            option.max_output_tokens = fetched.max_output_tokens
         if not (option.supports_chat or option.supports_compression or option.supports_tts):
             option.enabled = False
         option.updated_at = _now()
@@ -453,6 +517,8 @@ def create_manual_option(session: Session, payload: ModelOptionManualCreate) -> 
         supports_tts=payload.supports_tts,
         model_family=payload.model_family,
         supports_json=payload.supports_json,
+        context_window_tokens=payload.context_window_tokens,
+        max_output_tokens=payload.max_output_tokens,
         source="manual",
     )
     session.add(option)
@@ -467,6 +533,9 @@ def update_option(session: Session, option_id: str, payload: ModelOptionUpdate) 
         value = getattr(payload, field)
         if value is not None:
             setattr(option, field, value)
+    for field in ("context_window_tokens", "max_output_tokens"):
+        if field in payload.model_fields_set:
+            setattr(option, field, getattr(payload, field))
     option.updated_at = _now()
     session.add(option)
     session.commit()
@@ -559,6 +628,8 @@ def serialize_option(option: ModelOption, account: ModelProviderAccount | None =
         supports_tts=option.supports_tts,
         model_family=option.model_family,
         supports_json=option.supports_json,
+        context_window_tokens=option.context_window_tokens,
+        max_output_tokens=option.max_output_tokens,
         source=option.source,
         last_test_status=option.last_test_status,
         last_test_message=option.last_test_message,

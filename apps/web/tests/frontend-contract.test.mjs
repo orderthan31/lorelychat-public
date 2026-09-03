@@ -6,7 +6,7 @@ assert.equal(normalizeCompressionStrategy(undefined), 'quality');
 assert.equal(normalizeCompressionStrategy('legacy-unknown'), 'quality');
 assert.equal(normalizeCompressionStrategy('fast'), 'fast');
 assert.deepEqual(normalizeRuntimeSetting({ scope: 'conversation' }), { scope: 'conversation', compression_strategy: 'quality' });
-const runtimePayloadDefaults = { response_length_preset: 'medium', compression_interval_turns: 5 };
+const runtimePayloadDefaults = { response_length_preset: 'medium' };
 const fullRuntimeSetting = {
   model_key: 'chat-model',
   fallback_model_key: 'chat-fallback',
@@ -15,7 +15,6 @@ const fullRuntimeSetting = {
   default_tts_model_option_key: 'tts-model',
   safety_preset: 'high',
   response_length_preset: 'long',
-  compression_interval_turns: '8',
   compression_strategy: 'fast',
 };
 assert.deepEqual(normalizeRuntimeSettingUpdatePayload(fullRuntimeSetting, runtimePayloadDefaults), {
@@ -26,7 +25,6 @@ assert.deepEqual(normalizeRuntimeSettingUpdatePayload(fullRuntimeSetting, runtim
   default_tts_model_option_key: 'tts-model',
   safety_preset: 'high',
   response_length_preset: 'long',
-  compression_interval_turns: 8,
   compression_strategy: 'fast',
 });
 assert.deepEqual(normalizeRuntimeSettingUpdatePayload({}, runtimePayloadDefaults), {
@@ -37,7 +35,6 @@ assert.deepEqual(normalizeRuntimeSettingUpdatePayload({}, runtimePayloadDefaults
   default_tts_model_option_key: null,
   safety_preset: 'medium',
   response_length_preset: 'medium',
-  compression_interval_turns: 5,
   compression_strategy: 'quality',
 });
 assert.equal(normalizeRuntimeSettingUpdatePayload({ compression_strategy: 'quality' }, runtimePayloadDefaults).compression_strategy, 'quality');
@@ -229,6 +226,7 @@ assert.match(runtimeSettingsSource, /약 2\.85배/);
 assert.match(runtimeSettingsSource, /실제 비용과 결과 품질은 달라질 수 있습니다/);
 assert.doesNotMatch(runtimeSettingsSource, /연속성과 정확도가 가장 좋습니다/);
 assert.match(runtimeSettingsSource, /compression_strategy: normalizeCompressionStrategy\(event\.currentTarget\.value\)/);
+assert.doesNotMatch(runtimeSettingsSource, /compression_interval_turns|압축 빈도|요약 주기/);
 assert.match(genreSource, /compression_strategy: 'quality'/);
 assert.match(runtimeDefaultHookSource, /normalizeRuntimeSettingUpdatePayload\(setting, DEFAULT_RUNTIME_SETTING\)/);
 assert.match(appRootSource, /payload: normalizeRuntimeSettingUpdatePayload\(conversationRuntimeSetting, DEFAULT_RUNTIME_SETTING\)/);
@@ -420,11 +418,10 @@ assert.match(app, /export function Pager\(\{ page, total, onPage \}: PagerProps\
 assert.match(app, /export type TextareaWithExpandProps/);
 assert.match(app, /export function TextareaWithExpand\([\s\S]*TextareaWithExpandProps\)/);
 assert.match(app, /textarea 확장 design-system primitive marker/);
-assert.match(app, /compression_interval_options/);
-assert.match(app, /2턴마다 · 강한 기억 유지/);
-assert.match(app, /새 방\/관계 초반처럼 첫 상황과 말맛을 자주 고정/);
-assert.match(app, /compressionIntervalOptions\(value\)\.map/);
-assert.doesNotMatch(app, /<option value="3">3턴마다 · 자주\/안전<\/option><option value="5">5턴마다 · 기본 추천/);
+assert.doesNotMatch(app, /compression_interval_options/);
+assert.doesNotMatch(app, /2턴마다 · 강한 기억 유지/);
+assert.doesNotMatch(app, /새 방\/관계 초반처럼 첫 상황과 말맛을 자주 고정/);
+assert.doesNotMatch(app, /compressionIntervalOptions\(value\)\.map/);
 assert.doesNotMatch(app, /첫상황·첫대사가 있는 새 방은 초반 말맛 보존을 위해 2턴 압축으로 자동 시작됩니다/);
 assert.doesNotMatch(app, /초반 기억 강화/);
 assert.doesNotMatch(app, /data-modernized="room-flavor-compression-cadence-hint design-system primitive marker"/);

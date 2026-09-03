@@ -61,6 +61,8 @@ class ModelOptionManualCreate(BaseModel):
     supports_tts: bool = False
     model_family: ModelFamily = "custom"
     supports_json: bool = True
+    context_window_tokens: int | None = Field(default=None, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
 
 
 class ModelOptionUpdate(BaseModel):
@@ -71,6 +73,8 @@ class ModelOptionUpdate(BaseModel):
     supports_tts: bool | None = None
     model_family: ModelFamily | None = None
     supports_json: bool | None = None
+    context_window_tokens: int | None = Field(default=None, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
 
 
 class ModelOptionRead(BaseModel):
@@ -88,6 +92,8 @@ class ModelOptionRead(BaseModel):
     supports_tts: bool
     model_family: ModelFamily
     supports_json: bool
+    context_window_tokens: int | None = None
+    max_output_tokens: int | None = None
     source: ModelSource
     last_test_status: TestStatus | None = None
     last_test_message: str | None = None

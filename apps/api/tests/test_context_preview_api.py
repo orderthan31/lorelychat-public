@@ -1,4 +1,5 @@
 from app.db.models import BattleMatchRecord, CharacterMemory, ConversationRelationshipState, Message, SceneState
+from app.core.config import get_settings
 
 
 def test_context_preview_reports_prompt_sections_and_selected_history(client, session):
@@ -57,7 +58,9 @@ def test_context_preview_reports_prompt_sections_and_selected_history(client, se
     body = response.json()
     assert body["conversation_id"] == room["id"]
     assert body["recent_message_count"] == 20
-    assert body["selected_recent_message_count"] <= 10
+    # Automatic context management preserves the complete verified raw suffix;
+    # it no longer applies the legacy 8+2 count selector.
+    assert body["selected_recent_message_count"] == 20
     assert body["model_key"] is None
     keys = {section["key"]: section for section in body["sections"]}
     for key in [
@@ -149,6 +152,53 @@ def test_context_preview_missing_room_returns_404(client):
     response = client.get("/conversations/conv_missing/context-preview")
 
     assert response.status_code == 404
+
+
+def test_automatic_context_preview_reports_dangling_boundary_as_conflict(
+    client,
+    session,
+    monkeypatch,
+):
+    character = client.post(
+        "/characters",
+        json={"name": "세아", "persona": "침착하다."},
+    ).json()
+    room = client.post(
+        "/conversations",
+        json={
+            "mode": "user_character",
+            "participants": [
+                {"type": "user", "id": "user_001"},
+                {"type": "character", "id": character["id"]},
+            ],
+        },
+    ).json()
+    scene = SceneState(
+        conversation_id=room["id"],
+        last_compression_source_message_id="msg_missing_boundary",
+        summary="[Rolling Story Arc]\n- 이전 사건",
+    )
+    session.add(scene)
+    session.add(
+        Message(
+            id="msg_after_missing_boundary",
+            conversation_id=room["id"],
+            speaker_type="user",
+            speaker_id="user_001",
+            content="현재 대화",
+        )
+    )
+    session.commit()
+
+    monkeypatch.setenv("CONTEXT_MANAGEMENT_MODE", "automatic")
+    get_settings.cache_clear()
+    try:
+        response = client.get(f"/conversations/{room['id']}/context-preview")
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {"code": "context_coverage_gap"}
 
 
 def test_context_preview_explains_prompt_sections_and_flags_duplicates(client, session):

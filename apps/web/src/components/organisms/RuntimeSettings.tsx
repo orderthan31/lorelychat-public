@@ -1,7 +1,6 @@
 import { useId } from 'react';
 import {
   DEFAULT_RUNTIME_SETTING,
-  FALLBACK_COMPRESSION_INTERVAL_OPTIONS,
   FALLBACK_RESPONSE_LENGTH_PRESETS,
 } from '../../constants/domain';
 import { Field, FormSection } from '../molecules';
@@ -16,7 +15,6 @@ import type { CompressionStrategy } from '../../types/domain';
 import { normalizeCompressionStrategy } from '../../utils/runtimeSettings';
 
 type RuntimeOption = { key?: string; label?: string; provider_account_id?: string | null; provider_account_alias?: string | null; provider?: string; model?: string };
-type CompressionIntervalOption = { turns?: number | string; label?: string; description?: string };
 export type RuntimeSettingValue = {
   model_key?: string | null;
   fallback_model_key?: string | null;
@@ -27,13 +25,11 @@ export type RuntimeSettingValue = {
   default_tts_model_option_key?: string | null;
   safety_preset?: 'high' | 'medium' | 'low' | string;
   response_length_preset?: string;
-  compression_interval_turns?: string | number;
   compression_strategy?: CompressionStrategy;
   options?: RuntimeOption[];
   compression_options?: RuntimeOption[];
   tts_options?: RuntimeOption[];
   response_length_presets?: RuntimeOption[];
-  compression_interval_options?: CompressionIntervalOption[];
   [key: string]: unknown;
 };
 
@@ -68,23 +64,11 @@ function runtimeModelOptions(setting?: RuntimeSettingValue): RuntimeOption[] { r
 function compressionModelOptions(setting?: RuntimeSettingValue): RuntimeOption[] { return setting?.compression_options?.length ? setting.compression_options : []; }
 function ttsModelOptions(setting?: RuntimeSettingValue): RuntimeOption[] { return setting?.tts_options?.length ? setting.tts_options : []; }
 function responseLengthPresets(setting?: RuntimeSettingValue): RuntimeOption[] { return setting?.response_length_presets?.length ? setting.response_length_presets : FALLBACK_RESPONSE_LENGTH_PRESETS; }
-function compressionIntervalOptions(setting?: RuntimeSettingValue): CompressionIntervalOption[] { return setting?.compression_interval_options?.length ? setting.compression_interval_options : FALLBACK_COMPRESSION_INTERVAL_OPTIONS; }
 function localizedResponseLengthLabel(option: RuntimeOption, t: Translator): string {
   if (option.key === 'short') return t('짧게');
   if (option.key === 'medium') return t('중간');
   if (option.key === 'long') return t('긴대화');
   return option.label || option.key || '';
-}
-function localizedCompressionInterval(option: CompressionIntervalOption, t: Translator): { label: string; description?: string } {
-  const known = {
-    2: [t('2턴마다 · 강한 기억 유지'), t('새 방/관계 초반처럼 첫 상황과 말맛을 자주 고정해야 할 때')],
-    3: [t('3턴마다 · 자주/안전'), t('중요 장면, 리그 초반, 관계 변화가 잦은 방')],
-    5: [t('5턴마다 · 기본 추천'), t('품질과 비용 균형이 가장 무난한 기본값')],
-    8: [t('8턴마다 · 비용 절약'), t('긴 흐름은 유지하되 압축 호출을 줄이고 싶을 때')],
-    12: [t('12턴마다 · 최소 압축'), t('테스트나 저비용 장시간 대화용')],
-  } as const;
-  const localized = known[Number(option.turns) as keyof typeof known];
-  return localized ? { label: localized[0], description: localized[1] } : { label: option.label || `${option.turns}${t('턴마다')}`, description: option.description };
 }
 function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compact = false }: RuntimeSettingFieldsProps) {
   const { t } = useI18n();
@@ -161,7 +145,6 @@ function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compa
     </fieldset>
     <Field label={t('TTS 모델')}><Select value={String(value.default_tts_model_option_key || '')} onChange={(e) => update({ default_tts_model_option_key: e.target.value || null })}><option value="">{t('TTS 모델 미설정')}</option>{ttsModelOptions(value).map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
     <Field label={t('대화 길이')}><Select value={String(value.response_length_preset || DEFAULT_RUNTIME_SETTING.response_length_preset)} onChange={(e) => update({ response_length_preset: e.target.value })}>{responseLengthPresets(value).map((preset) => <option key={preset.key} value={preset.key}>{localizedResponseLengthLabel(preset, t)}</option>)}</Select></Field>
-    <Field label={t('압축 빈도')}><Select value={String(value.compression_interval_turns || DEFAULT_RUNTIME_SETTING.compression_interval_turns)} onChange={(e) => update({ compression_interval_turns: Number(e.target.value) })}>{compressionIntervalOptions(value).map((option) => <option key={String(option.turns)} value={String(option.turns)}>{localizedCompressionInterval(option, t).label}</option>)}</Select></Field>
     <Field label={t('민감 콘텐츠 필터')}><Select value={String(value.safety_preset || 'medium')} onChange={(e) => update({ safety_preset: e.target.value })}><option value="high">{t('높음 · 제한 강함')}</option><option value="medium">{t('보통 · 기본 RP')}</option><option value="low">{t('낮음 · provider 허용 범위')}</option></Select><p className="context-muted">{t('개인 로컬 채팅의 모델 응답 필터에만 적용됩니다. 마켓 검수 기준과는 별개입니다.')}</p></Field>
   </div>;
 }

@@ -363,6 +363,8 @@ class ModelOption(SQLModel, table=True):
     supports_tts: bool = False
     model_family: str = Field(default="custom", index=True)
     supports_json: bool = True
+    context_window_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
     source: str = Field(default="manual", index=True)
     last_test_status: Optional[str] = None
     last_test_message: Optional[str] = None

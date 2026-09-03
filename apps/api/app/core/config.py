@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +16,9 @@ class Settings(BaseSettings):
     llm_model: str = ""
     llm_mock: bool = True
     llm_timeout_seconds: float = 120.0
+    # Context pressure is the product default. legacy/shadow remain explicit
+    # rollback modes for operators and existing deployments.
+    context_management_mode: Literal["legacy", "shadow", "automatic"] = "automatic"
 
     # Purpose-specific model routing.
     # chat_generation can use Gemini while compression/summary stays on local Gemma.
