@@ -281,13 +281,33 @@ def fetch_provider_models(account: ModelProviderAccount) -> list[ProviderModel]:
         if account.provider_type == "google":
             if not api_key:
                 raise ValueError("Google provider API key is required")
-            response = httpx.get("https://generativelanguage.googleapis.com/v1beta/models", params={"key": api_key}, timeout=timeout)
-            response.raise_for_status()
-            return [
-                _provider_model(_model_id(item.get("name", "")), item.get("displayName"), "google", item)
-                for item in response.json().get("models", [])
-                if item.get("name")
-            ]
+            models: list[ProviderModel] = []
+            page_token: str | None = None
+            seen_page_tokens: set[str] = set()
+            for _ in range(100):
+                params = {"key": api_key, "pageSize": 1000}
+                if page_token:
+                    params["pageToken"] = page_token
+                response = httpx.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    params=params,
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                models.extend(
+                    _provider_model(_model_id(item.get("name", "")), item.get("displayName"), "google", item)
+                    for item in payload.get("models", [])
+                    if item.get("name")
+                )
+                next_page_token = str(payload.get("nextPageToken") or "").strip()
+                if not next_page_token:
+                    return models
+                if next_page_token in seen_page_tokens:
+                    raise ValueError("Google provider model list returned a repeated page token")
+                seen_page_tokens.add(next_page_token)
+                page_token = next_page_token
+            raise ValueError("Google provider model list exceeded the pagination limit")
         if account.provider_type == "openai":
             if not api_key:
                 raise ValueError("OpenAI provider API key is required")
@@ -297,13 +317,35 @@ def fetch_provider_models(account: ModelProviderAccount) -> list[ProviderModel]:
         if account.provider_type == "anthropic":
             if not api_key:
                 raise ValueError("Anthropic provider API key is required")
-            response = httpx.get(
-                "https://api.anthropic.com/v1/models",
-                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
-                timeout=timeout,
-            )
-            response.raise_for_status()
-            return [_provider_model(item.get("id", ""), item.get("display_name") or item.get("id"), "anthropic", item) for item in response.json().get("data", []) if item.get("id")]
+            models = []
+            after_id: str | None = None
+            seen_after_ids: set[str] = set()
+            for _ in range(100):
+                params: dict[str, str | int] = {"limit": 100}
+                if after_id:
+                    params["after_id"] = after_id
+                response = httpx.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                    params=params,
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                page = payload.get("data", [])
+                models.extend(
+                    _provider_model(item.get("id", ""), item.get("display_name") or item.get("id"), "anthropic", item)
+                    for item in page
+                    if item.get("id")
+                )
+                if not payload.get("has_more"):
+                    return models
+                next_after_id = str(payload.get("last_id") or (page[-1].get("id") if page else "") or "").strip()
+                if not next_after_id or next_after_id in seen_after_ids:
+                    raise ValueError("Anthropic provider model list returned an invalid page boundary")
+                seen_after_ids.add(next_after_id)
+                after_id = next_after_id
+            raise ValueError("Anthropic provider model list exceeded the pagination limit")
         if account.provider_type == "openrouter":
             response = httpx.get(
                 "https://openrouter.ai/api/v1/models",
@@ -455,23 +497,42 @@ def test_account(session: Session, account_id: str) -> ProviderAccountTestRead:
 
 def sync_models(session: Session, account_id: str) -> list[ModelOptionRead]:
     account = _account_by_id(session, account_id)
-    created_or_existing: list[ModelOption] = []
-    fetched_models = fetch_provider_models(account)
-    for fetched in fetched_models:
-        existing = session.exec(select(ModelOption).where(ModelOption.provider_account_id == account.id, ModelOption.model == fetched.model, ModelOption.deleted_at.is_(None))).first()
+    fetched_by_model = {
+        fetched.model.strip(): fetched
+        for fetched in fetch_provider_models(account)
+        if fetched.model.strip()
+    }
+    if not fetched_by_model:
+        raise ValueError("Provider model list returned no models; existing catalog was preserved")
+    existing_options = session.exec(
+        select(ModelOption).where(
+            ModelOption.provider_account_id == account.id,
+            ModelOption.deleted_at.is_(None),
+        )
+    ).all()
+    existing_by_model = {option.model: option for option in existing_options}
+    refreshed_at = _now()
+    for model_id, fetched in fetched_by_model.items():
+        existing = existing_by_model.get(model_id)
+        if existing and existing.source != "fetched":
+            # A manually maintained option remains user-owned even if the provider
+            # later starts advertising the same model id.
+            continue
         if existing:
             option = existing
         else:
             option = ModelOption(
                 id=_id("model_option"),
-                key=_model_key(account, fetched.model),
+                key=_model_key(account, model_id),
                 provider_account_id=account.id,
                 provider_type=account.provider_type,
-                model=fetched.model,
+                model=model_id,
                 label=fetched.label,
                 enabled=False,
                 source="fetched",
             )
+        option.label = fetched.label
+        option.provider_type = account.provider_type
         option.supports_chat = fetched.supports_chat
         option.supports_compression = fetched.supports_compression
         option.supports_tts = fetched.supports_tts
@@ -483,11 +544,19 @@ def sync_models(session: Session, account_id: str) -> list[ModelOptionRead]:
             option.max_output_tokens = fetched.max_output_tokens
         if not (option.supports_chat or option.supports_compression or option.supports_tts):
             option.enabled = False
-        option.updated_at = _now()
+        option.updated_at = refreshed_at
         session.add(option)
-        created_or_existing.append(option)
+    for option in existing_options:
+        if option.source != "fetched" or option.model in fetched_by_model:
+            continue
+        option.enabled = False
+        option.supports_chat = False
+        option.supports_compression = False
+        option.supports_tts = False
+        option.updated_at = refreshed_at
+        session.add(option)
     account.configured = _configured(account)
-    account.updated_at = _now()
+    account.updated_at = refreshed_at
     session.add(account)
     session.commit()
     return list_options(session, provider_account_id=account.id)

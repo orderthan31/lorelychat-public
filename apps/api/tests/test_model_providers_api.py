@@ -1,7 +1,9 @@
 from pathlib import Path
 
 import httpx
+import pytest
 
+from app.db.models import ModelProviderAccount
 from app.services import runtime_settings_service
 from app.services import provider_secret_service, model_provider_service
 
@@ -46,6 +48,215 @@ def _enable_option(client, option):
     response = client.patch(f"/model-options/{option['id']}", json={"enabled": True})
     assert response.status_code == 200
     return response.json()
+
+
+def test_provider_resync_refreshes_catalog_without_overwriting_user_choices(client, monkeypatch):
+    secret_file = _secret_path("provider_secrets_resync.json")
+    monkeypatch.setattr(provider_secret_service, "SECRET_ROOT", secret_file.parent)
+    monkeypatch.setattr(provider_secret_service, "SECRET_FILE", secret_file)
+    catalogs = iter([
+        [
+            model_provider_service.ProviderModel(
+                "gemini-current",
+                "Gemini Current (old label)",
+                "gemini",
+                context_window_tokens=32_000,
+            ),
+            model_provider_service.ProviderModel("gemini-retired", "Gemini Retired", "gemini"),
+        ],
+        [
+            model_provider_service.ProviderModel(
+                "gemini-current",
+                "Gemini Current",
+                "gemini",
+                context_window_tokens=128_000,
+            ),
+            model_provider_service.ProviderModel("gemini-new", "Gemini New", "gemini"),
+        ],
+    ])
+    monkeypatch.setattr(model_provider_service, "fetch_provider_models", lambda _account: next(catalogs))
+
+    account = client.post(
+        "/model-provider-accounts",
+        json={"provider_type": "google", "alias": "Refresh Gemini", "api_key": "test-refresh-key"},
+    ).json()
+    original = {
+        option["model"]: option
+        for option in client.get("/model-options").json()
+        if option["provider_account_id"] == account["id"]
+    }
+    _enable_option(client, original["gemini-current"])
+    _enable_option(client, original["gemini-retired"])
+    manual = client.post(
+        "/model-options/manual",
+        json={
+            "provider_account_id": account["id"],
+            "model": "gemini-manual",
+            "label": "Manual Gemini",
+            "enabled": True,
+            "supports_chat": True,
+            "supports_compression": True,
+        },
+    )
+    assert manual.status_code == 200, manual.text
+
+    response = client.post(f"/model-provider-accounts/{account['id']}/sync-models")
+
+    assert response.status_code == 200, response.text
+    refreshed = {option["model"]: option for option in response.json()}
+    assert refreshed["gemini-current"]["label"] == "Gemini Current"
+    assert refreshed["gemini-current"]["context_window_tokens"] == 128_000
+    assert refreshed["gemini-current"]["enabled"] is True
+    assert refreshed["gemini-new"]["enabled"] is False
+    assert refreshed["gemini-retired"]["enabled"] is False
+    assert refreshed["gemini-retired"]["supports_chat"] is False
+    assert refreshed["gemini-retired"]["supports_compression"] is False
+    assert refreshed["gemini-retired"]["supports_tts"] is False
+    assert refreshed["gemini-manual"]["enabled"] is True
+    assert refreshed["gemini-manual"]["supports_chat"] is True
+
+
+def test_provider_resync_rejects_empty_catalog_without_disabling_existing_models(client, monkeypatch):
+    secret_file = _secret_path("provider_secrets_empty_resync.json")
+    monkeypatch.setattr(provider_secret_service, "SECRET_ROOT", secret_file.parent)
+    monkeypatch.setattr(provider_secret_service, "SECRET_FILE", secret_file)
+    catalogs = iter([
+        [model_provider_service.ProviderModel("gemini-stable", "Gemini Stable", "gemini")],
+        [],
+    ])
+    monkeypatch.setattr(model_provider_service, "fetch_provider_models", lambda _account: next(catalogs))
+    account = client.post(
+        "/model-provider-accounts",
+        json={"provider_type": "google", "alias": "Stable Gemini", "api_key": "test-stable-key"},
+    ).json()
+    option = next(
+        option
+        for option in client.get("/model-options").json()
+        if option["provider_account_id"] == account["id"]
+    )
+    _enable_option(client, option)
+
+    response = client.post(f"/model-provider-accounts/{account['id']}/sync-models")
+
+    assert response.status_code == 400
+    assert "no models" in response.json()["detail"].lower()
+    preserved = next(
+        option
+        for option in client.get("/model-options").json()
+        if option["provider_account_id"] == account["id"]
+    )
+    assert preserved["enabled"] is True
+    assert preserved["supports_chat"] is True
+
+
+def test_google_model_fetch_follows_all_catalog_pages(monkeypatch):
+    account = ModelProviderAccount(
+        id="provider_google_pages",
+        provider_type="google",
+        alias="Paged Gemini",
+        api_key_secret_ref="secret-google-pages",
+    )
+    monkeypatch.setattr(provider_secret_service, "get_secret", lambda _ref: "google-test-key")
+    calls = []
+
+    def fake_get(url, *, params, timeout):
+        calls.append({"url": url, "params": dict(params), "timeout": timeout})
+        if "pageToken" not in params:
+            payload = {
+                "models": [{"name": "models/gemini-page-one", "displayName": "Gemini Page One"}],
+                "nextPageToken": "page-two",
+            }
+        else:
+            payload = {"models": [{"name": "models/gemini-page-two", "displayName": "Gemini Page Two"}]}
+        return httpx.Response(200, request=httpx.Request("GET", url), json=payload)
+
+    monkeypatch.setattr(model_provider_service.httpx, "get", fake_get)
+
+    models = model_provider_service.fetch_provider_models(account)
+
+    assert [model.model for model in models] == ["gemini-page-one", "gemini-page-two"]
+    assert calls[0]["params"] == {"key": "google-test-key", "pageSize": 1000}
+    assert calls[1]["params"] == {"key": "google-test-key", "pageSize": 1000, "pageToken": "page-two"}
+
+
+def test_anthropic_model_fetch_follows_all_catalog_pages(monkeypatch):
+    account = ModelProviderAccount(
+        id="provider_anthropic_pages",
+        provider_type="anthropic",
+        alias="Paged Claude",
+        api_key_secret_ref="secret-anthropic-pages",
+    )
+    monkeypatch.setattr(provider_secret_service, "get_secret", lambda _ref: "anthropic-test-key")
+    calls = []
+
+    def fake_get(url, *, headers, params, timeout):
+        calls.append({"url": url, "headers": dict(headers), "params": dict(params), "timeout": timeout})
+        if "after_id" not in params:
+            payload = {
+                "data": [{"id": "claude-page-one", "display_name": "Claude Page One"}],
+                "has_more": True,
+                "last_id": "claude-page-one",
+            }
+        else:
+            payload = {
+                "data": [{"id": "claude-page-two", "display_name": "Claude Page Two"}],
+                "has_more": False,
+                "last_id": "claude-page-two",
+            }
+        return httpx.Response(200, request=httpx.Request("GET", url), json=payload)
+
+    monkeypatch.setattr(model_provider_service.httpx, "get", fake_get)
+
+    models = model_provider_service.fetch_provider_models(account)
+
+    assert [model.model for model in models] == ["claude-page-one", "claude-page-two"]
+    assert calls[0]["params"] == {"limit": 100}
+    assert calls[1]["params"] == {"limit": 100, "after_id": "claude-page-one"}
+    assert all(call["headers"]["anthropic-version"] == "2023-06-01" for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("provider_type", "base_url", "model_id", "expected_url"),
+    [
+        ("openai", None, "gpt-latest-test", "https://api.openai.com/v1/models"),
+        ("openrouter", None, "anthropic/claude-latest-test", "https://openrouter.ai/api/v1/models"),
+        ("xai", model_provider_service.XAI_BASE_URL, "grok-latest-test", "https://api.x.ai/v1/models"),
+        ("openai_compatible", "http://localhost:1234/v1", "qwen-latest-test", "http://localhost:1234/v1/models"),
+    ],
+)
+def test_provider_model_fetch_uses_each_registered_provider_catalog_endpoint(
+    monkeypatch,
+    provider_type,
+    base_url,
+    model_id,
+    expected_url,
+):
+    account = ModelProviderAccount(
+        id=f"provider_{provider_type}_catalog",
+        provider_type=provider_type,
+        alias=f"Catalog {provider_type}",
+        base_url=base_url,
+        api_key_secret_ref=f"secret-{provider_type}-catalog",
+    )
+    monkeypatch.setattr(provider_secret_service, "get_secret", lambda _ref: "provider-test-key")
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return httpx.Response(
+            200,
+            request=httpx.Request("GET", url),
+            json={"data": [{"id": model_id, "name": model_id}]},
+        )
+
+    monkeypatch.setattr(model_provider_service.httpx, "get", fake_get)
+
+    models = model_provider_service.fetch_provider_models(account)
+
+    assert [model.model for model in models] == [model_id]
+    assert [call["url"] for call in calls] == [expected_url]
+    assert calls[0]["timeout"] == 30.0
+    assert calls[0]["headers"]["Authorization"] == "Bearer provider-test-key"
 
 
 def test_runtime_setting_accepts_only_a_distinct_active_fallback_model(client, monkeypatch):

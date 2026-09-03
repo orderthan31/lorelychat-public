@@ -95,6 +95,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
   const [modelPage, setModelPage] = useState(1);
   const [modelPageSize, setModelPageSize] = useState(10);
   const [loading, setLoading] = useState(false);
+  const [syncingAccountId, setSyncingAccountId] = useState('');
   const [message, setMessage] = useState('');
   const [activeSection, setActiveSection] = useState<ModelSettingsSection>('runtime');
 
@@ -229,18 +230,26 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
     }
   }
 
-  async function syncModels(accountId: string) {
+  async function syncModels(account: ProviderAccount) {
+    const knownModelIds = new Set(
+      modelOptions
+        .filter((option) => option.provider_account_id === account.id)
+        .map((option) => option.model),
+    );
+    setSyncingAccountId(account.id);
     setLoading(true);
     try {
-      await modelProviderApi.syncModels(accountId);
-      setModelProviderFilter(accountId);
+      const syncedOptions = (await modelProviderApi.syncModels(account.id)) || [];
+      const discoveredCount = syncedOptions.filter((option) => option.source === 'fetched' && !knownModelIds.has(option.model)).length;
+      setModelProviderFilter(account.id);
       setModelCapabilityFilter('runtime');
       setModelStatusFilter('all');
-      setMessage(t('모델 목록을 불러왔습니다. 사용할 모델을 활성화해주세요.'));
+      setMessage(`${account.alias} · ${t('모델 목록 최신화 완료')} · ${t('신규')} ${formatUiCount(discoveredCount, 'items', locale)} · ${t('전체')} ${formatUiCount(syncedOptions.length, 'items', locale)}`);
       await refreshModelProviderAndRuntimeState();
     } catch (error: any) {
-      setMessage(`${t('모델 목록 불러오기 실패 ·')} ${error.message}`);
+      setMessage(`${account.alias} · ${t('모델 목록 최신화 실패 ·')} ${error.message}`);
     } finally {
+      setSyncingAccountId('');
       setLoading(false);
     }
   }
@@ -369,15 +378,23 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
                   {statusBadge(t, providerAccounts[0])}
                 </div>
                 <div className="mt-3 grid gap-2">
-                  {providerAccounts.length ? providerAccounts.map((account) => <details key={account.id} className="group border-t border-border py-3 first:border-t-0 first:pt-0">
-                    <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 [&::-webkit-details-marker]:hidden">
+                  {providerAccounts.length ? providerAccounts.map((account) => <article key={account.id} className="grid gap-2 border-t border-border py-3 first:border-t-0 first:pt-0" data-provider-account-card>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="min-w-0">
                         <p className="m-0 font-bold text-foreground">{account.alias}</p>
                         <p className="context-muted">{t('Key')} {account.api_key_status === 'set' ? account.api_key_hint || t('등록됨') : t('미등록')} · {t('활성')} {account.active_model_count || 0}</p>
                       </div>
-                      <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" />
-                    </summary>
-                    <div className="mt-3 grid gap-2.5 border-t border-border/70 pt-3">
+                      <Button type="button" size="sm" variant="secondary" disabled={loading || !account.configured} data-provider-refresh-account={account.id} onClick={() => syncModels(account)}>
+                        <RefreshCw className={`size-3.5 ${syncingAccountId === account.id ? 'animate-spin' : ''}`} aria-hidden="true" />
+                        {t(syncingAccountId === account.id ? '모델 목록 최신화 중...' : '모델 목록 최신화')}
+                      </Button>
+                    </div>
+                    <details className="group">
+                      <summary className="flex min-h-9 cursor-pointer list-none items-center justify-between gap-2 text-sm font-bold text-muted-foreground [&::-webkit-details-marker]:hidden">
+                        <span>{t('연결 정보 관리')}</span>
+                        <ChevronDown className="size-4 shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
+                      </summary>
+                      <div className="mt-2 grid gap-2.5 border-t border-border/70 pt-3">
                       <div className="grid gap-2 min-[760px]:grid-cols-[minmax(0,1fr)_auto_auto] min-[760px]:items-end">
                         <Field label={t('API Key')}><Input type="password" value={accountApiKeys[account.id] || ''} placeholder={t('새 API Key 입력')} onChange={(e) => setAccountApiKeys((current) => ({ ...current, [account.id]: e.target.value }))} /></Field>
                         <Button type="button" size="sm" variant="secondary" disabled={loading || !(accountApiKeys[account.id] || '').trim()} onClick={() => updateAccountApiKey(account)}><Save className="size-3.5" aria-hidden="true" />{t('API Key 변경')}</Button>
@@ -385,10 +402,10 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => testAccount(account.id)}><PlugZap className="size-3.5" aria-hidden="true" />{t('연결 테스트')}</Button>
-                        <Button type="button" size="sm" variant="secondary" disabled={loading || !account.configured} onClick={() => syncModels(account.id)}><RefreshCw className="size-3.5" aria-hidden="true" />{t('모델 불러오기')}</Button>
                       </div>
-                    </div>
-                  </details>) : <p className="context-muted">{t('아직 등록된 계정이 없습니다.')}</p>}
+                      </div>
+                    </details>
+                  </article>) : <p className="context-muted">{t('아직 등록된 계정이 없습니다.')}</p>}
                 </div>
               </section>;
             })}
