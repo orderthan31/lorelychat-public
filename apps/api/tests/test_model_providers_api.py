@@ -477,6 +477,39 @@ def test_provider_account_api_key_update_replaces_secret_without_raw_response(cl
     assert provider_secret_service.get_secret(stored.api_key_secret_ref) == "gkey-new-secret-9999"
 
 
+def test_orphaned_provider_secret_is_not_reported_or_exposed_as_configured(client, monkeypatch):
+    secret_file = _secret_path("provider_secrets_orphaned.json")
+    monkeypatch.setattr(provider_secret_service, "SECRET_ROOT", secret_file.parent)
+    monkeypatch.setattr(provider_secret_service, "SECRET_FILE", secret_file)
+    monkeypatch.setattr(model_provider_service, "fetch_provider_models", _fake_provider_models)
+
+    account = client.post(
+        "/model-provider-accounts",
+        json={"provider_type": "google", "alias": "Orphaned Gemini", "api_key": "gkey-orphaned-secret"},
+    ).json()
+    option = next(
+        item
+        for item in client.get("/model-options").json()
+        if item["provider_account_id"] == account["id"] and item["supports_chat"]
+    )
+    _enable_option(client, option)
+    secret_file.unlink()
+
+    listed = next(
+        item
+        for item in client.get("/model-provider-accounts").json()
+        if item["id"] == account["id"]
+    )
+    assert listed["configured"] is False
+    assert listed["api_key_status"] == "missing"
+    assert listed["api_key_hint"] is None
+    assert client.get("/runtime-settings/default").json()["options"] == []
+
+    response = client.post(f"/model-provider-accounts/{account['id']}/sync-models")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Provider API key or required connection information is missing"
+
+
 def test_provider_account_clear_api_key_disables_only_its_models_and_runtime_options(client, session, monkeypatch):
     secret_file = _secret_path("provider_secrets_clear.json")
     monkeypatch.setattr(provider_secret_service, "SECRET_ROOT", secret_file.parent)

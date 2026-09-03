@@ -377,14 +377,16 @@ def fetch_provider_models(account: ModelProviderAccount) -> list[ProviderModel]:
     raise ValueError("Unsupported provider type")
 
 
-def _configured(account: ModelProviderAccount) -> bool:
+def _configured(account: ModelProviderAccount, *, has_api_key: bool | None = None) -> bool:
     if not account.enabled:
         return False
+    if has_api_key is None:
+        has_api_key = bool(provider_secret_service.get_secret(account.api_key_secret_ref))
     if account.provider_type == "openai_compatible":
-        return bool(account.base_url) and (bool(account.api_key_secret_ref) or account.preset in {"local_gemma", "ollama", "lm_studio", "vllm", "custom"})
+        return bool(account.base_url) and (has_api_key or account.preset in {"local_gemma", "ollama", "lm_studio", "vllm", "custom"})
     if account.provider_type == "xai":
-        return bool(account.base_url) and bool(account.api_key_secret_ref)
-    return bool(account.api_key_secret_ref)
+        return bool(account.base_url) and has_api_key
+    return has_api_key
 
 
 def _account_by_id(session: Session, account_id: str) -> ModelProviderAccount:
@@ -497,6 +499,8 @@ def test_account(session: Session, account_id: str) -> ProviderAccountTestRead:
 
 def sync_models(session: Session, account_id: str) -> list[ModelOptionRead]:
     account = _account_by_id(session, account_id)
+    if not _configured(account):
+        raise ValueError("Provider API key or required connection information is missing")
     fetched_by_model = {
         fetched.model.strip(): fetched
         for fetched in fetch_provider_models(account)
@@ -630,9 +634,12 @@ def test_option(session: Session, option_id: str) -> ModelOptionTestRead:
 def active_options_for_runtime(session: Session, capability: str) -> list[ModelOptionRead]:
     all_options = list_options(session)
     result: list[ModelOptionRead] = []
+    configured_accounts: dict[str, bool] = {}
     for option in all_options:
         account = _account_by_id(session, option.provider_account_id)
-        if not account.enabled or not account.configured or not option.enabled:
+        if account.id not in configured_accounts:
+            configured_accounts[account.id] = _configured(account)
+        if not configured_accounts[account.id] or not option.enabled:
             continue
         if capability == "chat" and option.supports_chat:
             result.append(option)
@@ -651,7 +658,7 @@ def option_by_key(session: Session, key: str | None) -> ModelOption | None:
 
 def option_is_active_for_capability(session: Session, option: ModelOption, capability: str) -> bool:
     account = _account_by_id(session, option.provider_account_id)
-    if not account.enabled or not account.configured or not option.enabled:
+    if not _configured(account) or not option.enabled:
         return False
     if capability == "chat":
         return option.supports_chat
@@ -663,15 +670,16 @@ def option_is_active_for_capability(session: Session, option: ModelOption, capab
 
 
 def serialize_account(account: ModelProviderAccount, *, active_model_count: int = 0) -> ProviderAccountRead:
+    has_api_key = bool(provider_secret_service.get_secret(account.api_key_secret_ref))
     return ProviderAccountRead(
         id=account.id,
         provider_type=account.provider_type,
         alias=account.alias,
         enabled=account.enabled,
-        configured=account.configured,
+        configured=_configured(account, has_api_key=has_api_key),
         base_url=account.base_url,
-        api_key_status="set" if account.api_key_secret_ref else "missing",
-        api_key_hint=account.api_key_hint,
+        api_key_status="set" if has_api_key else "missing",
+        api_key_hint=account.api_key_hint if has_api_key else None,
         preset=account.preset,
         last_test_status=account.last_test_status,
         last_test_message=account.last_test_message,

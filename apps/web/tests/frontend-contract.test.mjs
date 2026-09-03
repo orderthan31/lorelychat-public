@@ -241,6 +241,8 @@ assert.match(modelSettingsViewSource, /type: 'xai', label: 'xAI Grok'/);
 assert.doesNotMatch(modelSettingsViewSource, /모델 불러오기/);
 assert.match(modelSettingsViewSource, /모델 목록 최신화/);
 assert.match(modelSettingsViewSource, /data-provider-refresh-account=\{account\.id\}/);
+assert.match(modelSettingsViewSource, /data-provider-refresh-result=\{syncResult\.status\}/);
+assert.match(modelSettingsViewSource, /role=\{syncResult\.status === 'error' \? 'alert' : 'status'\}/);
 assert.match(modelSettingsViewSource, /onClick=\{\(\) => syncModels\(account\)\}/);
 assert.match(modelSettingsViewSource, /모델 목록 최신화 완료/);
 assert.match(modelSettingsViewSource, /toggleModelOption/);

@@ -43,6 +43,7 @@ const EMPTY_DRAFT: ProviderDraft = {
 };
 const MODEL_PAGE_SIZE_OPTIONS = [10, 20, 50];
 type ModelSettingsSection = 'runtime' | 'providers' | 'models';
+type AccountSyncResult = { status: 'success' | 'error'; message: string };
 
 function isModelSettingsSection(value: string): value is ModelSettingsSection {
   return value === 'runtime' || value === 'providers' || value === 'models';
@@ -96,6 +97,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
   const [modelPageSize, setModelPageSize] = useState(10);
   const [loading, setLoading] = useState(false);
   const [syncingAccountId, setSyncingAccountId] = useState('');
+  const [accountSyncResults, setAccountSyncResults] = useState<Record<string, AccountSyncResult>>({});
   const [message, setMessage] = useState('');
   const [activeSection, setActiveSection] = useState<ModelSettingsSection>('runtime');
 
@@ -237,6 +239,11 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
         .map((option) => option.model),
     );
     setSyncingAccountId(account.id);
+    setAccountSyncResults((current) => {
+      const next = { ...current };
+      delete next[account.id];
+      return next;
+    });
     setLoading(true);
     try {
       const syncedOptions = (await modelProviderApi.syncModels(account.id)) || [];
@@ -244,10 +251,14 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
       setModelProviderFilter(account.id);
       setModelCapabilityFilter('runtime');
       setModelStatusFilter('all');
-      setMessage(`${account.alias} · ${t('모델 목록 최신화 완료')} · ${t('신규')} ${formatUiCount(discoveredCount, 'items', locale)} · ${t('전체')} ${formatUiCount(syncedOptions.length, 'items', locale)}`);
+      const resultMessage = `${t('모델 목록 최신화 완료')} · ${t('신규')} ${formatUiCount(discoveredCount, 'items', locale)} · ${t('전체')} ${formatUiCount(syncedOptions.length, 'items', locale)}`;
+      setMessage(`${account.alias} · ${resultMessage}`);
+      setAccountSyncResults((current) => ({ ...current, [account.id]: { status: 'success', message: resultMessage } }));
       await refreshModelProviderAndRuntimeState();
     } catch (error: any) {
-      setMessage(`${account.alias} · ${t('모델 목록 최신화 실패 ·')} ${error.message}`);
+      const resultMessage = `${t('모델 목록 최신화 실패 ·')} ${error.message}`;
+      setMessage(`${account.alias} · ${resultMessage}`);
+      setAccountSyncResults((current) => ({ ...current, [account.id]: { status: 'error', message: resultMessage } }));
     } finally {
       setSyncingAccountId('');
       setLoading(false);
@@ -378,7 +389,9 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
                   {statusBadge(t, providerAccounts[0])}
                 </div>
                 <div className="mt-3 grid gap-2">
-                  {providerAccounts.length ? providerAccounts.map((account) => <article key={account.id} className="grid gap-2 border-t border-border py-3 first:border-t-0 first:pt-0" data-provider-account-card>
+                  {providerAccounts.length ? providerAccounts.map((account) => {
+                    const syncResult = accountSyncResults[account.id];
+                    return <article key={account.id} className="grid gap-2 border-t border-border py-3 first:border-t-0 first:pt-0" data-provider-account-card>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="min-w-0">
                         <p className="m-0 font-bold text-foreground">{account.alias}</p>
@@ -389,6 +402,11 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
                         {t(syncingAccountId === account.id ? '모델 목록 최신화 중...' : '모델 목록 최신화')}
                       </Button>
                     </div>
+                    {syncResult ? <p
+                      className={`m-0 text-xs leading-relaxed ${syncResult.status === 'error' ? 'text-destructive' : 'text-primary'}`}
+                      data-provider-refresh-result={syncResult.status}
+                      role={syncResult.status === 'error' ? 'alert' : 'status'}
+                    >{syncResult.message}</p> : null}
                     <details className="group">
                       <summary className="flex min-h-9 cursor-pointer list-none items-center justify-between gap-2 text-sm font-bold text-muted-foreground [&::-webkit-details-marker]:hidden">
                         <span>{t('연결 정보 관리')}</span>
@@ -405,7 +423,8 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
                       </div>
                       </div>
                     </details>
-                  </article>) : <p className="context-muted">{t('아직 등록된 계정이 없습니다.')}</p>}
+                  </article>;
+                  }) : <p className="context-muted">{t('아직 등록된 계정이 없습니다.')}</p>}
                 </div>
               </section>;
             })}
