@@ -187,6 +187,41 @@ async def test_gemini_returns_retryable_non_stop_finish_reason_to_runtime_withou
     assert response.generation_attempts == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            {"candidates": [], "promptFeedback": {"blockReason": "SAFETY", "blockReasonMessage": "private prompt"}},
+            {"candidate_count": 0, "prompt_block_reason": "SAFETY", "part_count": 0},
+        ),
+        (
+            {"candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [{"thought": True, "text": ""}]}}],
+             "usageMetadata": {"thoughtsTokenCount": 17}},
+            {"candidate_count": 1, "candidate_finish_reason": "MAX_TOKENS", "thought_part_count": 1, "thoughts_token_count": 17},
+        ),
+    ],
+)
+async def test_gemini_empty_compression_diagnostics_are_content_free(monkeypatch, body, expected):
+    client = LLMClient(
+        Settings(llm_mock=False, gemini_api_key="private-api-key"),
+        profile="compression",
+        overrides={"provider": "gemini", "model": "gemini-test"},
+    )
+
+    async def fake_post(url, *, model, payload):
+        return httpx.Response(200, json=body)
+
+    monkeypatch.setattr(client, "_post_gemini_with_retries", fake_post)
+    response = await client._chat_gemini([{"role": "user", "content": "private prompt"}])
+    assert response.content == ""
+    assert response.provider_diagnostics is not None
+    for key, value in expected.items():
+        assert response.provider_diagnostics[key] == value
+    assert "private prompt" not in str(response.provider_diagnostics)
+    assert "private-api-key" not in str(response.provider_diagnostics)
+
+
 def test_default_gemini_transport_retry_budget_is_two_attempts():
     client = LLMClient(
         Settings(llm_mock=False, gemini_api_key="test-key"),

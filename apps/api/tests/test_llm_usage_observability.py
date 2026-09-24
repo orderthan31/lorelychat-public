@@ -1,4 +1,5 @@
 import hashlib
+import httpx
 
 import pytest
 from sqlmodel import select
@@ -54,6 +55,41 @@ def test_record_usage_persists_finish_reason_and_response_attempt_metadata(sessi
         "parse_code": "json_ok",
         "validation_code": "schema_ok",
     }
+
+
+@pytest.mark.asyncio
+async def test_empty_compression_response_logs_and_persists_safe_diagnostics(session, monkeypatch, caplog):
+    monkeypatch.setattr(llm_client_module, "engine", session.get_bind())
+    client = LLMClient(
+        Settings(llm_mock=False, gemini_api_key="test-only-secret"),
+        profile="compression", purpose="conversation_compression",
+        overrides={"provider": "gemini", "model": "gemini-test"},
+    )
+
+    async def fake_post(url, *, model, payload):
+        return httpx.Response(200, json={
+            "candidates": [],
+            "promptFeedback": {"blockReason": "SAFETY", "blockReasonMessage": "sensitive private text"},
+            "usageMetadata": {"promptTokenCount": 8, "thoughtsTokenCount": 3},
+        })
+
+    monkeypatch.setattr(client, "_post_gemini_with_retries", fake_post)
+    response = await client.chat(
+        [{"role": "user", "content": "sensitive private text"}],
+        conversation_id="conv_empty_compression_diagnostics",
+    )
+    client.record_response_outcome(
+        response, status="validation_failed", parse_code="json_invalid", validation_code="extraction_invalid",
+    )
+    event = session.exec(select(LLMUsageEvent).where(
+        LLMUsageEvent.conversation_id == "conv_empty_compression_diagnostics"
+    )).one()
+    assert event.metadata_["status"] == "validation_failed"
+    assert event.metadata_["gemini_empty_response"]["prompt_block_reason"] == "SAFETY"
+    assert event.metadata_["gemini_empty_response"]["candidate_count"] == 0
+    assert "usage_event=" + event.id in caplog.text
+    assert "sensitive private text" not in caplog.text + str(event.metadata_)
+    assert "test-only-secret" not in caplog.text + str(event.metadata_)
 
 
 @pytest.mark.asyncio

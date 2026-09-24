@@ -5,6 +5,7 @@ from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import random
 import re
 import threading
@@ -18,6 +19,54 @@ from sqlmodel import Session
 from app.core.config import Settings, get_settings
 from app.db.models import LLMUsageEvent
 from app.db.session import engine
+
+logger = logging.getLogger(__name__)
+
+_GEMINI_FINISH_REASONS = {
+    "STOP", "MAX_TOKENS", "SAFETY", "RECITATION", "OTHER", "BLOCKLIST",
+    "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL",
+    "UNEXPECTED_TOOL_CALL", "MODEL_ARMOR", "IMAGE_SAFETY",
+}
+_GEMINI_BLOCK_REASONS = {"SAFETY", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "IMAGE_SAFETY"}
+
+
+def _safe_gemini_reason(value: object, allowed: set[str]) -> str | None:
+    if value is None:
+        return None
+    return value if isinstance(value, str) and value in allowed else "UNKNOWN"
+
+
+def _gemini_empty_response_diagnostics(data: dict) -> dict[str, int | str | bool | None]:
+    """Only fixed-shape, non-content fields; never log provider text or prompts."""
+    candidates = data.get("candidates") if isinstance(data.get("candidates"), list) else []
+    candidates = candidates or []
+    candidate = (candidates[0] if candidates and isinstance(candidates[0], dict) else {}) or {}
+    content = (candidate.get("content") if isinstance(candidate.get("content"), dict) else {}) or {}
+    parts = (content.get("parts") if isinstance(content.get("parts"), list) else []) or []
+    parts = [part for part in parts if isinstance(part, dict)]
+    feedback = (data.get("promptFeedback") if isinstance(data.get("promptFeedback"), dict) else {}) or {}
+    usage = (data.get("usageMetadata") if isinstance(data.get("usageMetadata"), dict) else {}) or {}
+    ratings = (candidate.get("safetyRatings") if isinstance(candidate.get("safetyRatings"), list) else []) or []
+    prompt_ratings = (feedback.get("safetyRatings") if isinstance(feedback.get("safetyRatings"), list) else []) or []
+
+    def safe_count(value: object) -> int | None:
+        return value if type(value) is int and value >= 0 else None
+
+    return {
+        "candidate_count": len(candidates),
+        "candidate_finish_reason": _safe_gemini_reason(candidate.get("finishReason"), _GEMINI_FINISH_REASONS),
+        "prompt_block_reason": _safe_gemini_reason(feedback.get("blockReason"), _GEMINI_BLOCK_REASONS),
+        "has_prompt_feedback": bool(feedback),
+        "part_count": len(parts),
+        "text_part_count": sum(isinstance(part.get("text"), str) for part in parts),
+        "thought_part_count": sum(part.get("thought") is True for part in parts),
+        "inline_data_part_count": sum("inlineData" in part for part in parts),
+        "function_call_part_count": sum("functionCall" in part for part in parts),
+        "candidate_blocked_rating_count": sum(isinstance(r, dict) and r.get("blocked") is True for r in ratings),
+        "prompt_blocked_rating_count": sum(isinstance(r, dict) and r.get("blocked") is True for r in prompt_ratings),
+        "thoughts_token_count": safe_count(usage.get("thoughtsTokenCount")),
+        "cached_content_token_count": safe_count(usage.get("cachedContentTokenCount")),
+    }
 
 
 class LLMUnavailableError(RuntimeError):
@@ -54,6 +103,7 @@ class LLMResponse(BaseModel):
     generation_attempts: int = 1
     estimated: bool = False
     usage_event_id: str | None = None
+    provider_diagnostics: dict[str, int | str | bool | None] | None = None
 
 
 async def chat_with_optional_conversation_id(
@@ -290,6 +340,12 @@ class LLMClient:
             raise
         self.record_circuit_success()
         self._record_usage(response, conversation_id=conversation_id)
+        if response.provider_diagnostics and self.profile == "compression":
+            logger.warning(
+                "Gemini empty compression response conversation=%s purpose=%s model=%s usage_event=%s diagnostics=%s",
+                conversation_id, self.purpose, response.model, response.usage_event_id,
+                response.provider_diagnostics,
+            )
         return response
 
     async def _chat_openai_compatible(self, messages: list[dict], *, response_format: dict | None = None) -> LLMResponse:
@@ -486,6 +542,10 @@ class LLMClient:
             total_tokens=usage.get("totalTokenCount"),
             finish_reason=finish_reason,
             generation_attempts=int(response.extensions.get("lorechat_attempts") or 1),
+            provider_diagnostics=(
+                _gemini_empty_response_diagnostics(data)
+                if self.profile == "compression" and not content else None
+            ),
         )
 
     def _record_usage(self, response: LLMResponse, *, conversation_id: str | None = None) -> None:
@@ -513,6 +573,7 @@ class LLMClient:
                         "generation_attempts": response.generation_attempts,
                         "parse_code": None,
                         "validation_code": None,
+                        **({"gemini_empty_response": response.provider_diagnostics} if response.provider_diagnostics and self.profile == "compression" else {}),
                     },
                 ))
                 session.commit()
