@@ -1,7 +1,7 @@
 from app.engine.prompt_harness import PromptSection, approx_tokens, compile_prompt_harness
 import pytest
 
-from app.engine.prompts import ContextCoverageError, build_character_prompt_harness, build_multi_character_prompt_harness, format_message_for_context, messages_after_scene_summary_boundary, prompt_budget_for_context, select_prompt_recent_messages
+from app.engine.prompts import ContextCoverageError, build_character_prompt_harness, build_multi_character_messages, build_multi_character_prompt_harness, format_message_for_context, messages_after_scene_summary_boundary, prompt_budget_for_context, select_prompt_recent_messages
 from app.db.models import Character, Message, SceneState
 
 
@@ -115,6 +115,34 @@ def test_automatic_prompt_harness_never_compacts_middle_of_verified_suffix():
     assert "section compacted to prompt budget" not in harness.compiled_text
     for index in range(20):
         assert f"UNIQUE_{index:02d}_" in harness.compiled_text
+
+
+def test_prompt_orders_past_story_then_boundary_after_conversation_then_current_input():
+    character = Character(id="char_aria", name="아리아", persona="차분하다")
+    messages = [
+        Message(id="m1", conversation_id="conv", speaker_type="user", content="이미 접힌 과거 원문"),
+        Message(id="m2", conversation_id="conv", speaker_type="user", content="3라운드가 시작됐다"),
+        Message(id="m3", conversation_id="conv", speaker_type="character", speaker_id=character.id, content="3라운드에 들어왔다"),
+    ]
+    scene = SceneState(
+        conversation_id="conv",
+        summary="[Rolling Story Arc]\n- 1라운드가 끝났다.",
+        last_compression_source_message_id="m1",
+    )
+    prompt_messages = build_multi_character_messages(
+        characters=[character],
+        recent_messages=messages,
+        user_message="이번 입력은 여기서만",
+        scene_state=scene,
+        context_management_mode="automatic",
+    )
+    system_text = prompt_messages[0]["content"]
+    assert system_text.index("[Past story]") < system_text.index("[Conversation since then]")
+    assert system_text.index("1라운드가 끝났다") < system_text.index("3라운드가 시작됐다")
+    assert "이미 접힌 과거 원문" not in system_text
+    assert "3라운드에 들어왔다" in system_text
+    assert "이번 입력은 여기서만" not in system_text
+    assert prompt_messages[1] == {"role": "user", "content": "이번 입력은 여기서만"}
 
 
 def test_automatic_context_rejects_dangling_summary_boundary_instead_of_failing_open():
@@ -311,7 +339,7 @@ def test_single_character_prompt_keeps_manual_memory_without_relationship_state(
     assert entries["continuity_state_by_character"].included is True
     assert "유저와 비밀 연애를 시작함" in harness.compiled_text
     assert "연인 관계를 유지 중" not in harness.compiled_text
-    assert "[Durable conversation history]" in harness.compiled_text
+    assert "[Past story]" in harness.compiled_text
     assert "Continuity rule" not in harness.compiled_text
 
 

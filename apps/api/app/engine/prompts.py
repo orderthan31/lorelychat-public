@@ -446,10 +446,15 @@ def build_scene_text(scene_state: SceneState | None) -> str:
         ])
     else:
         lines.extend([
-            "[Durable conversation history]",
+            "[Past story]",
             story_arc,
         ])
     return "\n".join(line for line in lines if line)
+
+def conversation_history_title(scene_state: SceneState | None) -> str:
+    if scene_state and scene_state.summary and scene_state.last_compression_source_message_id:
+        return "Conversation since then"
+    return "Conversation so far"
 
 
 def _battle_pair_line(active_pair: object) -> str:
@@ -583,11 +588,11 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
         PromptSection("base_rules", "Generation core contract", base_rules, "backend.system_prompt_registry.generation_core_contract", "always_required", 520, True),
         PromptSection("output_rules", "Output contract", output_rules, "runtime.response_contract", "json_contract", output_rules_budget, True),
         PromptSection("character_cards", "Active character cards", character_cards, "conversation.participants.character_cards", "active_room_participants", character_cards_budget, True),
-        PromptSection("scene", "World and Rolling Story Arc", build_scene_text(scene_state), "scene_state", "durable_room_context", 1800, True),
+        PromptSection("scene", "Room world and past story", build_scene_text(scene_state), "scene_state", "durable_room_context", 1800, True),
         PromptSection("directive", "Current directive", directive or "", "message.directive", "current_user_intent", 180, False),
         PromptSection(
             "recent_messages",
-            "Prior raw history",
+            conversation_history_title(scene_state),
             history,
             "conversation.messages.tail",
             "recent_tail_without_current_input",
@@ -755,7 +760,7 @@ Keep the reply vivid, specific, and naturally paced."""
         PromptSection("room_context", "Room context", room_context, "conversation.participants.counterpart_cards", "character_character_room" if conversation_mode == "character_character" else "single_character_room", 700, False),
         PromptSection(
             "recent_messages",
-            "Recent messages",
+            conversation_history_title(scene_state),
             history,
             "conversation.messages.tail",
             "recent_tail_and_anchors",
