@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
-from sqlalchemy import asc, desc
+from sqlalchemy import and_, asc, desc, or_
 from sqlmodel import Session, select
 
 from app.db.models import ChatCommand, Character, CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, Message, SceneState, WorldSetting
@@ -575,11 +575,25 @@ def _build_relationship_memory_context(session: Session, conversation_id: str, c
 
 
 def _build_recent_messages_context(session: Session, conversation_id: str, character_names: dict[str, str]) -> list[str]:
+    # Auxiliary provider calls must honor the same exclusive summary boundary
+    # as main generation. Filter before taking the latest ten, using the
+    # canonical (created_at, id) ordering even when timestamps are equal.
+    statement = select(Message).where(Message.conversation_id == conversation_id)
+    scene = session.get(SceneState, conversation_id)
+    boundary_id = scene.last_compression_source_message_id if scene else None
+    if boundary_id:
+        boundary = session.get(Message, boundary_id)
+        if boundary is None or boundary.conversation_id != conversation_id:
+            # This context is optional: omit it rather than silently falling
+            # back to already-compressed history or failing the entire turn.
+            logger.warning("Command recent context omitted code=missing_compression_boundary")
+            return []
+        statement = statement.where(or_(
+            Message.created_at > boundary.created_at,
+            and_(Message.created_at == boundary.created_at, Message.id > boundary.id),
+        ))
     messages = list(reversed(session.exec(
-        select(Message)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(desc(Message.created_at))
-        .limit(10)
+        statement.order_by(desc(Message.created_at), desc(Message.id)).limit(10)
     ).all()))
     lines = [_format_message_line(message, character_names=character_names) for message in messages]
     lines = [line for line in lines if line]
