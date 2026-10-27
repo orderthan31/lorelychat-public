@@ -5,7 +5,6 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.api.assets import router as assets_router
 from app.api.characters import router as characters_router
@@ -23,6 +22,7 @@ from app.api.uploads import router as uploads_router
 from app.api.world_settings import router as world_settings_router
 from app.core.config import get_settings
 from app.core.logging_config import configure_file_logging
+from app.core.upload_files import UploadStaticFiles
 from app.db.session import get_session, init_db, engine
 from app.ops.sqlite_ops import acquire_runtime_lock, release_runtime_lock
 from app.services import asset_service, conversation_service, prompt_snapshot_service, world_migration_service
@@ -125,4 +125,8 @@ app.include_router(runtime_settings_router)
 app.include_router(tts_router)
 app.include_router(uploads_router)
 app.include_router(world_settings_router)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
+app.mount(
+    "/uploads",
+    UploadStaticFiles(UPLOAD_ROOT, settings.shared_upload_root),
+    name="uploads",
+)

@@ -2,6 +2,13 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
+const devPort = Number(process.env.LORECHAT_DEV_PORT || 5173);
+if (!Number.isInteger(devPort) || devPort < 1 || devPort > 65535) {
+  throw new Error('LORECHAT_DEV_PORT must be an integer between 1 and 65535');
+}
+const devHost = process.env.LORECHAT_DEV_HOST || '0.0.0.0';
+const devApiTarget = process.env.LORECHAT_DEV_API_TARGET || 'http://127.0.0.1:8123';
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   build: {
@@ -17,24 +24,24 @@ export default defineConfig({
     },
   },
   server: {
-    host: '0.0.0.0',
-    port: 5173,
+    host: devHost,
+    port: devPort,
     strictPort: true,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8123',
+        target: devApiTarget,
         changeOrigin: false,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
       '/uploads': {
-        target: 'http://127.0.0.1:8123',
+        target: devApiTarget,
         changeOrigin: false,
       },
     },
   },
   preview: {
-    host: '0.0.0.0',
-    port: 5173,
+    host: devHost,
+    port: devPort,
     strictPort: true,
   },
 });
