@@ -56,11 +56,28 @@ There is no extra model, embedding key or classifier call. Action and character-
 
 Ordered body parts and the original body are persisted alongside compatibility fields, but public history/compression use one ordered public representation without private character thoughts. HTML is not executed. Unknown or ambiguous speakers, incomplete envelopes, truncated responses and degenerate repetition loops fail/retry the whole turn rather than saving a partial result.
 
-Existing messages retain their old representation. New free-body messages use one body editor plus optional emotion; edits reparse the body and invalidate TTS cache. TTS uses explicit spoken dialogue only, so action-only or thought-only bubbles do not create speech. Legacy command postprocessing remains a separate surface; a spoken-content rewrite invalidates the old ordered free-body view rather than displaying stale prose.
+Existing messages retain their old representation. New free-body messages use one body editor plus optional emotion; edits reparse the body and invalidate TTS cache. TTS uses explicit spoken dialogue only, so action-only or thought-only bubbles do not create speech. Standalone command postprocessing remains the compatibility and repair path; a spoken-content rewrite invalidates the old ordered free-body view rather than displaying stale prose.
 
 The free-body prompt keys live in the current version-controlled prompt registry and do not overwrite the legacy keys. To roll the generation protocol back, restore `CHAT_RESPONSE_PROTOCOL=legacy_json` and restart that API owner; already stored free-body messages remain readable and editable.
 
 Local parser, mocked-provider HTTP, atomic API persistence and real-browser tests do not establish live model creativity, provider acceptance or billed-token savings. Those require a separately approved controlled comparison with the same room, model and length settings. See `apps/web/tests/README.md` for the offline browser regression workflow.
+
+## Command request optimization
+
+Commands declare optional `postprocess_block_types` in the command editor/API. An empty list preserves the generic legacy-compatible block contract; an explicit list limits the requested/accepted UI block types. Unknown types are invalid. For example, a broadcast-comments command can declare `comments`, `note`, and `table` without receiving instructions for polls, cards, or timelines. The editor's empty selection means all supported types, not a disabled panel.
+
+The standalone path represents the current source and generated target prose once instead of repeating it in both the selected current-turn context and the target block. It still respects the configured context scope and preserves the original primary reply on command failure.
+
+`CHAT_COMMAND_POSTPROCESS_MODE` is an independent API deployment opt-in:
+
+- `separate` (default): main generation followed by standalone command processing.
+- `combined_overlay`: eligible explicitly configured first/last overlays can be generated alongside the main free-body response. Main character prose and command-owned panels have separate validation boundaries, while the stored panel shape and existing renderer stay compatible.
+
+Legacy JSON, all-bubbles rewrites and unsupported command contracts retain standalone behavior. Combined overlays support explicit `text`, `note`, `table`, `comments`, and `commentary` contracts; other block types, a generic empty contract, scoped recent-message/relationship-memory context, and turns mixing content rewrites remain standalone with a recorded reason. A missing or invalid auxiliary panel falls back only for that command; it must not regenerate valid character prose merely to repair a panel. Primary speaker/structure/repetition/truncation failures remain whole-turn failures. Tagged mode still sends no provider JSON response schema. Selected output-token limits and compression quality are unchanged.
+
+The combined path can reduce duplicate input and request count, not eliminate the cost of writing the panel itself. A valid combined fixture can prove one provider request instead of two; malformed auxiliary output may still require the separate call. Local same-input character counts are not measured billed-token savings, equivalent creative quality, or a live-provider success rate. Do not count omitted character thoughts or shorter scenes as an optimization win.
+
+For Docker Compose, `.env.example` documents both protocol flags and Compose forwards them explicitly. Direct API deployments must set the flags in their own environment. Roll back only the combined path with `CHAT_COMMAND_POSTPROCESS_MODE=separate`; existing messages and command settings remain readable. The command field is an additive database change, not permission to replace the database with an old backup over newer user messages.
 
 ## Verification
 

@@ -336,7 +336,7 @@ class LLMClient:
             user_text = _mock_visible_user_text(next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""))
             if (response_format or {}).get("name") == "free_body_replies":
                 return LLMResponse(content=json.dumps({"replies": [{"who": "C1", "text": f"Mock reply to: {user_text[:80]}"}]}), provider="mock", model="mock")
-            if response_format is None and "Return only <m c=" in str(messages):
+            if response_format is None and ("Return only <m c=" in str(messages) or "Primary: <m c=" in str(messages)):
                 return LLMResponse(content='<m c="C1">Mock reply.</m>', provider="mock", model="mock")
             if response_format and response_format.get("type") == "json_object":
                 schema = response_format.get("schema") if isinstance(response_format, dict) else None

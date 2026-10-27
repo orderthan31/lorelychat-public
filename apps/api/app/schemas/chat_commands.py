@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+PostprocessBlockType = Literal["text", "note", "table", "comments", "commentary", "checklist", "timeline", "vote", "cards"]
 PostprocessTarget = Literal["first_bubble", "last_bubble", "all_bubbles"]
 PostprocessContextOption = Literal["scene", "world", "characters", "relationship_memory", "recent_messages", "turn_messages"]
 DEFAULT_POSTPROCESS_CONTEXT_OPTIONS: list[PostprocessContextOption] = ["scene", "world", "turn_messages"]
@@ -38,6 +39,7 @@ class ChatCommandBase(BaseModel):
     postprocess_prompt: str = Field(default="", max_length=4000)
     postprocess_target: PostprocessTarget = "all_bubbles"
     postprocess_probability: int = Field(default=100, ge=0, le=100)
+    postprocess_block_types: list[PostprocessBlockType] = Field(default_factory=list)
     postprocess_context_options: list[PostprocessContextOption] = Field(default_factory=lambda: list(DEFAULT_POSTPROCESS_CONTEXT_OPTIONS))
     enabled: bool = True
     priority: int = Field(default=0, ge=-1000, le=1000)
@@ -100,6 +102,7 @@ class ChatCommandUpdate(BaseModel):
     postprocess_prompt: str | None = Field(default=None, max_length=4000)
     postprocess_target: PostprocessTarget | None = None
     postprocess_probability: int | None = Field(default=None, ge=0, le=100)
+    postprocess_block_types: list[PostprocessBlockType] | None = None
     postprocess_context_options: list[PostprocessContextOption] | None = None
     enabled: bool | None = None
     priority: int | None = Field(default=None, ge=-1000, le=1000)
@@ -134,6 +137,7 @@ class ChatCommandRead(BaseModel):
     postprocess_prompt: str
     postprocess_target: PostprocessTarget
     postprocess_probability: int
+    postprocess_block_types: list[PostprocessBlockType] = Field(default_factory=list)
     postprocess_context_options: list[PostprocessContextOption] = Field(default_factory=list)
     enabled: bool
     priority: int

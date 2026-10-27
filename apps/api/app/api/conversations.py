@@ -12,6 +12,7 @@ from app.db.models import BattleMatchRecord, CharacterMemory, Conversation, Conv
 from app.db.session import engine, get_session
 from app.engine.character_runtime import CharacterRuntime, CharacterRuntimeError, format_runtime_source_message, generation_control_reserve_tokens
 from app.engine import free_body_protocol as free_body
+from app.engine import command_overlay
 from app.engine import prompts
 from app.engine.llm_client import LLMClient, LLMUnavailableError
 from app.engine.prompt_harness import PromptHarness, approx_tokens
@@ -1198,6 +1199,7 @@ async def generate_replies_from_message(
             commands.append(command)
             seen_command_ids.add(command.id)
     commands.sort(key=lambda item: (-item.priority, item.name))
+    panel_plan = command_overlay.build_plan(commands)
     overlay_command_active = any((getattr(command, "postprocess_target", "") or "") in {"first_bubble", "last_bubble"} for command in commands)
     generation_prompts = [command.generation_prompt for command in commands if getattr(command, "generation_prompt", "").strip()]
     if generation_prompts:
@@ -1307,7 +1309,9 @@ async def generate_replies_from_message(
             query=base_recall_query,
         )
         latest_offstage_context = offstage_recall.content
+        chat_command_service.prepare_combined_context(session, panel_plan, conversation_id, current_scene)
         return prompts.build_multi_character_prompt_harness(
+            command_overlay_plan=panel_plan,
             characters=room_characters,
             recent_messages=[message for message in current_messages if message.id != incoming_message.id],
             user_message=runtime_message_text,
@@ -1349,6 +1353,7 @@ async def generate_replies_from_message(
             return rendered_history_token_estimator(message)
 
         current_turn_control_tokens = generation_control_reserve_tokens(
+            command_overlay_plan=panel_plan,
             speaker_type=payload.speaker_type,
             min_bubbles=min_reply_bubbles,
             max_bubbles=max_reply_bubbles,
@@ -1511,6 +1516,7 @@ async def generate_replies_from_message(
         source_speaker_type=payload.speaker_type,
         prompt_snapshot_callback=persist_prompt_snapshot,
         prepared_harness=prepared_harness,
+        command_overlay_plan=panel_plan,
     )
     generated_messages = await persist_generated_reply_messages(
         session=session,
@@ -1531,6 +1537,8 @@ async def generate_replies_from_message(
         generated_messages = await chat_command_service.apply_chat_command_postprocess(
             session=session,
             command=command,
+            combined_messages=getattr(generated_replies, "command_panels", {}).get(command.id),
+            execution_outcome=getattr(generated_replies, "command_outcomes", panel_plan.outcomes).get(command.id),
             conversation_id=conversation_id,
             source_message=incoming_message,
             generated_messages=generated_messages,

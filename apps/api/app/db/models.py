@@ -174,6 +174,7 @@ class ChatCommand(SQLModel, table=True):
     postprocess_prompt: str = ""
     postprocess_target: str = "all_bubbles"
     postprocess_probability: int = 100
+    postprocess_block_types: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, server_default="[]"))
     postprocess_context_options: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     enabled: bool = True
     priority: int = 0

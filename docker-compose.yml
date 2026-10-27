@@ -11,6 +11,8 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
       LLM_MOCK: ${LLM_MOCK:-true}
       LORECHAT_SEED_DEMO: ${LORECHAT_SEED_DEMO:-true}
+      CHAT_RESPONSE_PROTOCOL: ${CHAT_RESPONSE_PROTOCOL:-legacy_json}
+      CHAT_COMMAND_POSTPROCESS_MODE: ${CHAT_COMMAND_POSTPROCESS_MODE:-separate}
       LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}

@@ -31,6 +31,7 @@ from app.engine.prompt_graph import build_prompt_generation_graph, run_prompt_ge
 from app.engine.prompts import build_character_messages, build_multi_character_prompt_harness, is_silent_cast_role
 from app.schemas.dialogue import CharacterReply, MultiCharacterReply
 from app.engine import free_body_protocol as free_body
+from app.engine import command_overlay
 
 
 class CharacterRuntimeError(RuntimeError):
@@ -222,12 +223,13 @@ def generation_control_reserve_tokens(
     max_bubbles: int,
     characters: list[Character] | None = None,
     room_cast_roles: dict[str, str] | None = None,
+    command_overlay_plan=None,
 ) -> int:
     """Reserve the larger of the initial and retry request-control envelopes."""
     if free_body.current_protocol() != "legacy_json":
         controls = free_body.FREE_BODY_RETRY + free_body.FREE_BODY_CONTINUATION
         aliases = free_body.speaker_aliases(characters, room_cast_roles) if characters is not None else None
-        return approx_tokens(controls + json.dumps(free_body.response_format(free_body.current_protocol(), aliases))) + 32
+        return approx_tokens(controls + json.dumps(command_overlay.response_format(free_body.current_protocol(), aliases, command_overlay_plan))) + 32
 
     retry_instruction = character_retry_instruction(min_bubbles)
     initial_response_tokens = approx_tokens(json.dumps(
@@ -728,14 +730,18 @@ class CharacterRuntime:
         source_speaker_type: str = "user",
         prompt_snapshot_callback: Callable[[dict], Any | Awaitable[Any]] | None = None,
         prepared_harness: PromptHarness | None = None,
+        command_overlay_plan=None,
     ) -> list[CharacterReply] | Any:
         if not characters:
             return []
         protocol = free_body.current_protocol()
+        panel_plan = command_overlay_plan or command_overlay.OverlayPlan()
+        panel_outcomes = dict(panel_plan.outcomes)
         aliases = free_body.speaker_aliases(characters, room_cast_roles) if protocol != "legacy_json" else {}
         max_bubbles = max(1, min(8, int(max_bubbles)))
         min_bubbles = max(1, min(max_bubbles, int(min_bubbles)))
         harness = prepared_harness or build_multi_character_prompt_harness(
+            command_overlay_plan=panel_plan,
             characters=characters,
             recent_messages=recent_messages,
             user_message=user_message,
@@ -798,7 +804,7 @@ class CharacterRuntime:
             return last_llm_response
 
         def parse_and_validate(content: str) -> list[CharacterReply]:
-            nonlocal last_response_content, last_parser_shadow, parse_attempts
+            nonlocal last_response_content, last_parser_shadow, parse_attempts, panel_outcomes
             parse_attempts += 1
             last_response_content = content or ""
             last_parser_shadow = (
@@ -814,7 +820,11 @@ class CharacterRuntime:
                 if finish_reason and finish_reason not in SUCCESSFUL_FINISH_REASONS:
                     raise CharacterRuntimeError(f"Free-body generation ended with {finish_reason}")
                 try:
-                    replies = free_body.parse_response(content, protocol=protocol, aliases=aliases)
+                    primary, panels = content, {}
+                    candidate_outcomes = dict(panel_plan.outcomes)
+                    if panel_plan.eligible:
+                        primary, panels, candidate_outcomes = command_overlay.split_response(content, protocol, panel_plan)
+                    replies = free_body.parse_response(primary, protocol=protocol, aliases=aliases)
                 except free_body.FreeBodyError as exc:
                     raise FreeBodyRuntimeError(str(exc)) from exc
                 for reply in replies:
@@ -826,11 +836,14 @@ class CharacterRuntime:
                         reason = degenerate_repetition_reason(free_body._masked(value or ""))
                         if reason:
                             raise FreeBodyRuntimeError(f"Free-body output contained a degenerate repetition loop: {reason}")
+                panel_outcomes = candidate_outcomes
                 last_parser_shadow = {"response_protocol": protocol, "parser": "free_body_v1"}
+                if panel_outcomes:
+                    last_parser_shadow["command_postprocess"] = panel_outcomes
                 if hasattr(active_llm_client, "record_response_outcome"):
                     active_llm_client.record_response_outcome(last_llm_response, status="validated",
                         parse_code="free_body_ok", validation_code="envelope_ok", metadata_updates=last_parser_shadow)
-                return replies
+                return command_overlay.GeneratedTurn(replies, panels, panel_outcomes)
             if not last_response_content.strip():
                 if finish_reason in {"MAX_TOKENS", "LENGTH"}:
                     raise StructuredOutputTruncatedError("Structured JSON response was truncated or incomplete")
@@ -878,7 +891,7 @@ class CharacterRuntime:
             max_bubbles=max_bubbles,
         )
         if protocol != "legacy_json":
-            response_format = free_body.response_format(protocol, aliases)
+            response_format = command_overlay.response_format(protocol, aliases, panel_plan)
         last_error: Exception | None = None
         last_response_content = ""
         result = None
@@ -973,6 +986,7 @@ class CharacterRuntime:
                                 "parse_attempts": parse_attempts,
                                 "parse_status": "failed",
                                 "fallback_used": fallback_used, "response_protocol": protocol,
+                                **({"command_postprocess": panel_outcomes} if panel_outcomes else {}),
                                 "attempt_diagnostics": attempt_diagnostics,
                                 "semantic_attempts": semantic_attempts,
                                 **task_attempt_metadata(),
@@ -1008,6 +1022,7 @@ class CharacterRuntime:
                     "parse_attempts": parse_attempts,
                     "parse_status": "success" if parse_attempts == 1 else "retry_success",
                     "fallback_used": fallback_used, "response_protocol": protocol,
+                    **({"command_postprocess": panel_outcomes} if panel_outcomes else {}),
                     "attempt_diagnostics": attempt_diagnostics,
                     "semantic_attempts": semantic_attempts,
                     "output_budget": getattr(response, "budget_diagnostics", None),

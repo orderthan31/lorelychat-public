@@ -216,6 +216,8 @@ def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
             if "postprocess_probability" not in columns:
                 connection.execute(text("ALTER TABLE chat_commands ADD COLUMN postprocess_probability INTEGER NOT NULL DEFAULT 100"))
                 connection.execute(text("UPDATE chat_commands SET postprocess_probability = 100 WHERE postprocess_probability IS NULL"))
+            if "postprocess_block_types" not in columns:
+                connection.execute(text("ALTER TABLE chat_commands ADD COLUMN postprocess_block_types JSON NOT NULL DEFAULT '[]'"))
             if "postprocess_context_options" not in columns:
                 connection.execute(text("ALTER TABLE chat_commands ADD COLUMN postprocess_context_options JSON"))
                 connection.execute(text("UPDATE chat_commands SET postprocess_context_options = json_array('scene','world','turn_messages') WHERE postprocess_context_options IS NULL"))

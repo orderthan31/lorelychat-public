@@ -7,7 +7,8 @@ from sqlmodel import Session, select
 
 from app.core.config import get_settings
 from app.db.models import Character, CharacterMemory, Conversation, SceneState
-from app.engine import prompts
+from app.engine import prompts, command_overlay
+from app.services import chat_command_service
 from app.engine.character_runtime import format_runtime_source_message, generation_control_reserve_tokens
 from app.schemas.conversations import ConversationCompressionPreviewRead, ConversationContextPreviewRead, ContextPreviewSectionRead
 from app.services import conversation_service, domain_actor_service, external_memory_service, genre_domain_service, model_provider_service, runtime_settings_service, system_prompt_service
@@ -68,6 +69,13 @@ def _durable_memories(session: Session, conversation_id: str, active_character_i
         active_character_ids,
         limit=80,
     )
+
+
+def _active_command_plan(session: Session, conversation: Conversation | None):
+    commands = [command for cid in chat_command_service.active_command_ids_for_conversation(conversation)
+                if (command := chat_command_service.get_chat_command(session, cid)) and command.enabled]
+    commands.sort(key=lambda item: (-item.priority, item.name))
+    return command_overlay.build_plan(commands)
 
 
 def build_compression_preview(session: Session, conversation_id: str) -> ConversationCompressionPreviewRead:
@@ -137,6 +145,9 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
                 )
                 is_multi_room = len(character_ids) >= 2
                 mandatory_prompt_tokens += generation_control_reserve_tokens(
+                    command_overlay_plan=_active_command_plan(session, conversation),
+                    room_cast_roles={p.participant_id: p.role for p in participants
+                                     if p.participant_type == "character" and p.role},
                     speaker_type=preview_source_message.speaker_type,
                     characters=characters,
                     min_bubbles=runtime_settings_service.min_bubbles_for_preset(
@@ -297,8 +308,11 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
     model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
     provider_type = getattr(model_option, "provider_type", None)
 
+    panel_plan = _active_command_plan(session, conversation)
+    chat_command_service.prepare_combined_context(session, panel_plan, conversation_id, scene)
     if characters:
         harness = prompts.build_multi_character_prompt_harness(
+            command_overlay_plan=panel_plan,
             characters=characters,
             recent_messages=preview_history,
             user_message=preview_source_text,

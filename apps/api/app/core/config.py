@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     llm_mock: bool = True
     # Deployment opt-in only; no extra provider, model, or user credential.
     chat_response_protocol: Literal["legacy_json", "free_body_json", "tagged_text"] = "legacy_json"
+    chat_command_postprocess_mode: Literal["separate", "combined_overlay"] = "separate"
     llm_timeout_seconds: float = 120.0
     # Context pressure is the product default. legacy/shadow remain explicit
     # rollback modes for operators and existing deployments.

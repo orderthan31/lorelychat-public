@@ -106,6 +106,7 @@ DEFAULT_CHAT_COMMANDS = [
             "blocks에는 comments를 반드시 포함하고 note/table을 필요에 따라 포함해라."
         ),
         postprocess_target="last_bubble",
+        postprocess_block_types=["comments", "note", "table"],
         enabled=True,
         priority=87,
     ),
@@ -154,7 +155,8 @@ def create_chat_command(session: Session, payload: ChatCommandCreate) -> ChatCom
         postprocess_prompt=payload.postprocess_prompt or prompt,
         postprocess_target=payload.postprocess_target,
         postprocess_probability=payload.postprocess_probability,
-        postprocess_context_options=list(payload.postprocess_context_options or DEFAULT_POSTPROCESS_CONTEXT_OPTIONS),
+        postprocess_block_types=list(payload.postprocess_block_types),
+        postprocess_context_options=list(payload.postprocess_context_options),
         enabled=payload.enabled,
         priority=payload.priority,
     )
@@ -174,7 +176,7 @@ def update_chat_command(session: Session, command: ChatCommand, payload: ChatCom
         command.name = next_name
         if not data.get("display_name"):
             command.display_name = next_name
-    for key in ("display_name", "description", "prompt", "generation_prompt", "postprocess_prompt", "postprocess_target", "postprocess_probability", "postprocess_context_options", "enabled", "priority"):
+    for key in ("display_name", "description", "prompt", "generation_prompt", "postprocess_prompt", "postprocess_target", "postprocess_probability", "postprocess_context_options", "postprocess_block_types", "enabled", "priority"):
         if key in data and data[key] is not None:
             setattr(command, key, data[key])
     if not command.prompt:
@@ -208,22 +210,7 @@ def seed_default_chat_commands(session: Session) -> None:
     for payload in DEFAULT_CHAT_COMMANDS:
         existing = get_chat_command_by_name(session, payload.name)
         if existing:
-            # Keep user-created non-default commands untouched, but migrate bundled
-            # defaults to the split prompt/target schema when the app upgrades.
-            existing.display_name = payload.display_name or existing.display_name or existing.name
-            existing.description = payload.description or existing.description
-            existing.prompt = payload.prompt or payload.postprocess_prompt or payload.generation_prompt or existing.prompt
-            existing.generation_prompt = payload.generation_prompt or existing.generation_prompt or existing.prompt
-            existing.postprocess_prompt = payload.postprocess_prompt or existing.postprocess_prompt or existing.prompt
-            existing.postprocess_target = payload.postprocess_target or existing.postprocess_target or "all_bubbles"
-            existing.postprocess_probability = payload.postprocess_probability
-            if not existing.postprocess_context_options:
-                existing.postprocess_context_options = list(payload.postprocess_context_options or DEFAULT_POSTPROCESS_CONTEXT_OPTIONS)
-            existing.priority = payload.priority
-            # Preserve user-hidden bundled commands. Otherwise deleting a default
-            # command would immediately resurrect it on the next list request.
-            existing.updated_at = datetime.now(timezone.utc)
-            session.add(existing)
+            # Existing rows are authored configuration, including bundled names.
             continue
         create_chat_command(session, payload)
     session.commit()
@@ -357,20 +344,18 @@ def parse_command_postprocess_response(raw: str, expected_count: int) -> list[di
     return parse_command_payload(raw, expected_count)
 
 
-def command_response_instruction(target_count: int, *, overlay_mode: bool = False) -> str:
-    mode_rule = (
-        "messages 배열은 후처리 전용 오버레이 버블이다. 기존 캐릭터 대사 전체를 반복하지 말고, postprocess_prompt가 요구한 UI/연출 정보만 담아라."
-        if overlay_mode else
-        "각 메시지의 content는 원본 응답의 캐릭터 말투/관계/사건을 유지하되, 커맨드 프롬프트가 요구한 연출/형식만 반영해라."
-    )
-    return f"""반환 규칙: JSON 객체만 반환해라. markdown/code fence 금지.
-형식:
-{{"messages":[{{"content":"최종 본문","blocks":[{{"type":"note","title":"짧은 제목","text":"보조 정보"}},{{"type":"table","title":"표 제목","headers":["항목","내용"],"rows":[["키","값"]]}},{{"type":"comments","title":"댓글/반응","comments":[{{"author":"이름","text":"내용"}}]}},{{"type":"checklist","title":"체크리스트","items":[{{"text":"할 일","checked":false}}]}},{{"type":"timeline","title":"타임라인","items":[{{"time":"09:00","text":"일정"}}]}},{{"type":"vote","title":"투표","options":[{{"label":"선택지","value":72}}]}},{{"type":"cards","title":"카드 묶음","cards":[{{"title":"카드 제목","text":"카드 내용"}}]}}]}}]}}
-messages 배열 길이는 반드시 {target_count}개다.
-{mode_rule}
-커맨드는 대화 상대에게 설명할 기능명이 아니라 후처리 연출 지시다. 사용자에게 요청을 접수했다거나 처리해주겠다고 직접 말하지 마라.
-postprocess_prompt가 comments/timeline/checklist/vote/table/cards/note 같은 blocks를 요구하면 blocks는 필수다. 특히 comments를 요구하면 comments block을 반드시 포함해라.
-허용 block type: text, note, table, comments, commentary, checklist, timeline, vote, cards. 알 수 없는 표현은 가장 가까운 허용 타입으로 바꿔라."""
+def command_response_instruction(target_count: int, *, overlay_mode: bool = False, block_types=None) -> str:
+    from app.services.chat_command_contract import block_examples
+    examples = block_examples(block_types)
+    shape = json.dumps({"messages": [{"content": "", "blocks": examples}]}, ensure_ascii=False)
+    mode = ("Overlay only: never repeat character dialogue; emit independent UI panels." if overlay_mode
+            else "Preserve the original character voice, relationships, events and prose in content.")
+    return (f"Return JSON only, no fences. Shape examples (choose appropriate blocks): {shape}\n"
+            f"messages must contain exactly {target_count} entries in target order. {mode}\n"
+            "Follow postprocess_prompt; do not explain the command to the user. "
+            "사용자에게 요청을 접수했다거나 처리해주겠다고 직접 말하지 마라. "
+            "Every block must match its actual type shape. "
+            + "Allowed block types: " + ", ".join(b["type"] for b in examples))
 
 
 def active_command_ids_for_conversation(conversation) -> list[str]:
@@ -574,7 +559,7 @@ def _build_relationship_memory_context(session: Session, conversation_id: str, c
     return lines if added else []
 
 
-def _build_recent_messages_context(session: Session, conversation_id: str, character_names: dict[str, str]) -> list[str]:
+def _build_recent_messages_context(session: Session, conversation_id: str, character_names: dict[str, str], exclude_ids=()) -> list[str]:
     # Auxiliary provider calls must honor the same exclusive summary boundary
     # as main generation. Filter before taking the latest ten, using the
     # canonical (created_at, id) ordering even when timestamps are equal.
@@ -595,25 +580,26 @@ def _build_recent_messages_context(session: Session, conversation_id: str, chara
     messages = list(reversed(session.exec(
         statement.order_by(desc(Message.created_at), desc(Message.id)).limit(10)
     ).all()))
-    lines = [_format_message_line(message, character_names=character_names) for message in messages]
+    # Deduplicate the selected window, never backfill older messages beyond it.
+    lines = [_format_message_line(message, character_names=character_names) for message in messages if message.id not in exclude_ids]
     lines = [line for line in lines if line]
     return ["[최근 메시지]", *lines] if lines else []
 
 
-def _build_turn_messages_context(source_message: Message, generated_messages: list[Message], character_names: dict[str, str]) -> list[str]:
+def _build_turn_messages_context(source_message: Message, generated_messages: list[Message], character_names: dict[str, str], exclude_ids=()) -> list[str]:
     lines = ["[현재 턴 메시지]"]
-    source_line = _format_message_line(source_message, character_names=character_names)
+    source_line = "" if source_message.id in exclude_ids else prompts.format_full_public_message(source_message)
     if source_line:
         lines.extend(["유저/source 메시지:", source_line])
-    generated_lines = [_format_message_line(message, character_names=character_names) for message in generated_messages]
+    generated_lines = [prompts.format_full_public_message(message) for message in generated_messages if message.id not in exclude_ids]
     generated_lines = [line for line in generated_lines if line]
     if generated_lines:
         lines.append("1차 응답 메시지:")
-        lines.extend(generated_lines[:8])
+        lines.extend(generated_lines)
     return lines if len(lines) > 1 else []
 
 
-def build_command_postprocess_context(session: Session, command: ChatCommand, conversation_id: str, source_message: Message, generated_messages: list[Message]) -> str:
+def build_command_postprocess_context(session: Session, command: ChatCommand, conversation_id: str, source_message: Message, generated_messages: list[Message], represented_ids=()) -> str:
     options = _command_context_options(command)
     conversation = session.get(Conversation, conversation_id)
     scene = session.get(SceneState, conversation_id)
@@ -630,10 +616,37 @@ def build_command_postprocess_context(session: Session, command: ChatCommand, co
     if "relationship_memory" in options:
         blocks.extend(_build_relationship_memory_context(session, conversation_id, characters))
     if "recent_messages" in options:
-        blocks.extend(_build_recent_messages_context(session, conversation_id, character_names))
+        blocks.extend(_build_recent_messages_context(session, conversation_id, character_names, exclude_ids=set(represented_ids) | ({source_message.id, *(m.id for m in generated_messages)} if "turn_messages" in options else set())))
     if "turn_messages" in options:
-        blocks.extend(_build_turn_messages_context(source_message, generated_messages, character_names))
+        blocks.extend(_build_turn_messages_context(source_message, generated_messages, character_names, exclude_ids=represented_ids))
     return "후속 생성 참고 컨텍스트:\n" + "\n".join(blocks) if blocks else "후속 생성 참고 컨텍스트: 선택된 추가 컨텍스트 없음"
+
+
+def prepare_combined_context(session, plan, conversation_id, primary_scene):
+    """Add only explicit persisted fields absent from primary scene serialization.
+
+    Never infer context from command prose, nor copy cards/history/generated text.
+    Recent selection and legacy relationship memory are ineligible in build_plan.
+    """
+    options = set().union(*(_command_context_options(c) for c in plan.eligible.values())) if plan.eligible else set()
+    lines = []
+    stored = session.get(SceneState, conversation_id)
+    if "scene" in options and stored:
+        for key in ("location", "mood", "current_conflict", "last_event", "summary"):
+            value = getattr(stored, key, None)
+            represented = key == "summary" or (key in {"location", "mood"} and not getattr(primary_scene, "summary", None))
+            if value and not (represented and value == getattr(primary_scene, key, None)):
+                lines.append(f"scene.{key}: {value}")
+    if "world" in options:
+        conversation = session.get(Conversation, conversation_id)
+        world = session.get(WorldSetting, conversation.world_setting_id) if conversation and conversation.world_setting_id else None
+        if world:
+            for key in ("title", "description", "world_seed"):
+                value = getattr(world, key, None)
+                if value and not (key == "world_seed" and value == getattr(primary_scene, "world_seed", None)):
+                    lines.append(f"world.{key}: {value}")
+    plan.supplemental_context = "Additional selected command context (only fields absent above):\n" + "\n".join(lines) if lines else ""
+    return plan
 
 
 @bounded_llm_task
@@ -647,6 +660,8 @@ async def apply_chat_command_postprocess(
     llm_client: LLMClient | None = None,
     prompt_settings: dict[str, str] | None = None,
     commit: bool = True,
+    combined_messages: list[dict] | None = None,
+    execution_outcome: dict | None = None,
 ) -> list[Message]:
     """Apply command postprocess to generated chat bubbles.
 
@@ -683,17 +698,28 @@ async def apply_chat_command_postprocess(
         persist_changes(source_message)
         return generated_messages
 
-    client = llm_client or LLMClient(profile="chat", purpose="chat_command_postprocess")
+    outcome = dict(execution_outcome or {"status": "standalone", "reason": "mode_separate"})
+    combined_validated = None
+    if overlay_mode and combined_messages is not None:
+        combined_validated = parse_command_payload(json.dumps({"messages": combined_messages}), 1, overlay=True, block_types=command.postprocess_block_types)
+        if combined_validated is None:
+            outcome.update(status="fallback", reason="invalid_transport_panel")
+        else:
+            outcome.update(status="combined_success", reason="validated_panel")
+    executions = dict((source_message.metadata_ or {}).get("command_postprocess_execution") or {})
+    executions[command.id] = outcome
+    source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_execution": executions}
+    client = llm_client or (None if combined_validated is not None else LLMClient(profile="chat", purpose="chat_command_postprocess"))
     original_block = "\n\n".join(
-        prompts.format_message_for_context(message, include_thought=False)
-        if (message.metadata_ or {}).get("response_protocol") in {"tagged_text", "free_body_json"}
-        else f"[{message.speaker_id}]\n{message.content}"
+        prompts.format_full_public_message(message)
         for message in targets
     )
     expected_count = 1 if overlay_mode else len(targets)
-    response_instruction = command_response_instruction(expected_count, overlay_mode=overlay_mode)
+    response_instruction = command_response_instruction(expected_count, overlay_mode=overlay_mode, block_types=command.postprocess_block_types)
     postprocess_prompt = getattr(command, "postprocess_prompt", None) or command.prompt
-    postprocess_context = build_command_postprocess_context(session, command, conversation_id, source_message, generated_messages)
+    postprocess_context = "" if combined_validated is not None else build_command_postprocess_context(
+        session, command, conversation_id, source_message, generated_messages, {source_message.id, *(m.id for m in targets)}
+    )
     settings = prompt_settings or {}
     system_prompt = "\n\n".join(
         part.strip()
@@ -716,8 +742,8 @@ async def apply_chat_command_postprocess(
                 f"후처리 대상: {target_mode}\n"
                 f"postprocess_prompt:\n{postprocess_prompt}\n\n"
                 f"{postprocess_context}\n\n"
-                f"커맨드 요청/연출 지시:\n{source_message.content}\n\n"
-                "대상 생성 버블:\n"
+                f"커맨드 요청/연출 지시:\n{prompts.format_full_public_message(source_message)}\n\n"
+                "대상 생성 버블 (1차 응답 메시지):\n"
                 f"{original_block}\n\n"
                 f"{response_instruction}"
             ),
@@ -726,15 +752,15 @@ async def apply_chat_command_postprocess(
     originals = [(message, message.content, deepcopy(message.metadata_ or {})) for message in targets]
     diagnostics: list[dict] = []
     attempt = 0
-    command_messages = None
+    command_messages = combined_validated
     try:
-        response_format = command_response_format(expected_count, overlay=overlay_mode)
-        for attempt in range(1, 3):
+        response_format = command_response_format(expected_count, overlay=overlay_mode, block_types=command.postprocess_block_types)
+        for attempt in ([] if combined_validated is not None else range(1, 3)):
             response = await chat_with_optional_conversation_id(
                 messages=messages, client=client, conversation_id=conversation_id,
                 response_format=response_format,
             )
-            command_messages = parse_command_payload(response.content, expected_count, overlay=overlay_mode)
+            command_messages = parse_command_payload(response.content, expected_count, overlay=overlay_mode, block_types=command.postprocess_block_types)
             finish = (response.finish_reason or "").upper()
             if finish not in {"", "STOP", "MAX_TOKENS", "LENGTH"}:
                 command_messages = None
@@ -771,9 +797,11 @@ async def apply_chat_command_postprocess(
         if command_messages is None:
             raise ValueError("command postprocess structured validation exhausted")
         terminal_metadata = {
+            "command_postprocess_execution": {command.id: outcome},
+            "command_postprocess_mode": "combined_overlay" if combined_validated is not None else "separate",
             "command_postprocess_attempts": attempt,
             "command_postprocess_parse_attempts": len(diagnostics),
-            "command_postprocess_network_attempts": task_attempt_metadata().get("network_attempts", 0),
+            "command_postprocess_network_attempts": 0 if combined_validated is not None else task_attempt_metadata().get("network_attempts", 0),
             "command_postprocess_diagnostics": diagnostics,
             "command_postprocess_error_code": None,
         }
@@ -808,7 +836,7 @@ async def apply_chat_command_postprocess(
                 created_at=overlay_created_at,
             )
             track_changes(overlay)
-            source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "applied", **terminal_metadata}
+            source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "applied", **terminal_metadata, "command_postprocess_execution": executions}
             track_changes(source_message)
             persist_changes(overlay, source_message)
             return [overlay, *generated_messages] if target_mode == "first_bubble" else [*generated_messages, overlay]
@@ -839,7 +867,7 @@ async def apply_chat_command_postprocess(
             message.content = rewritten
             message.metadata_ = metadata
             track_changes(message)
-        source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "applied", **terminal_metadata}
+        source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "applied", **terminal_metadata, "command_postprocess_execution": executions}
         track_changes(source_message)
         persist_changes(*targets, source_message)
     except Exception as exc:
@@ -851,9 +879,11 @@ async def apply_chat_command_postprocess(
             else "command_postprocess_failed"
         )
         terminal_metadata = {
+            "command_postprocess_execution": {command.id: outcome},
+            "command_postprocess_mode": "combined_overlay" if combined_validated is not None else "separate",
             "command_postprocess_attempts": attempt,
             "command_postprocess_parse_attempts": len(diagnostics),
-            "command_postprocess_network_attempts": task_attempt_metadata().get("network_attempts", 0),
+            "command_postprocess_network_attempts": 0 if combined_validated is not None else task_attempt_metadata().get("network_attempts", 0),
             "command_postprocess_diagnostics": diagnostics,
             "command_postprocess_error_code": error_code,
         }
@@ -870,7 +900,7 @@ async def apply_chat_command_postprocess(
             })
             message.metadata_ = metadata
             track_changes(message)
-        source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "failed", **terminal_metadata}
+        source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "failed", **terminal_metadata, "command_postprocess_execution": executions}
         track_changes(source_message)
         persist_changes(*targets, source_message)
     return generated_messages

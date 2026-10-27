@@ -57,13 +57,17 @@ def response_format(protocol: str, aliases=None) -> dict | None:
                                'emotion': {'type': 'string'}}}}}}}
 
 
-def output_instructions(protocol, characters, roles=None):
+def output_instructions(protocol, characters, roles=None, *, auxiliary=False):
     names = {c.id: c.name for c in characters}
     aliases = speaker_aliases(characters, roles)
     identity = '\n'.join(f'{alias} = {names.get(cid, "narrator")} [{cid or "narration"}]' for alias, cid in aliases.items())
     envelope = ('Return only <m c="C1" e="optional emotion">body</m> bubbles. No JSON envelope.'
                 if protocol == 'tagged_text' else
                 'Return only {"replies":[{"who":"C1","text":"body","emotion":"optional"}]}. Only who and text are required.')
+    if auxiliary:
+        envelope = ('Primary: <m c="C1" e="optional emotion">body</m> bubbles, followed by the command panels suffix. No JSON.'
+                    if protocol == 'tagged_text' else
+                    'Return {"replies":[{"who":"C1","text":"body","emotion":"optional"}],"panels":[command panels]}. Only who and text are required per reply.')
     return f'{envelope}\nExact speaker alias map (silent roles excluded):\n{identity}\nSafety ceiling: {MAX_REPLIES} bubbles, not a target.'
 
 

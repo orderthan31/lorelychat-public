@@ -120,9 +120,12 @@ def provider_roleplay_rendering_section(
 
 
 
-def format_message_for_context(message: Message, *, include_thought: bool = True, character_names: dict[str, str] | None = None) -> str:
+def format_message_for_context(message: Message, *, include_thought: bool = True, character_names: dict[str, str] | None = None, compact: bool = True) -> str:
+    def text(value: str | None, limit: int) -> str:
+        return compact_prompt_text(value, limit) if compact else (value or "")
+
     if message.speaker_type == "system":
-        return f"system:scene_direction | directive={compact_prompt_text(message.content, 220)}"
+        return f"system:scene_direction | directive={text(message.content, 220)}"
     speaker_label = f"{message.speaker_type}:{message.speaker_id}"
     if message.speaker_type == "character" and message.speaker_id:
         character_name = (character_names or {}).get(message.speaker_id)
@@ -141,11 +144,16 @@ def format_message_for_context(message: Message, *, include_thought: bool = True
                 parts.append(f"{label}={part.get('text', '')}")
         return " | ".join(parts)
     if message.action:
-        parts.append(f"action={compact_prompt_text(message.action, 110)}")
+        parts.append(f"action={text(message.action, 110)}")
     if include_thought and message.thought:
-        parts.append(f"thought={compact_prompt_text(message.thought, 70)}")
-    parts.append(f"dialogue={compact_prompt_text(message.content, 240)}")
+        parts.append(f"thought={text(message.thought, 70)}")
+    parts.append(f"dialogue={text(message.content, 240)}")
     return " | ".join(parts)
+
+
+def format_full_public_message(message: Message) -> str:
+    """Lossless standalone command input, not a general-history budget change."""
+    return format_message_for_context(message, include_thought=False, compact=False)
 
 
 def select_prompt_recent_messages(
@@ -558,6 +566,7 @@ def build_multi_character_prompt_harness(
     provider_type: str | None = None,
     total_budget_tokens: int | None = None,
     context_management_mode: str = "legacy",
+    command_overlay_plan=None,
 ) -> PromptHarness:
     character_names = {character.id: character.name for character in characters}
     raw_messages = messages_after_scene_summary_boundary(
@@ -596,10 +605,12 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
     protocol = free_body.current_protocol()
     if protocol != "legacy_json":
         base_rules = prompt_setting(prompt_settings, "free_body_generation_core", free_body.DEFAULT_FREE_BODY_CORE)
-        output_rules = free_body.output_instructions(protocol, characters, room_cast_roles)
+        output_rules = free_body.output_instructions(protocol, characters, room_cast_roles, auxiliary=bool(command_overlay_plan and command_overlay_plan.eligible))
         output_rules += "\n" + prompt_setting(prompt_settings, "free_body_output_rules", free_body.DEFAULT_FREE_BODY_RULES)
         if min_output_tokens:
             output_rules += f"\nDesired prose richness: approximately {min_output_tokens} output tokens, within the existing output budget; no filler or forced bubble count."
+    from app.engine.command_overlay import instructions as overlay_instructions
+    panel_instructions = overlay_instructions(command_overlay_plan, protocol)
     character_cards_budget = max(2600, approx_tokens(character_cards) + 100)
     output_rules_budget = max(620, approx_tokens(output_rules) + 80)
 
@@ -633,6 +644,8 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
     )
     if provider_section is not None and free_body.current_protocol() == "legacy_json":
         sections.append(provider_section)
+    if panel_instructions:
+        sections.append(PromptSection("command_panels", "Command panel contract", panel_instructions, "runtime.command_contract", "explicit_overlay", approx_tokens(panel_instructions) + 16, True))
     budget = total_budget_tokens or prompt_budget_for_context(genre_mode=genre_mode, is_multi_room=len(characters) >= 2)
     return compile_prompt_sections(sections=sections, total_budget_tokens=budget)
 

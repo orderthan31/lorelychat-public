@@ -13,24 +13,8 @@ import { useI18n } from '../../i18n/I18nProvider';
 import { formatNamedAction, type UiMessageKey } from '../../i18n/core';
 import type { LegacyRoute } from '../../router/legacyRouter';
 
-export type PostprocessContextOption = 'scene' | 'world' | 'characters' | 'relationship_memory' | 'recent_messages' | 'turn_messages';
-
-export type ChatCommandItem = {
-  id?: string;
-  name: string;
-  display_name?: string;
-  description?: string;
-  prompt?: string;
-  generation_prompt?: string;
-  postprocess_prompt?: string;
-  postprocess_target?: 'first_bubble' | 'last_bubble' | 'all_bubbles';
-  postprocess_probability?: number;
-  postprocess_context_options?: PostprocessContextOption[];
-  enabled?: boolean;
-  priority?: number;
-};
-
-const DEFAULT_POSTPROCESS_CONTEXT_OPTIONS: PostprocessContextOption[] = ['scene', 'world', 'turn_messages'];
+export type { ChatCommandItem, PostprocessBlockType, PostprocessContextOption } from '../../types/chatCommands';
+import { DEFAULT_POSTPROCESS_CONTEXT_OPTIONS, normalizeChatCommandDraft, type ChatCommandItem, type PostprocessBlockType, type PostprocessContextOption } from '../../types/chatCommands';
 
 const POSTPROCESS_CONTEXT_OPTIONS: { value: PostprocessContextOption; label: string; description: string }[] = [
   { value: 'scene', label: '현재 장면', description: '장소, 분위기, 현재 갈등/주제, 마지막 사건, 장기 장면 메모리' },
@@ -40,20 +24,6 @@ const POSTPROCESS_CONTEXT_OPTIONS: { value: PostprocessContextOption; label: str
   { value: 'recent_messages', label: '최근 메시지', description: '최근 대화 히스토리' },
   { value: 'turn_messages', label: '현재 턴 메시지', description: '유저/source 메시지와 1차 응답 메시지' },
 ];
-
-const emptyDraft: ChatCommandItem = {
-  name: '',
-  display_name: '',
-  description: '',
-  prompt: '',
-  generation_prompt: '',
-  postprocess_prompt: '',
-  postprocess_target: 'last_bubble',
-  postprocess_probability: 100,
-  postprocess_context_options: DEFAULT_POSTPROCESS_CONTEXT_OPTIONS,
-  enabled: true,
-  priority: 0,
-};
 
 const targetLabels: Record<string, string> = {
   first_bubble: '처음에 후처리 전용 버블 삽입',
@@ -77,8 +47,7 @@ export type ChatCommandsViewProps = {
 
 function normalizeDraft(command?: ChatCommandItem): ChatCommandItem {
   return {
-    ...emptyDraft,
-    ...(command || {}),
+    ...normalizeChatCommandDraft(command),
     generation_prompt: command?.generation_prompt || command?.prompt || '',
     postprocess_prompt: command?.postprocess_prompt || command?.prompt || '',
     postprocess_target: command?.postprocess_target || 'last_bubble',
@@ -86,7 +55,6 @@ function normalizeDraft(command?: ChatCommandItem): ChatCommandItem {
     postprocess_context_options: command?.postprocess_context_options?.length ? command.postprocess_context_options : DEFAULT_POSTPROCESS_CONTEXT_OPTIONS,
   };
 }
-
 
 function PostprocessContextSelector({ selected, onChange }: { selected: PostprocessContextOption[]; onChange: (value: PostprocessContextOption[]) => void }) {
   const { t } = useI18n();
@@ -112,6 +80,35 @@ function PostprocessContextSelector({ selected, onChange }: { selected: Postproc
   </section>;
 }
 
+const POSTPROCESS_BLOCK_TYPES: { value: PostprocessBlockType; label: UiMessageKey }[] = [
+  { value: 'text', label: '텍스트' },
+  { value: 'note', label: '노트' },
+  { value: 'table', label: '표' },
+  { value: 'comments', label: '댓글' },
+  { value: 'commentary', label: '해설' },
+  { value: 'checklist', label: '체크리스트' },
+  { value: 'timeline', label: '타임라인' },
+  { value: 'vote', label: '투표' },
+  { value: 'cards', label: '카드' },
+];
+
+function PostprocessBlockTypeSelector({ selected, onChange }: { selected: PostprocessBlockType[]; onChange: (value: PostprocessBlockType[]) => void }) {
+  const { t } = useI18n();
+  return <fieldset className="min-w-0 grid gap-2" aria-describedby="command-output-types-hint">
+    <legend className="mb-2 text-sm font-semibold text-foreground">{t('후처리 출력 유형')}</legend>
+    <p id="command-output-types-hint" className="text-xs leading-relaxed text-muted-foreground">{t('선택하지 않으면 호환성을 위해 모든 유형을 허용합니다.')}</p>
+    <div className="grid grid-cols-2 border-y border-border sm:grid-cols-3">
+      {POSTPROCESS_BLOCK_TYPES.map(({ value, label }) => {
+        const checked = selected.includes(value);
+        return <label key={value} className={`flex min-h-11 min-w-0 cursor-pointer items-center gap-2 border-b border-border p-3 text-sm transition ${checked ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/40'}`}>
+          <input type="checkbox" value={value} checked={checked} className="h-4 w-4 shrink-0 accent-primary" onChange={() => onChange(checked ? selected.filter(item => item !== value) : [...selected, value])} />
+          <span className="break-words">{t(label)}</span>
+        </label>;
+      })}
+    </div>
+  </fieldset>;
+}
+
 function CommandForm({ draft, updateDraft, saveChatCommand, deleteChatCommand, busy, isNew, navigate }: {
   draft: ChatCommandItem;
   updateDraft: (patch: Partial<ChatCommandItem>) => void;
@@ -130,6 +127,7 @@ function CommandForm({ draft, updateDraft, saveChatCommand, deleteChatCommand, b
       <label>{t('설명')}<Input value={draft.description || ''} onChange={(e) => updateDraft({ description: e.target.value })} placeholder={t('자동완성에 표시할 설명')} /></label>
       <TextareaWithExpand label={t('메시지 생성 프롬프트')} rows={5} value={draft.generation_prompt || ''} onChange={(value) => updateDraft({ generation_prompt: value, prompt: draft.postprocess_prompt || value })} placeholder={t('메시지를 만들 때 적용할 지시')} />
       <TextareaWithExpand label={t('후처리 프롬프트')} rows={7} value={draft.postprocess_prompt || ''} onChange={(value) => updateDraft({ postprocess_prompt: value, prompt: value || draft.generation_prompt || '' })} placeholder={t('생성된 메시지에 적용할 후처리 지시')} />
+      <PostprocessBlockTypeSelector selected={draft.postprocess_block_types ?? []} onChange={(value) => updateDraft({ postprocess_block_types: value })} />
       <PostprocessContextSelector selected={draft.postprocess_context_options || DEFAULT_POSTPROCESS_CONTEXT_OPTIONS} onChange={(value) => updateDraft({ postprocess_context_options: value })} />
       <div className="grid md:grid-cols-2 gap-3">
         <label>{t('후처리 대상')}

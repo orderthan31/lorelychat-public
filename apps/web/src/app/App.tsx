@@ -38,6 +38,7 @@ import { ConversationDetailView } from '../views/ConversationDetail';
 import { PresetsView } from '../views/Presets';
 import { PresetDetailView } from '../views/PresetDetail';
 import { ChatCommandsView } from '../views/ChatCommands';
+import { chatCommandSavePayload, normalizeChatCommandDraft } from '../types/chatCommands';
 import { WorldSettingsDetailView, WorldSettingsListView, normalizeWorld } from '../views/WorldSettings';
 import { ConversationEditView } from '../views/ConversationEdit';
 import { CharacterDetailView } from '../views/CharacterDetail';
@@ -149,7 +150,7 @@ export function App() {
   const [ttsVoices, setTtsVoices] = useState<any[]>(FALLBACK_TTS_VOICES);
   const [ttsModels, setTtsModels] = useState<any[]>(FALLBACK_TTS_MODELS);
   const [presetDraft, setPresetDraft] = useState(EMPTY_PRESET);
-  const [chatCommandDraft, setChatCommandDraft] = useState<any>({ name: '', display_name: '', description: '', prompt: '', generation_prompt: '', postprocess_prompt: '', postprocess_target: 'last_bubble', postprocess_probability: 100, postprocess_context_options: ['scene', 'world', 'turn_messages'], enabled: true, priority: 0 });
+  const [chatCommandDraft, setChatCommandDraft] = useState<any>(normalizeChatCommandDraft());
   const [presetQuery, setPresetQuery] = useState('');
   const [presetPage, setPresetPage] = useState(1);
   const [conversations, setConversations] = useState<any[]>([]);
@@ -779,29 +780,16 @@ export function App() {
     if (!chatCommandDraft.name?.trim() || !(generationPrompt.trim() || postprocessPrompt.trim())) { setStatus(t('커맨드명과 생성/후처리 프롬프트 중 하나는 필수입니다.')); return; }
     setBusy(true);
     try {
-      const body = {
-        ...chatCommandDraft,
-        name: chatCommandDraft.name.trim().replace(/^!/, ''),
-        display_name: chatCommandDraft.name.trim().replace(/^!/, ''),
-        description: chatCommandDraft.description || '',
-        prompt: postprocessPrompt || generationPrompt,
-        generation_prompt: generationPrompt,
-        postprocess_prompt: postprocessPrompt,
-        postprocess_target: chatCommandDraft.postprocess_target || 'last_bubble',
-        postprocess_probability: Math.max(0, Math.min(100, Number(chatCommandDraft.postprocess_probability ?? 100))),
-        postprocess_context_options: Array.isArray(chatCommandDraft.postprocess_context_options) ? chatCommandDraft.postprocess_context_options : ['scene', 'world', 'turn_messages'],
-        priority: Number(chatCommandDraft.priority || 0),
-        enabled: chatCommandDraft.enabled !== false,
-      };
+      const body = chatCommandSavePayload(chatCommandDraft);
       const saved = await settingsMutations.saveChatCommand.mutateAsync({ id: chatCommandDraft.id || null, payload: body }) as any;
-      await loadChatCommands(); setChatCommandDraft(saved); setStatus(t('커맨드 저장 완료')); navigate(`/chat-commands/${saved.id}`);
+      await loadChatCommands(); setChatCommandDraft(normalizeChatCommandDraft(saved)); setStatus(t('커맨드 저장 완료')); navigate(`/chat-commands/${saved.id}`);
     } finally { setBusy(false); }
   }
   async function deleteChatCommand(command) {
     if (!command?.id) return;
     if (!(await confirmLocalizedDanger(formatDangerConfirmation('command', locale, command.display_name || command.name)))) return;
     await settingsMutations.deleteChatCommand.mutateAsync(command.id);
-    await loadChatCommands(); setChatCommandDraft({ name: '', display_name: '', description: '', prompt: '', generation_prompt: '', postprocess_prompt: '', postprocess_target: 'last_bubble', postprocess_probability: 100, postprocess_context_options: ['scene', 'world', 'turn_messages'], enabled: true, priority: 0 }); setStatus(t('커맨드 삭제 완료')); navigate('/chat-commands');
+    await loadChatCommands(); setChatCommandDraft(normalizeChatCommandDraft()); setStatus(t('커맨드 삭제 완료')); navigate('/chat-commands');
   }
   async function saveWorldSetting() {
     if (!worldSettingDraft.title?.trim() || !worldSettingDraft.world_seed?.trim()) { setStatus(t('세계관 이름과 세계관/규칙은 필수입니다.')); return; }

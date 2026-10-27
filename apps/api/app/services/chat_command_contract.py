@@ -31,14 +31,29 @@ _BLOCK_FIELDS = {
 }
 
 
-def command_response_format(count: int, *, overlay: bool = False) -> dict:
+def command_response_format(count: int, *, overlay: bool = False, block_types=None) -> dict:
     blocks = {"anyOf": [
         _object({"type": {"type": "string", "enum": [kind]}, "title": _STRING, **fields})
-        for kind, fields in _BLOCK_FIELDS.items()
+        for kind, fields in _BLOCK_FIELDS.items() if not block_types or kind in block_types
     ]}
     return {"type": "json_object", "name": "chat_command_messages", "schema": _object({
         "messages": _array(_object({"content": _STRING, "blocks": _array(blocks, minItems=1 if overlay else 0)}), minItems=count, maxItems=count),
     })}
+
+
+def block_examples(block_types=None):
+    def example(schema):
+        if "enum" in schema:
+            return schema["enum"][0]
+        if "anyOf" in schema:
+            return example(schema["anyOf"][0])
+        kind = schema["type"]
+        if kind == "object":
+            return {key: example(value) for key, value in schema["properties"].items()}
+        if kind == "array":
+            return [example(schema["items"])]
+        return {"string": "example", "boolean": False, "number": 50, "null": None}[kind]
+    return [example(schema) for schema in command_response_format(1, block_types=block_types)["schema"]["properties"]["messages"]["items"]["properties"]["blocks"]["items"]["anyOf"]]
 
 
 def _matches(value: object, schema: dict) -> bool:
@@ -62,7 +77,9 @@ def _matches(value: object, schema: dict) -> bool:
     return value is None if kind == "null" else False
 
 
-def parse_command_payload(raw: str, count: int, *, overlay: bool = False) -> list[dict] | None:
+def parse_command_payload(raw: str, count: int, *, overlay: bool = False, block_types=None) -> list[dict] | None:
+    if not isinstance(raw, str) or len(raw) > 100_000:
+        return None
     def unique_object(pairs):
         result = {}
         for key, value in pairs:
@@ -73,7 +90,7 @@ def parse_command_payload(raw: str, count: int, *, overlay: bool = False) -> lis
 
     try:
         data = json.loads(raw, object_pairs_hook=unique_object)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return None
     # A missing decorative title is losslessly canonicalized; no text, targets or blocks are dropped.
     if isinstance(data, dict) and isinstance(data.get("messages"), list):
@@ -82,7 +99,7 @@ def parse_command_payload(raw: str, count: int, *, overlay: bool = False) -> lis
                 for block in item["blocks"]:
                     if isinstance(block, dict):
                         block.setdefault("title", "")
-    if not _matches(data, command_response_format(count, overlay=overlay)["schema"]):
+    if not _matches(data, command_response_format(count, overlay=overlay, block_types=block_types)["schema"]):
         return None
     if internal_control_token_reason(data):
         return None

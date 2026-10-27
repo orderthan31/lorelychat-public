@@ -1,5 +1,6 @@
 import { useEffect, type Dispatch, type SetStateAction } from 'react';
 import { characterApi, settingsApi } from '../api/resources';
+import { normalizeChatCommandDraft, type ChatCommandItem } from '../types/chatCommands';
 import type { LegacyRoute } from '../router/legacyRouter';
 import {
   DEFAULT_FORBIDDEN_RULES,
@@ -53,6 +54,8 @@ export function useRouteResourceSync({
   const routeId = 'id' in route ? route.id : undefined;
 
   useEffect(() => {
+    // Each effect visit owns its command request, even when revisiting the same ID.
+    let commandRequestActive = true;
     if (route.page === 'characterNew') {
       setDraft({ ...EMPTY_CHARACTER, forbidden_rules: [...DEFAULT_FORBIDDEN_RULES], trait_scores: { ...DEFAULT_TRAIT_SCORES } });
       setCharacterAssets([]);
@@ -74,19 +77,23 @@ export function useRouteResourceSync({
 
 
     if (route.page === 'chatCommandNew') {
-      setChatCommandDraft?.({ name: '', display_name: '', description: '', prompt: '', generation_prompt: '', postprocess_prompt: '', postprocess_target: 'last_bubble', postprocess_probability: 100, enabled: true, priority: 0 });
+      setChatCommandDraft?.(normalizeChatCommandDraft());
     }
     if (route.page === 'chatCommandDetail' && routeId) {
       const local = chatCommands.find((command) => command.id === routeId);
-      if (local) setChatCommandDraft?.({ name: '', display_name: '', description: '', prompt: '', generation_prompt: '', postprocess_prompt: '', postprocess_target: 'last_bubble', postprocess_probability: 100, enabled: true, priority: 0, ...local });
+      if (local) setChatCommandDraft?.(normalizeChatCommandDraft(local as ChatCommandItem));
       else settingsApi.chatCommands().then((commands) => {
+        if (!commandRequestActive) return;
         const found = ((commands || []) as Entity[]).find((command) => command.id === routeId);
-        if (found) setChatCommandDraft?.({ name: '', display_name: '', description: '', prompt: '', generation_prompt: '', postprocess_prompt: '', postprocess_target: 'last_bubble', postprocess_probability: 100, enabled: true, priority: 0, ...found });
+        if (found) setChatCommandDraft?.(normalizeChatCommandDraft(found as ChatCommandItem));
         else setStatus(t('커맨드를 찾을 수 없습니다.'));
-      }).catch((e) => setStatus(e.message));
+      }).catch((e) => {
+        if (commandRequestActive) setStatus(e.message);
+      });
     }
 
     if (route.page === 'conversationDetail' && routeId) fetchConversation(routeId).catch((e) => setStatus(e.message));
     if (route.page === 'conversationEdit' && routeId) loadConversationEditDraft(routeId).catch((e) => setStatus(e.message));
+    return () => { commandRequestActive = false; };
   }, [route.page, routeId, t]);
 }
