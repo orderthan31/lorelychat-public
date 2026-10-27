@@ -785,6 +785,14 @@ def finalize_message_generation_turn(
 
 
 def mark_message_generation_job_failed(session: Session, job: MessageGenerationJob, exc: Exception) -> MessageGenerationJob:
+    source = session.get(Message, job.incoming_message_id)
+    if source is not None and (source.metadata_ or {}).get("command_postprocess_status") == "pending":
+        source.metadata_ = {
+            **(source.metadata_ or {}),
+            "command_postprocess_status": "skipped_generation_failed",
+            "command_postprocess_error_code": "generation_failed",
+        }
+        session.add(source)
     now = datetime.now(timezone.utc)
     job.status = "failed"
     job.error_message = compact_text(str(exc), limit=1000)
@@ -1214,6 +1222,11 @@ def add_message(
 
 def mark_message_generation_failed(session: Session, message: Message, error: Exception) -> Message:
     metadata = dict(message.metadata_ or {})
+    if metadata.get("command_postprocess_status") == "pending":
+        metadata.update({
+            "command_postprocess_status": "skipped_generation_failed",
+            "command_postprocess_error_code": "generation_failed",
+        })
     metadata.update({
         "generation_status": "failed",
         "generation_error_type": type(error).__name__,

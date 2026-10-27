@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import json
 import re
 from collections import Counter
@@ -15,7 +16,14 @@ except Exception:  # pragma: no cover - optional runtime dependency fallback
     repair_json = None
 
 from app.db.models import Character, Message, SceneState
-from app.engine.llm_client import LLMClient, LLMUnavailableError, chat_with_optional_conversation_id
+from app.engine.llm_client import (
+    LLMAttemptBudgetError,
+    LLMClient,
+    LLMUnavailableError,
+    bounded_llm_task,
+    chat_with_optional_conversation_id,
+    task_attempt_metadata,
+)
 from app.engine.output_contract import SEMANTIC_FIELD_MARKDOWN_DESCRIPTION, THOUGHT_MAX_CHARS
 from app.engine.output_guard import internal_control_token_reason
 from app.engine.prompt_harness import PromptHarness, approx_tokens
@@ -26,6 +34,14 @@ from app.schemas.dialogue import CharacterReply, MultiCharacterReply
 
 class CharacterRuntimeError(RuntimeError):
     pass
+
+
+class StructuredOutputIncompleteError(CharacterRuntimeError):
+    code = "structured_output_incomplete"
+
+
+class StructuredOutputTruncatedError(StructuredOutputIncompleteError):
+    code = "structured_output_truncated"
 
 
 CHARACTER_TURN_CONTINUATION_INSTRUCTION = """[Current turn control]
@@ -673,6 +689,7 @@ class CharacterRuntime:
         self.fallback_llm_client = fallback_llm_client
         self.prompt_generation_graph = build_prompt_generation_graph()
 
+    @bounded_llm_task
     async def generate_replies(
         self,
         *,
@@ -738,10 +755,13 @@ class CharacterRuntime:
         active_llm_client = self.llm_client
         fallback_used = False
         last_request_messages: list[dict] = []
+        attempt_diagnostics: list[dict] = []
 
         async def generate(*, messages, response_format=None, conversation_id=None):
-            nonlocal last_llm_response, active_llm_client, fallback_used, last_request_messages
+            nonlocal last_llm_response, active_llm_client, fallback_used, last_request_messages, last_response_content
             last_request_messages = [dict(message) for message in messages]
+            last_llm_response = None
+            last_response_content = ""
             try:
                 last_llm_response = await chat_with_optional_conversation_id(
                     messages=messages,
@@ -749,7 +769,9 @@ class CharacterRuntime:
                     response_format=response_format,
                     conversation_id=conversation_id,
                 )
-            except LLMUnavailableError:
+            except LLMUnavailableError as exc:
+                if isinstance(exc, LLMAttemptBudgetError):
+                    raise
                 if active_llm_client is not self.llm_client or self.fallback_llm_client is None:
                     raise
                 active_llm_client = self.fallback_llm_client
@@ -763,7 +785,8 @@ class CharacterRuntime:
             return last_llm_response
 
         def parse_and_validate(content: str) -> list[CharacterReply]:
-            nonlocal last_response_content, last_parser_shadow
+            nonlocal last_response_content, last_parser_shadow, parse_attempts
+            parse_attempts += 1
             last_response_content = content or ""
             last_parser_shadow = build_parser_shadow_metrics(
                 last_response_content,
@@ -771,8 +794,16 @@ class CharacterRuntime:
             )
             finish_reason = str(getattr(last_llm_response, "finish_reason", "") or "").strip().upper()
             if not last_response_content.strip():
+                if finish_reason in {"MAX_TOKENS", "LENGTH"}:
+                    raise StructuredOutputTruncatedError("Structured JSON response was truncated or incomplete")
                 raise CharacterRuntimeError("Structured JSON response was empty")
-            raw_replies = parse_multi_reply_content(content, default_character_id=default_character_id, allowed_character_ids=allowed)
+            try:
+                raw_replies = parse_multi_reply_content(content, default_character_id=default_character_id, allowed_character_ids=allowed)
+            except CharacterRuntimeError as exc:
+                if not json_structure_is_complete(content):
+                    error_type = StructuredOutputTruncatedError if finish_reason in {"MAX_TOKENS", "LENGTH"} else StructuredOutputIncompleteError
+                    raise error_type("Structured JSON response was truncated or incomplete") from exc
+                raise
             last_parser_shadow = build_parser_shadow_metrics(
                 last_response_content,
                 compatibility_replies=raw_replies,
@@ -788,18 +819,18 @@ class CharacterRuntime:
             has_valid_character_reply = any(reply.reply_type != "storytelling" for reply in replies)
             if has_character_reply_candidate(raw_replies) and not has_valid_character_reply:
                 raise CharacterRuntimeError("Structured JSON contained character replies without usable dialogue")
-            if finish_reason and finish_reason not in SUCCESSFUL_FINISH_REASONS and finish_reason != "MAX_TOKENS":
+            if finish_reason and finish_reason not in SUCCESSFUL_FINISH_REASONS and finish_reason not in {"MAX_TOKENS", "LENGTH"}:
                 raise CharacterRuntimeError(
                     f"Structured JSON generation ended with non-success finish reason {finish_reason}"
                 )
-            if finish_reason == "MAX_TOKENS":
+            if finish_reason in {"MAX_TOKENS", "LENGTH"}:
                 last_parser_shadow["accepted_complete_max_tokens"] = True
             if hasattr(active_llm_client, "record_response_outcome"):
                 active_llm_client.record_response_outcome(
                     last_llm_response,
                     status="validated",
                     parse_code="json_ok",
-                    validation_code="schema_ok_max_tokens" if finish_reason == "MAX_TOKENS" else "schema_ok",
+                    validation_code="schema_ok_max_tokens" if finish_reason in {"MAX_TOKENS", "LENGTH"} else "schema_ok",
                     metadata_updates=last_parser_shadow,
                 )
             return replies
@@ -812,14 +843,23 @@ class CharacterRuntime:
         last_response_content = ""
         result = None
         parse_attempts = 0
+        semantic_attempts = 0
         for attempt in range(2):
-            parse_attempts = attempt + 1
+            semantic_attempts = attempt + 1
             attempt_response_format = response_format if attempt == 0 else build_chat_replies_response_format(
                 min_bubbles=min_bubbles,
                 max_bubbles=max_bubbles,
-                retry=True,
+                retry=not isinstance(last_error, StructuredOutputIncompleteError),
             )
             retry_instruction = "" if attempt == 0 else character_retry_instruction(min_bubbles)
+            if attempt and isinstance(last_error, StructuredOutputIncompleteError):
+                retry_instruction = (
+                    "[System retry instruction]\nThe previous response was incomplete JSON. "
+                    "Regenerate one complete replies object from the original turn, not a continuation fragment. "
+                    f"Keep the requested {min_bubbles}–{max_bubbles} bubble range and all required fields. "
+                    "Preserve roleplay detail and natural dialogue; do not shorten, summarize or censor the prose. "
+                    "Close every string, array and object. Return JSON only."
+                )
             current_turn_role = "assistant" if source_speaker_type == "character" else "user"
             attempt_user_message = user_message
             continuation_instruction = ""
@@ -844,19 +884,29 @@ class CharacterRuntime:
                     conversation_id=conversation_id,
                 )
                 break
-            except (json.JSONDecodeError, ValidationError, CharacterRuntimeError) as exc:
+            except (json.JSONDecodeError, ValidationError, CharacterRuntimeError, LLMUnavailableError) as exc:
                 last_error = exc
-                if hasattr(active_llm_client, "record_response_outcome"):
-                    parse_code = "json_decode_error" if isinstance(exc, json.JSONDecodeError) else "structured_parse_error"
+                diagnostic = {
+                    "semantic_attempt": semantic_attempts,
+                    "code": getattr(exc, "code", getattr(exc, "error_type", "structured_parse_error")),
+                    "finish_reason": getattr(last_llm_response, "finish_reason", None),
+                    "response_length": len(last_response_content),
+                    "response_sha256": hashlib.sha256(last_response_content.encode()).hexdigest(),
+                    "output_budget": getattr(last_llm_response, "budget_diagnostics", None),
+                    **task_attempt_metadata(),
+                }
+                attempt_diagnostics.append(diagnostic)
+                if not isinstance(exc, LLMUnavailableError) and hasattr(active_llm_client, "record_response_outcome"):
+                    parse_code = getattr(exc, "code", "json_decode_error" if isinstance(exc, json.JSONDecodeError) else "structured_parse_error")
                     validation_code = "schema_validation_error" if isinstance(exc, ValidationError) else type(exc).__name__
                     active_llm_client.record_response_outcome(
                         last_llm_response,
                         status="parse_failed",
                         parse_code=parse_code,
                         validation_code=validation_code,
-                        metadata_updates=last_parser_shadow,
+                        metadata_updates={**last_parser_shadow, **diagnostic},
                     )
-                if attempt >= 1:
+                if attempt >= 1 or isinstance(exc, LLMUnavailableError):
                     if prompt_snapshot_callback is not None:
                         failure_snapshot = {
                             "conversation_id": conversation_id,
@@ -880,6 +930,9 @@ class CharacterRuntime:
                                 "parse_attempts": parse_attempts,
                                 "parse_status": "failed",
                                 "fallback_used": fallback_used,
+                                "attempt_diagnostics": attempt_diagnostics,
+                                "semantic_attempts": semantic_attempts,
+                                **task_attempt_metadata(),
                             },
                         }
                         callback_result = prompt_snapshot_callback(failure_snapshot)
@@ -912,6 +965,10 @@ class CharacterRuntime:
                     "parse_attempts": parse_attempts,
                     "parse_status": "success" if parse_attempts == 1 else "retry_success",
                     "fallback_used": fallback_used,
+                    "attempt_diagnostics": attempt_diagnostics,
+                    "semantic_attempts": semantic_attempts,
+                    "output_budget": getattr(response, "budget_diagnostics", None),
+                    **task_attempt_metadata(),
                 },
             }
             callback_result = prompt_snapshot_callback(snapshot)
@@ -921,6 +978,7 @@ class CharacterRuntime:
             return result.get("persisted_messages")
         return result.get("parsed_replies") or []
 
+    @bounded_llm_task
     async def generate_reply(
         self,
         *,
@@ -975,7 +1033,9 @@ class CharacterRuntime:
                     response_format={"type": "json_object", "name": "character_chat_reply", "schema": CHARACTER_REPLY_RESPONSE_SCHEMA},
                     conversation_id=conversation_id,
                 )
-            except LLMUnavailableError:
+            except LLMUnavailableError as exc:
+                if isinstance(exc, LLMAttemptBudgetError):
+                    raise
                 if active_llm_client is not self.llm_client or self.fallback_llm_client is None:
                     raise
                 active_llm_client = self.fallback_llm_client
@@ -999,7 +1059,7 @@ class CharacterRuntime:
                     min_bubbles=1,
                     max_bubbles=1,
                 )
-                if finish_reason and finish_reason not in SUCCESSFUL_FINISH_REASONS and finish_reason != "MAX_TOKENS":
+                if finish_reason and finish_reason not in SUCCESSFUL_FINISH_REASONS and finish_reason not in {"MAX_TOKENS", "LENGTH"}:
                     raise CharacterRuntimeError(
                         f"Structured JSON generation ended with non-success finish reason {finish_reason}"
                     )
@@ -1008,7 +1068,7 @@ class CharacterRuntime:
                         response,
                         status="validated",
                         parse_code="json_ok",
-                        validation_code="schema_ok_max_tokens" if finish_reason == "MAX_TOKENS" else "schema_ok",
+                        validation_code="schema_ok_max_tokens" if finish_reason in {"MAX_TOKENS", "LENGTH"} else "schema_ok",
                     )
                 return replies[0]
             except (json.JSONDecodeError, ValidationError, CharacterRuntimeError) as exc:

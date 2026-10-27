@@ -1,4 +1,5 @@
-import { useRef, useState, type FormEvent, type RefObject, type UIEvent, type MouseEvent } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type RefObject, type UIEvent, type MouseEvent } from 'react';
+import { useChatWindow } from '../../hooks/useChatWindow';
 import { Cloud } from 'lucide-react';
 import { assetUrlFor, avatarUrlFor } from '../../utils/assets';
 import { useUiStore } from '../../stores/uiStore';
@@ -107,16 +108,33 @@ export type BubbleListProps = {
   onScrollAwayChange?: (away: boolean) => void;
 };
 
-export function BubbleList({ messages, characters, onAvatarPreview, bottomRef, threadRef, onLoadOlderMessages, hasOlderMessages = false, loadingOlderMessages = false, olderPagingReady = false, onRetryMessage, renderImages = true, onGenerateTts, onRegenerateMessage, onDeleteMessage, onUpdateMessage, busy = false, selectionMode = false, selectedMessageIds = [], onEnterSelectionMode, onToggleMessageSelection, onScrollAwayChange }: BubbleListProps) {
+const CALLBACK_KEYS = ['onAvatarPreview', 'onLoadOlderMessages', 'onRetryMessage', 'onGenerateTts', 'onRegenerateMessage', 'onDeleteMessage', 'onUpdateMessage', 'onEnterSelectionMode', 'onToggleMessageSelection', 'onScrollAwayChange'] as const;
+
+// Parent composer keystrokes must not traverse/reparse the history. Stable
+// forwarding callbacks retain fresh room closures without ignoring prop changes.
+export function BubbleList({ messages, characters, onAvatarPreview, bottomRef, threadRef, onLoadOlderMessages, hasOlderMessages = false, loadingOlderMessages = false, olderPagingReady = false, onRetryMessage, renderImages = true, onGenerateTts, onRegenerateMessage, onDeleteMessage, onUpdateMessage, busy = false, selectionMode = false, ...rest }: BubbleListProps) {
+  const props: BubbleListProps = { messages, characters, onAvatarPreview, bottomRef, threadRef, onLoadOlderMessages, hasOlderMessages, loadingOlderMessages, olderPagingReady, onRetryMessage, renderImages, onGenerateTts, onRegenerateMessage, onDeleteMessage, onUpdateMessage, busy, selectionMode, ...rest };
+  const live = useRef(props);
+  useLayoutEffect(() => { live.current = props; });
+  const callbacks = useMemo(() => Object.fromEntries(CALLBACK_KEYS.map((key) => [key, (...args: unknown[]) => (live.current[key] as Function | undefined)?.(...args)])), []);
+  const forwarded = { ...props };
+  for (const key of CALLBACK_KEYS) (forwarded as any)[key] = props[key] ? callbacks[key] : undefined;
+  return <MemoBubbleList key={props.conversation?.id || ''} {...forwarded} />;
+}
+
+const MemoBubbleList = memo(BubbleListContent);
+function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, threadRef, onLoadOlderMessages, hasOlderMessages = false, loadingOlderMessages = false, olderPagingReady = false, onRetryMessage, renderImages = true, onGenerateTts, onRegenerateMessage, onDeleteMessage, onUpdateMessage, busy = false, selectionMode = false, selectedMessageIds = [], onEnterSelectionMode, onToggleMessageSelection, onScrollAwayChange }: BubbleListProps) {
+  const windowed = useChatWindow(messages, threadRef);
   const theme = useUiStore((state) => state.theme);
   const { locale, t } = useI18n();
   const [openMenuId, setOpenMenuId] = useState('');
   const [editingMessageId, setEditingMessageId] = useState('');
   const [editDraft, setEditDraft] = useState<MessageEditDraft>({ content: '', action: '', thought: '', emotion: '' });
   const longPressTimerRef = useRef<number | null>(null);
-  const selectedIdSet = new Set(selectedMessageIds);
-  const characterById = new Map(characters.map((c) => [c.id, c]));
-  const nameById = new Map(characters.map((c) => [c.id, c.name]));
+  useEffect(() => () => { if (longPressTimerRef.current) window.clearTimeout(longPressTimerRef.current); }, []);
+  const selectedIdSet = useMemo(() => new Set(selectedMessageIds), [selectedMessageIds]);
+  const characterById = useMemo(() => new Map(characters.map((c) => [c.id, c])), [characters]);
+  const nameById = useMemo(() => new Map(characters.map((c) => [c.id, c.name])), [characters]);
   const participantName = (message: ChatMessage) => {
     if (message.speaker_type === 'system') return t('시스템');
     if (message.speaker_type === 'storytelling') return t('스토리텔링');
@@ -197,9 +215,11 @@ export function BubbleList({ messages, characters, onAvatarPreview, bottomRef, t
     if (olderPagingReady && node.scrollTop < 80 && hasOlderMessages && !loadingOlderMessages) onLoadOlderMessages?.();
   };
 
-  return <div className="chat-thread" ref={threadRef} onScroll={handleThreadScroll} data-modernized="채팅 버블 design-system primitive marker">
+  return <div className="chat-thread" style={{ overflowAnchor: 'none' }} tabIndex={0} ref={threadRef} onScroll={handleThreadScroll} data-modernized="채팅 버블 design-system primitive marker">
     {hasOlderMessages && <div className="grid place-items-center pb-2 pt-1"><Button type="button" variant="ghost" size="sm" className="min-h-[42px] px-3 py-2" disabled={loadingOlderMessages} onClick={onLoadOlderMessages}>{t(loadingOlderMessages ? '이전 대화 불러오는 중…' : '이전 대화 더 보기')}</Button></div>}
-    {messages.map((message, index) => {
+    <div ref={windowed.listRef} role="list" data-chat-window data-total-messages={messages.length} style={{ position: 'relative', height: windowed.total, flexShrink: 0 }}>
+    <div style={{ position: 'absolute', top: windowed.top, left: 0, right: 0, display: 'flex', flexDirection: 'column', gap: 7 }}>
+    {messages.slice(windowed.start, windowed.end).map((message, index) => {
       const side = bubbleSide(message);
       const showAvatar = message.speaker_type === 'character' && side !== 'center';
       const character = characterForMessage(message);
@@ -216,7 +236,7 @@ export function BubbleList({ messages, characters, onAvatarPreview, bottomRef, t
       const renderPartsIncludeThought = renderParts.some((part) => part.type === 'thought');
       const showDialogue = !hasRenderParts && Boolean(message.content);
       const showAction = !hasRenderParts && Boolean(message.action);
-      return <div className={`flex w-full items-end gap-2 ${side === 'right' ? 'justify-end' : ''} ${side === 'center' ? 'justify-center' : ''} ${selectionMode ? 'cursor-pointer' : ''}`} key={message.id || index}>
+      return <div data-chat-row={message.id || `row_${windowed.start + index}`} role="listitem" aria-posinset={windowed.start + index + 1} aria-setsize={messages.length} className={`flex w-full items-end gap-2 ${side === 'right' ? 'justify-end' : ''} ${side === 'center' ? 'justify-center' : ''} ${selectionMode ? 'cursor-pointer' : ''}`} key={message.id || index}>
         {selectionMode && isSelectableMessage(message) && <Button type="button" variant="ghost" size="icon" className={`message-select-toggle ${selected ? 'selected' : ''}`} aria-label={t(selected ? '버블 선택 해제' : '버블 선택')} onClick={(event) => { event.stopPropagation(); onToggleMessageSelection?.(message.id); }}>{selected ? '✓' : ''}</Button>}
         {showAvatar && side === 'left' && <Button type="button" variant="ghost" size="icon" className="size-11 min-h-11 shrink-0 rounded-full border-0 bg-transparent p-0 shadow-none hover:bg-transparent" onClick={() => onAvatarPreview?.({ character, emotion: message.emotion || t('아직 없음'), src: avatarUrlFor(character, theme) })}><img className="size-9 rounded-full border border-white/20 bg-white/10 object-cover shadow-[0_6px_16px_rgba(0,0,0,.22)]" src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(String(character.name || t('캐릭터')), locale)} /></Button>}
         <article className={`bubble ${side} ${side === 'right' ? 'text-white' : ''} ${message.speaker_type === 'system' ? 'system' : ''} ${message.speaker_type === 'storytelling' ? 'storytelling' : ''} ${message.is_typing ? 'typing' : ''} ${selected ? 'selected' : ''}`} onPointerDown={() => startLongPress(message)} onPointerUp={clearLongPressTimer} onPointerCancel={clearLongPressTimer} onPointerLeave={clearLongPressTimer} onClick={(event) => handleBubbleClick(event, message)}>
@@ -246,6 +266,8 @@ export function BubbleList({ messages, characters, onAvatarPreview, bottomRef, t
         {showAvatar && side === 'right' && <Button type="button" variant="ghost" size="icon" className="size-11 min-h-11 shrink-0 rounded-full border-0 bg-transparent p-0 shadow-none hover:bg-transparent" onClick={() => onAvatarPreview?.({ character, emotion: message.emotion || t('아직 없음'), src: avatarUrlFor(character, theme) })}><img className="size-9 rounded-full border border-white/20 bg-white/10 object-cover shadow-[0_6px_16px_rgba(0,0,0,.22)]" src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(String(character.name || t('캐릭터')), locale)} /></Button>}
       </div>;
     })}
+    </div>
+    </div>
     <div ref={bottomRef} className="w-full flex-[0_0_1px]" aria-hidden="true" />
   </div>;
 }

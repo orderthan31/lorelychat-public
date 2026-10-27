@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
@@ -11,9 +13,11 @@ from sqlmodel import Session, select
 
 from app.db.models import ChatCommand, Character, CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, Message, SceneState, WorldSetting
 from app.engine import prompts
-from app.engine.llm_client import LLMClient, chat_with_optional_conversation_id
-from app.engine.output_guard import internal_control_token_reason
+from app.engine.llm_client import LLMClient, bounded_llm_task, task_attempt_metadata, chat_with_optional_conversation_id
+from app.services.chat_command_contract import command_response_format, parse_command_payload
 from app.schemas.chat_commands import ChatCommandCreate, ChatCommandUpdate, DEFAULT_POSTPROCESS_CONTEXT_OPTIONS, normalize_command_name
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CHAT_COMMANDS = [
     ChatCommandCreate(
@@ -350,30 +354,7 @@ def extract_json_object(text: str) -> dict | None:
 
 
 def parse_command_postprocess_response(raw: str, expected_count: int) -> list[dict] | None:
-    data = extract_json_object(raw)
-    if not data:
-        return None
-    messages = data.get("messages")
-    if not isinstance(messages, list) or len(messages) != expected_count:
-        return None
-    parsed = []
-    for item in messages:
-        if not isinstance(item, dict) or internal_control_token_reason(item):
-            return None
-        content = compact_block_text(item.get("content") or item.get("dialogue"), 2000)
-        raw_blocks = item.get("blocks") or []
-        if not isinstance(raw_blocks, list) or any(not isinstance(raw_block, dict) for raw_block in raw_blocks):
-            return None
-        blocks = []
-        for raw_block in raw_blocks:
-            block = sanitize_command_block(raw_block)
-            if block is None:
-                return None
-            blocks.append(block)
-        if not content and not blocks:
-            return None
-        parsed.append({"content": content, "blocks": blocks})
-    return parsed
+    return parse_command_payload(raw, expected_count)
 
 
 def command_response_instruction(target_count: int, *, overlay_mode: bool = False) -> str:
@@ -641,6 +622,7 @@ def build_command_postprocess_context(session: Session, command: ChatCommand, co
     return "후속 생성 참고 컨텍스트:\n" + "\n".join(blocks) if blocks else "후속 생성 참고 컨텍스트: 선택된 추가 컨텍스트 없음"
 
 
+@bounded_llm_task
 async def apply_chat_command_postprocess(
     *,
     session: Session,
@@ -720,11 +702,60 @@ async def apply_chat_command_postprocess(
             ),
         },
     ]
+    originals = [(message, message.content, deepcopy(message.metadata_ or {})) for message in targets]
+    diagnostics: list[dict] = []
+    attempt = 0
+    command_messages = None
     try:
-        response = await chat_with_optional_conversation_id(messages=messages, client=client, conversation_id=conversation_id)
-        command_messages = parse_command_postprocess_response(response.content, expected_count)
+        response_format = command_response_format(expected_count, overlay=overlay_mode)
+        for attempt in range(1, 3):
+            response = await chat_with_optional_conversation_id(
+                messages=messages, client=client, conversation_id=conversation_id,
+                response_format=response_format,
+            )
+            command_messages = parse_command_payload(response.content, expected_count, overlay=overlay_mode)
+            finish = (response.finish_reason or "").upper()
+            if finish not in {"", "STOP", "MAX_TOKENS", "LENGTH"}:
+                command_messages = None
+            code = "schema_ok" if command_messages is not None else (
+                "structured_output_truncated" if finish in {"MAX_TOKENS", "LENGTH"} else "command_schema_invalid"
+            )
+            diagnostic = {
+                "semantic_attempt": attempt, "code": code,
+                "finish_reason": finish if finish in {"", "STOP", "MAX_TOKENS", "LENGTH"} else "NON_SUCCESS",
+                "response_length": len(response.content),
+                "response_sha256": hashlib.sha256(response.content.encode()).hexdigest(),
+                "transport_attempts": response.generation_attempts,
+                "output_budget": response.budget_diagnostics,
+                **task_attempt_metadata(),
+            }
+            diagnostics.append(diagnostic)
+            recorder = getattr(client, "record_response_outcome", None)
+            if recorder:
+                recorder(response, status="validated" if command_messages is not None else "parse_failed",
+                         parse_code="json_ok" if command_messages is not None else code,
+                         validation_code=code, metadata_updates=diagnostic)
+            if command_messages is not None:
+                break
+            logger.warning("Command postprocess validation failed attempt=%s code=%s response_length=%s",
+                           attempt, code, len(response.content))
+            if attempt == 2 or finish not in {"", "STOP", "MAX_TOKENS", "LENGTH"}:
+                raise ValueError("command postprocess structured validation exhausted")
+            messages = [*messages, {"role": "user", "content": (
+                "[System retry instruction] The previous output failed structured validation. "
+                f"Return the entire messages object with exactly {expected_count} entries in original target order. "
+                "Use the supplied schema and include all requested blocks. Do not return fragments, fences or explanations. "
+                "Preserve the original roleplay prose and detail without shortening it."
+            )}]
         if command_messages is None:
-            raise ValueError("command postprocess response did not match the structured messages schema")
+            raise ValueError("command postprocess structured validation exhausted")
+        terminal_metadata = {
+            "command_postprocess_attempts": attempt,
+            "command_postprocess_parse_attempts": len(diagnostics),
+            "command_postprocess_network_attempts": task_attempt_metadata().get("network_attempts", 0),
+            "command_postprocess_diagnostics": diagnostics,
+            "command_postprocess_error_code": None,
+        }
 
         if overlay_mode:
             item = command_messages[0]
@@ -747,6 +778,7 @@ async def apply_chat_command_postprocess(
                     "commands_applied": [command.name],
                     "command_id": command.id,
                     "command_postprocess_status": "applied",
+                    **terminal_metadata,
                     "command_blocks": item["blocks"],
                     "command_block_schema": "chat_overlay_v1",
                     "command_overlay": True,
@@ -755,7 +787,7 @@ async def apply_chat_command_postprocess(
                 created_at=overlay_created_at,
             )
             track_changes(overlay)
-            source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "applied"}
+            source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "applied", **terminal_metadata}
             track_changes(source_message)
             persist_changes(overlay, source_message)
             return [overlay, *generated_messages] if target_mode == "first_bubble" else [*generated_messages, overlay]
@@ -771,6 +803,7 @@ async def apply_chat_command_postprocess(
                 "command_id": command.id,
                 "pre_command_content": metadata.get("pre_command_content", message.content),
                 "command_postprocess_status": "applied",
+                **terminal_metadata,
                 "command_blocks": item["blocks"],
                 "command_block_schema": "chat_overlay_v1",
                 "command_postprocess_target": target_mode,
@@ -779,21 +812,38 @@ async def apply_chat_command_postprocess(
             message.content = item["content"] or message.content
             message.metadata_ = metadata
             track_changes(message)
-        source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "applied"}
+        source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "applied", **terminal_metadata}
         track_changes(source_message)
         persist_changes(*targets, source_message)
     except Exception as exc:
-        for message in targets:
-            metadata = dict(message.metadata_ or {})
+        if commit:
+            session.rollback()
+        error_code = (
+            diagnostics[-1]["code"]
+            if diagnostics and isinstance(exc, ValueError) and diagnostics[-1]["code"] != "schema_ok"
+            else "command_postprocess_failed"
+        )
+        terminal_metadata = {
+            "command_postprocess_attempts": attempt,
+            "command_postprocess_parse_attempts": len(diagnostics),
+            "command_postprocess_network_attempts": task_attempt_metadata().get("network_attempts", 0),
+            "command_postprocess_diagnostics": diagnostics,
+            "command_postprocess_error_code": error_code,
+        }
+        logger.warning("Command postprocess failed attempts=%s code=%s", attempt, error_code)
+        for message, original_content, original_metadata in originals:
+            message.content = original_content
+            metadata = dict(original_metadata)
             metadata.update({
                 "command_applied": command.name,
                 "command_id": command.id,
                 "command_postprocess_status": "failed",
-                "command_postprocess_error": f"{type(exc).__name__}: {str(exc)[:500]}",
+                "command_postprocess_error": "Command postprocess failed; original reply preserved",
+                **terminal_metadata,
             })
             message.metadata_ = metadata
             track_changes(message)
-        source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "failed"}
+        source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "failed", **terminal_metadata}
         track_changes(source_message)
         persist_changes(*targets, source_message)
     return generated_messages

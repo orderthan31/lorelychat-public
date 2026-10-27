@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Swal from 'sweetalert2';
 import withReactContent from 'sweetalert2-react-content';
 import 'sweetalert2/dist/sweetalert2.min.css';
 import { characterApi, conversationApi, settingsApi } from '../api/resources';
 import { GenerationLifecycleSubscriptionClosedError, subscribeGenerationJobLifecycle } from '../api/generationJobEvents';
+import { GenerationOwners, RoomVisit, RoomWork, RoomWorkCancelledError } from '../utils/roomWork';
 import { useAppDerivedData } from '../hooks/useAppDerivedData';
 import { useBootstrapResources } from '../hooks/useBootstrapResources';
 import { useBootstrapSync } from '../hooks/useBootstrapSync';
@@ -65,7 +66,7 @@ import {
   USER_ID,
 } from '../constants/domain';
 
-async function delay(ms) { return new Promise((resolve) => window.setTimeout(resolve, ms)); }
+
 const JOB_POLL_INTERVAL_MS = 1200;
 const JOB_POLL_MAX_ATTEMPTS = 120;
 const JOB_PENDING_TIMEOUT_MESSAGE = '응답 생성 지연 중입니다. 완료 후 현재 방 재진입 때 동기화됩니다.';
@@ -191,7 +192,9 @@ export function App() {
   const skipNextAutoScrollRef = useRef<boolean>(false);
   const nextScrollModeRef = useRef<any>('idle');
   const lastMessageTailRef = useRef<any>({ conversationId: '', tailId: '', length: 0 });
-  const activeGenerationJobRef = useRef<any>(null);
+  const generationOwners = useRef(new GenerationOwners<any>()).current;
+  const roomWork = useRef(new RoomWork()).current;
+  const readyVisitRef = useRef<RoomVisit | null>(null);
   const activeGenerationSubscriptionRef = useRef<any>(null);
   const appRoute = route as typeof route & { id?: string };
   const routeId = appRoute.id || '';
@@ -247,39 +250,24 @@ export function App() {
     if (needsParticipantPreview) loadConversations().catch((error) => setStatus(`${t('최근 대화방 참여자 불러오기 실패 ·')} ${error.message}`));
   }, [route.page, conversations, t]);
   useEffect(() => {
-    const handleVisibilityChange = async () => {
+    const handleVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return;
-      const activeJob = activeGenerationJobRef.current;
-      if (!activeJob || route.page !== 'conversationDetail' || activeJob.conversationId !== selectedConversationId) return;
-      try {
-        const job = await conversationApi.generationJob(activeJob.conversationId, activeJob.jobId) as any;
-        if (job.status === 'failed' || job.status === 'cancelled') {
-          activeGenerationJobRef.current = null;
-          const errorMessage = job.error_message || t(job.status === 'cancelled' ? '응답 생성 job 취소됨' : '응답 생성 job 실패');
-          setMessages((current) => current.map((item) => item.id === activeJob.localMessageId ? { ...item, failed: true, error: errorMessage } : item).filter((item) => !item.is_typing));
-          setStatus(`${t('전송 실패 ·')} ${errorMessage}`);
-          return;
-        }
-        if (job.status !== 'completed') return;
-        const serverMessages = await loadGeneratedJobMessages(activeJob.conversationId, activeJob.incomingMessage, job);
-        await revealServerMessages(serverMessages, activeJob.localMessageId);
-        activeGenerationJobRef.current = null;
-        await markConversationRead(activeJob.conversationId);
-        if (activeJob.payload?.battle_control) {
-          await loadBattleState(activeJob.conversationId, { genre_mode: 'battle' }, true);
-        }
-        setStatus(`${t('대화 생성 완료 ·')} ${formatUiCount(Math.max(0, serverMessages.length - 1), 'messages', locale)}`);
-      } catch (error) {
-        setStatus(`${t('생성 job 동기화 실패 ·')} ${error.message}`);
-      }
+      activeGenerationSubscriptionRef.current?.reconcile();
+      void resumeGeneration();
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [locale, route.page, selectedConversationId, t]);
-  useEffect(() => () => {
-    activeGenerationSubscriptionRef.current?.close();
-    activeGenerationSubscriptionRef.current = null;
-  }, [route.page, selectedConversationId]);
+  useLayoutEffect(() => {
+    const visit = roomWork.enter(selectedConversationId);
+    setLoadingOlderMessages(false);
+    setContextLoading(false);
+    return () => {
+      visit.cancel();
+      activeGenerationSubscriptionRef.current?.close();
+      activeGenerationSubscriptionRef.current = null;
+    };
+  }, [selectedConversationId]);
 
   async function uploadConversationThumbnail(file) {
     if (!file) return;
@@ -318,7 +306,9 @@ export function App() {
   async function loadTtsModels() { const list = await settingsApi.ttsModels() as any[]; setTtsModels(list?.length ? list : FALLBACK_TTS_MODELS); return list; }
   async function loadConversationRuntimeSetting(conversationId = selectedConversationId) {
     if (!conversationId) return null;
+    const visit = roomWork.capture();
     const setting = normalizeRuntimeSetting((await conversationApi.runtimeSetting(conversationId)) || {});
+    if (!visit.current || visit.roomId !== conversationId) return setting;
     setConversationRuntimeSetting(setting);
     return setting;
   }
@@ -339,19 +329,23 @@ export function App() {
   }
   async function loadConversationContext(conversationId = selectedConversationId) {
     if (!conversationId) return null;
+    const visit = roomWork.capture();
     setContextLoading(true);
     try {
       const context = await conversationApi.context(conversationId);
+      if (!visit.current || visit.roomId !== conversationId) return context;
       setConversationContext(context);
       return context;
     } catch (error) {
+      if (!visit.current) return null;
       setStatus(`${t('대화 흐름 불러오기 실패 ·')} ${error.message}`);
       return null;
     } finally {
-      setContextLoading(false);
+      if (visit.current) setContextLoading(false);
     }
   }
   async function loadBattleState(conversationId = selectedConversationId, room = conversation, syncControl = false) {
+    const visit = roomWork.capture();
     if (!conversationId || room?.genre_mode !== 'battle') {
       setBattleState(null);
       if (syncControl) setBattleControlDraft({ ...EMPTY_BATTLE_CONTROL_DRAFT });
@@ -359,6 +353,7 @@ export function App() {
     }
     const state = await conversationApi.battleState(conversationId);
     if (selectedConversationIdRef.current !== conversationId) return state;
+    if (!visit.current) return state;
     setBattleState(state);
     if (syncControl) setBattleControlDraft(battleControlDraftFromState(state));
     return state;
@@ -447,36 +442,49 @@ export function App() {
   }
   async function openConversation(conversationId) { navigate(`/conversations/${conversationId}`); }
   async function fetchConversation(conversationId) {
+    const visit = roomWork.capture();
+    if (visit.roomId !== conversationId) return;
+    readyVisitRef.current = null;
     setOlderPagingReady(false);
     setMessageSelectionMode(false);
     setSelectedMessageIds([]);
     setShowJumpToLatest(false);
     nextScrollModeRef.current = 'initial';
     lastMessageTailRef.current = { conversationId: '', tailId: '', length: 0 };
-    const [room, roomMessages, roomParticipants, runtimeSetting] = await Promise.all([
-      conversationApi.get(conversationId),
-      conversationApi.messages(conversationId),
-      conversationApi.participants(conversationId),
-      conversationApi.runtimeSetting(conversationId),
-    ]) as [any, any[], any[], any];
-    if (selectedConversationIdRef.current !== conversationId) return;
-    setConversation(room);
-    setMessages(roomMessages);
-    setHasOlderMessages(roomMessages.length > 0);
-    setParticipants(roomParticipants);
-    setConversationRuntimeSetting(normalizeRuntimeSetting(runtimeSetting || {}));
-    setConversationContext(null);
-    if (room.genre_mode === 'battle') await loadBattleState(conversationId, room, true);
-    else {
-      setBattleState(null);
-      setBattleControlDraft({ ...EMPTY_BATTLE_CONTROL_DRAFT });
+    try {
+      const [room, roomMessages, roomParticipants, runtimeSetting] = await visit.wait(Promise.all([
+        conversationApi.get(conversationId),
+        conversationApi.messages(conversationId),
+        conversationApi.participants(conversationId),
+        conversationApi.runtimeSetting(conversationId),
+      ])) as [any, any[], any[], any];
+      if (selectedConversationIdRef.current !== conversationId) return;
+      if (!visit.current) return;
+      setConversation(room);
+      setMessages(roomMessages);
+      setHasOlderMessages(roomMessages.length > 0);
+      setParticipants(roomParticipants);
+      setConversationRuntimeSetting(normalizeRuntimeSetting(runtimeSetting || {}));
+      setConversationContext(null);
+      if (room.genre_mode === 'battle') await loadBattleState(conversationId, room, true);
+      else {
+        setBattleState(null);
+        setBattleControlDraft({ ...EMPTY_BATTLE_CONTROL_DRAFT });
+      }
+      if (!visit.current) return;
+      readyVisitRef.current = visit;
+      void resumeGeneration();
+      setSpeakerId(USER_ID);
+      await markConversationRead(conversationId);
+      if (!visit.current) return;
+      setStatus(t('대화 표시 중'));
+    } catch (error) {
+      if (visit.current) setStatus(error.message);
     }
-    setSpeakerId(USER_ID);
-    await markConversationRead(conversationId);
-    setStatus(t('대화 표시 중'));
   }
   async function loadOlderMessages() {
     if (!selectedConversationId || loadingOlderMessages || !hasOlderMessages || messages.length === 0) return;
+    const visit = roomWork.capture();
     const oldestPersisted = messages.find((message) => message.id && !String(message.id).startsWith('local_') && !message.is_typing);
     if (!oldestPersisted) return;
     const scroller = chatThreadRef.current;
@@ -484,7 +492,8 @@ export function App() {
     const previousScrollTop = scroller?.scrollTop || 0;
     setLoadingOlderMessages(true);
     try {
-      const older = await conversationApi.messages(selectedConversationId, oldestPersisted.id) as any[];
+      const older = await visit.wait(conversationApi.messages(selectedConversationId, oldestPersisted.id)) as any[];
+      visit.assert();
       if (!older.length) {
         setHasOlderMessages(false);
         return;
@@ -498,19 +507,25 @@ export function App() {
       skipNextAutoScrollRef.current = true;
       nextScrollModeRef.current = 'prepend';
       setMessages((current) => {
+        if (!visit.current) return current;
         const currentIds = new Set(current.map((message) => message.id));
         return [...uniqueOlder.filter((message) => !currentIds.has(message.id)), ...current];
       });
       requestAnimationFrame(() => {
+        if (!visit.current) return;
         const node = chatThreadRef.current;
         if (!node) return;
+        // The measured window owns ID-based anchoring; retain the fallback for
+        // non-windowed renderers without applying the prepend delta twice.
+        if (node.querySelector('[data-chat-window]')) return;
         node.scrollTop = node.scrollHeight - previousScrollHeight + previousScrollTop;
       });
       setStatus(t('이전 대화 불러옴'));
     } catch (error) {
+      if (!visit.current) return;
       setStatus(`${t('이전 대화 불러오기 실패 ·')} ${error.message}`);
     } finally {
-      setLoadingOlderMessages(false);
+      if (visit.current) setLoadingOlderMessages(false);
     }
   }
 
@@ -866,26 +881,32 @@ export function App() {
     if (!character) throw new Error(t('캐릭터를 먼저 선택하세요.'));
     return character;
   }
-  async function revealServerMessages(serverMessages, localMessageId) {
+  async function revealServerMessages(serverMessages, localMessageId, visit = roomWork.capture()) {
+    visit.assert();
+    async function delay(ms) { await visit.sleep(ms); }
     const incoming = serverMessages[0];
     const generated = serverMessages.slice(1);
     nextScrollModeRef.current = 'append';
     setMessages((current) => {
+      if (!visit.current) return current;
       const withoutTransient = current.filter((item) => item.id !== localMessageId && !item.is_typing);
       const existingIds = new Set(withoutTransient.map((item) => item.id));
       return incoming && !existingIds.has(incoming.id) ? [...withoutTransient, incoming] : withoutTransient;
     });
     for (const message of generated) {
+      visit.assert();
       const typingId = `typing_${message.id}`;
       setStatus(t('대화 표시 중'));
       nextScrollModeRef.current = 'append';
       setMessages((current) => {
+        if (!visit.current) return current;
         if (current.some((item) => item.id === message.id || item.id === typingId)) return current;
         return [...current.filter((item) => !item.is_typing), { ...message, id: typingId, content: '', action: '', thought: '', is_typing: true }];
       });
       await delay(BUBBLE_REVEAL_DELAY_MS);
+      visit.assert();
       nextScrollModeRef.current = 'append';
-      setMessages((current) => current.some((item) => item.id === message.id)
+      setMessages((current) => !visit.current ? current : current.some((item) => item.id === message.id)
         ? current.filter((item) => item.id !== typingId)
         : current.map((item) => item.id === typingId ? message : item));
     }
@@ -918,17 +939,33 @@ export function App() {
   }
 
   async function pollGenerationJob(conversationId, jobId) {
-    let job: any = null;
+    const visit = roomWork.capture();
+    if (visit.roomId !== conversationId) throw new RoomWorkCancelledError();
+    const deadline = Date.now() + JOB_POLL_INTERVAL_MS * JOB_POLL_MAX_ATTEMPTS;
     for (let attempt = 0; attempt < JOB_POLL_MAX_ATTEMPTS; attempt += 1) {
-      job = await conversationApi.generationJob(conversationId, jobId) as any;
+      visit.assert();
+      if (Date.now() >= deadline) break;
+      let job: any;
+      try {
+        job = await visit.wait(conversationApi.generationJob(conversationId, jobId), Math.min(10000, deadline - Date.now()));
+      } catch (error) {
+        visit.assert();
+        if (attempt === JOB_POLL_MAX_ATTEMPTS - 1) throw new Error(JOB_PENDING_TIMEOUT_MESSAGE);
+        await visit.sleep(JOB_POLL_INTERVAL_MS);
+        continue;
+      }
+      visit.assert();
       if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') return job;
       setStatus(`${t('대화 생성 중…')} ${t(job.status === 'running' ? '응답 작성 중' : '대기 중')}`);
-      await delay(JOB_POLL_INTERVAL_MS);
+      await visit.sleep(JOB_POLL_INTERVAL_MS);
     }
     throw new Error(JOB_PENDING_TIMEOUT_MESSAGE);
   }
 
   async function waitForGenerationJob(conversationId, jobId) {
+    const visit = roomWork.capture();
+    visit.assert();
+    if (visit.roomId !== conversationId) throw new RoomWorkCancelledError();
     const statusLabels = { queued: '대기 중', running: '응답 작성 중', retrying: '응답 재시도 중' } as const;
     let subscription: ReturnType<typeof subscribeGenerationJobLifecycle> | null = null;
     try {
@@ -936,6 +973,7 @@ export function App() {
         conversationId,
         jobId,
         onStatus: (event) => {
+          if (!visit.current) return;
           const label = event.status in statusLabels
             ? t(statusLabels[event.status as keyof typeof statusLabels])
             : t(event.status === 'completed' ? '응답 저장 완료' : '응답 작성 중');
@@ -943,34 +981,93 @@ export function App() {
         },
       });
       activeGenerationSubscriptionRef.current = subscription;
-      await subscription.promise;
-      return await conversationApi.generationJob(conversationId, jobId) as any;
+      await visit.wait(subscription.promise);
+      visit.assert();
+      return await visit.wait(conversationApi.generationJob(conversationId, jobId)) as any;
     } catch (error) {
+      visit.assert();
       if (error instanceof GenerationLifecycleSubscriptionClosedError) throw error;
       setStatus(t('실시간 상태 연결이 불안정해 polling으로 계속 확인 중…'));
       return await pollGenerationJob(conversationId, jobId);
     } finally {
+      subscription?.close();
       if (subscription && activeGenerationSubscriptionRef.current === subscription) activeGenerationSubscriptionRef.current = null;
     }
   }
 
-  async function loadGeneratedJobMessages(conversationId, incomingMessage, job) {
-    const latestMessages = await conversationApi.messages(conversationId) as any[];
+  async function loadGeneratedJobMessages(conversationId, incomingMessage, job, visit = roomWork.capture()) {
+    const latestMessages = await visit.wait(conversationApi.messages(conversationId)) as any[];
+    visit.assert();
     const generatedIds = new Set(job.generated_message_ids || []);
     const incoming = latestMessages.find((message) => message.id === incomingMessage?.id) || incomingMessage;
     const generated = latestMessages.filter((message) => generatedIds.has(message.id));
     return [incoming, ...generated].filter(Boolean);
   }
 
+  async function resumeGeneration() {
+    const visit = roomWork.capture();
+    const activeJob = generationOwners.pending.get(visit.roomId);
+    if (!visit.current || readyVisitRef.current !== visit || !activeJob?.jobId) return;
+    return generationOwners.run(activeJob, visit, async () => {
+      try {
+        // Entry/visibility reconciliation reads durable state before subscribing.
+        let job: any;
+        try {
+          job = await visit.wait(conversationApi.generationJob(activeJob.conversationId, activeJob.jobId));
+        } catch (error) {
+          visit.assert();
+          job = await pollGenerationJob(activeJob.conversationId, activeJob.jobId);
+        }
+        visit.assert();
+        if (!['completed', 'failed', 'cancelled'].includes(job.status)) {
+          job = await waitForGenerationJob(activeJob.conversationId, activeJob.jobId);
+        }
+        visit.assert();
+        if (job.status === 'failed' || job.status === 'cancelled') {
+          generationOwners.finish(activeJob);
+          const errorMessage = job.error_message || t(job.status === 'cancelled' ? '응답 생성 job 취소됨' : '응답 생성 job 실패');
+          setMessages((current) => !visit.current ? current : current.map((item) => item.id === activeJob.localMessageId || item.id === activeJob.incomingMessage?.id ? { ...item, failed: true, error: errorMessage, retryPayload: activeJob.payload } : item).filter((item) => !item.is_typing));
+          setStatus(`${t('전송 실패 ·')} ${errorMessage}`);
+          return;
+        }
+        if (job.status !== 'completed') throw new Error(JOB_PENDING_TIMEOUT_MESSAGE);
+        const serverMessages = await loadGeneratedJobMessages(activeJob.conversationId, activeJob.incomingMessage, job, visit);
+        await revealServerMessages(serverMessages, activeJob.localMessageId, visit);
+        visit.assert();
+        generationOwners.finish(activeJob);
+        setStatus(`${t('대화 생성 완료 ·')} ${formatUiCount(Math.max(0, serverMessages.length - 1), 'messages', locale)}`);
+        await markConversationRead(activeJob.conversationId);
+        if (!visit.current) return;
+        if (activeJob.payload?.battle_control) await loadBattleState(activeJob.conversationId, { genre_mode: 'battle' }, true);
+        if (!visit.current) return;
+        await loadConversations();
+      } catch (error) {
+        if (!visit.current || error instanceof RoomWorkCancelledError || error instanceof GenerationLifecycleSubscriptionClosedError) return;
+        // Keep ownership on network failures. Re-entry, visibility and send
+        // attempts retry reconciliation rather than creating duplicate jobs.
+        setStatus(`${t('대화 생성 중…')} ${t(JOB_PENDING_TIMEOUT_MESSAGE)}`);
+      }
+    }).catch((error) => { if (visit.current && !(error instanceof RoomWorkCancelledError)) setStatus(error.message); });
+  }
+
   async function submitConversationPayload(payload, localMessageId = `local_${Date.now()}`) {
+    const visit = roomWork.capture();
+    const conversationId = visit.roomId;
+    if (!conversationId || !visit.current || readyVisitRef.current !== visit) return;
+    if (generationOwners.pending.has(conversationId)) { await resumeGeneration(); return; }
+    // Reserve synchronously, including the interval before POST returns.
+    const activeJob: any = { conversationId, localMessageId, payload, jobId: null };
+    generationOwners.pending.set(conversationId, activeJob);
     const clientRequestId = payload?.metadata?.client_request_id || newClientRequestId();
     const payloadWithRequestId = {
       ...payload,
       metadata: { ...(payload?.metadata || {}), client_request_id: clientRequestId },
     };
-    const optimisticMessage = { id: localMessageId, conversation_id: selectedConversationId, ...payloadWithRequestId, retryPayload: payloadWithRequestId };
+    activeJob.payload = payloadWithRequestId;
+    const optimisticMessage = { id: localMessageId, conversation_id: conversationId, ...payloadWithRequestId, retryPayload: payloadWithRequestId };
     nextScrollModeRef.current = 'append';
     setMessages((current) => {
+      if (!visit.current) return current;
       if (current.some((item) => item.id === localMessageId)) {
         return current.map((item) => item.id === localMessageId ? { ...item, failed: false, error: '', retryPayload: payloadWithRequestId } : item).filter((item) => !item.is_typing);
       }
@@ -978,52 +1075,40 @@ export function App() {
     });
     setStatus(t('대화 생성 job 생성 중…'));
     try {
-      const created = await conversationMutations.createMessageJob.mutateAsync({ conversationId: selectedConversationId, payload: payloadWithRequestId }) as any;
+      // Do not cancel the server-owned POST when the UI detaches.
+      const created = await conversationMutations.createMessageJob.mutateAsync({ conversationId, payload: payloadWithRequestId }) as any;
       const jobId = created?.job?.id;
       const incomingMessage = created?.incoming_message;
       if (!jobId || !incomingMessage) throw new Error(t('응답 생성 job 정보를 받지 못했습니다.'));
-      activeGenerationJobRef.current = { conversationId: selectedConversationId, jobId, localMessageId, incomingMessage, payload: payloadWithRequestId };
-      if (payload.battle_control) {
-        await loadBattleState(selectedConversationId, conversation, true).catch(() => null);
+      Object.assign(activeJob, { jobId, incomingMessage });
+      if (visit.current) {
+        if (payload.battle_control) await loadBattleState(selectedConversationId, conversation, true).catch(() => null);
       }
-      setStatus(t('대화 생성 중… 백그라운드 job 확인 중'));
-      const job = await waitForGenerationJob(selectedConversationId, jobId);
-      if (job.status === 'failed' || job.status === 'cancelled') throw new Error(job.error_message || t(job.status === 'cancelled' ? '응답 생성 job 취소됨' : '응답 생성 job 실패'));
-      const serverMessages = await loadGeneratedJobMessages(selectedConversationId, incomingMessage, job);
-      await revealServerMessages(serverMessages, localMessageId);
-      activeGenerationJobRef.current = null;
-      setStatus(`${t('대화 생성 완료 ·')} ${formatUiCount(Math.max(0, serverMessages.length - 1), 'messages', locale)}`);
-      await markConversationRead(selectedConversationId);
-      await loadConversations();
-      if (payload.battle_control) await loadBattleState(selectedConversationId, conversation, true).catch(() => null);
-      if (contextDrawerOpen) await Promise.all([loadConversationContext(), loadBattleState()]);
+      // A POST can finish after A→B→A; use the current visit's single runner.
+      if (roomWork.capture().roomId === conversationId) await resumeGeneration();
     } catch (error) {
-      if (error instanceof GenerationLifecycleSubscriptionClosedError) {
-        setStatus(t('화면 이동됨 · 생성 job은 서버에서 계속 진행 중'));
-        return;
-      }
-      if (error.message === JOB_PENDING_TIMEOUT_MESSAGE && activeGenerationJobRef.current?.localMessageId === localMessageId) {
-        setStatus(`${t('대화 생성 중…')} ${t(JOB_PENDING_TIMEOUT_MESSAGE)}`);
-        setMessages((current) => current.map((item) => item.id === localMessageId ? { ...item, failed: false, error: '', retryPayload: payloadWithRequestId } : item).filter((item) => !item.is_typing));
-        return;
-      }
-      activeGenerationJobRef.current = null;
+      generationOwners.finish(activeJob);
+      if (!visit.current) return;
       setStatus(`${t('전송 실패 ·')} ${error.message}`);
-      setMessages((current) => current.map((item) => item.id === localMessageId ? { ...item, failed: true, error: error.message, retryPayload: payloadWithRequestId } : item).filter((item) => !item.is_typing));
+      setMessages((current) => !visit.current ? current : current.map((item) => item.id === localMessageId ? { ...item, failed: true, error: error.message, retryPayload: payloadWithRequestId } : item).filter((item) => !item.is_typing));
     }
   }
 
   async function regenerateFromMessage(message) {
     if (!selectedConversationId || !message?.id || String(message.id).startsWith('local_') || busy) return;
+    const visit = roomWork.capture();
     setBusy(true);
     try {
       setStatus(t('재생성 중…'));
       const serverMessages = await conversationMutations.regenerateMessage.mutateAsync({ conversationId: selectedConversationId, messageId: message.id }) as any[];
-      await revealServerMessages([null, ...(serverMessages || [])], `regen_${message.id}`);
+      visit.assert();
+      await revealServerMessages([null, ...(serverMessages || [])], `regen_${message.id}`, visit);
       setStatus(t('재생성 완료'));
       await loadConversations();
+      if (!visit.current) return;
       if (contextDrawerOpen) await Promise.all([loadConversationContext(), loadBattleState()]);
     } catch (error) {
+      if (!visit.current) return;
       setStatus(`${t('재생성 실패 ·')} ${error.message}`);
     } finally { setBusy(false); }
   }
@@ -1109,9 +1194,12 @@ export function App() {
 
   async function sendConversationMessage() {
     if (!compose.trim() || !selectedConversationId) return;
-    const activeJob = activeGenerationJobRef.current;
+    const visit = roomWork.capture();
+    if (readyVisitRef.current !== visit) return;
+    const activeJob = generationOwners.pending.get(selectedConversationId);
     if (activeJob?.conversationId === selectedConversationId) {
       setStatus(t('이미 이 대화방에서 응답 생성 job이 진행 중입니다. 완료 후 다시 전송 가능합니다.'));
+      void resumeGeneration();
       return;
     }
     const selected = speakerId || USER_ID;
@@ -1125,7 +1213,7 @@ export function App() {
     setCompose('');
     setComposeExpanded(false);
     await submitConversationPayload(payload);
-    if (battleControlPayload?.action === 'end') {
+    if (visit.current && battleControlPayload?.action === 'end') {
       setBattleControlDraft({ action: 'none', advantage: 0.5, progress_balance: 0.5, current_phase: 'opening' });
     }
   }

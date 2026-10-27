@@ -21,6 +21,7 @@ export class GenerationLifecycleSubscriptionClosedError extends Error {
 export type GenerationLifecycleSubscription = {
   promise: Promise<GenerationLifecycleEvent>;
   close: () => void;
+  reconcile: () => void;
 };
 
 type SubscribeOptions = {
@@ -30,6 +31,7 @@ type SubscribeOptions = {
   onStatus?: (event: GenerationLifecycleEvent) => void;
   maxConsecutiveErrors?: number;
   openTimeoutMs?: number;
+  reconciliationTimeoutMs?: number;
 };
 
 type GenerationJobEventsUrlOptions = {
@@ -71,6 +73,7 @@ export function subscribeGenerationJobLifecycle({
   onStatus,
   maxConsecutiveErrors = 2,
   openTimeoutMs = 5000,
+  reconciliationTimeoutMs = 15000,
 }: SubscribeOptions): GenerationLifecycleSubscription {
   const url = buildGenerationJobEventsUrl({ conversationId, jobId, afterEventId });
 
@@ -79,9 +82,12 @@ export function subscribeGenerationJobLifecycle({
   let rejectPromise: (reason?: unknown) => void = () => undefined;
   let consecutiveErrors = 0;
   let openTimer = 0;
+  let reconciliationTimer = 0;
+  let reconcile = () => {};
 
   const cleanup = () => {
     if (openTimer) window.clearTimeout(openTimer);
+    if (reconciliationTimer) window.clearTimeout(reconciliationTimer);
     openTimer = 0;
     eventSource?.close();
     eventSource = null;
@@ -95,6 +101,7 @@ export function subscribeGenerationJobLifecycle({
       cleanup();
       reject(error);
     };
+    reconcile = () => fail(new Error('Lifecycle SSE durable reconciliation required'));
     try {
       eventSource = new EventSource(url.toString());
     } catch (error) {
@@ -102,14 +109,17 @@ export function subscribeGenerationJobLifecycle({
       return;
     }
     openTimer = window.setTimeout(() => fail(new Error('Lifecycle SSE open timeout')), openTimeoutMs);
+    // Absolute deadline: even replay/open/error flapping falls back to GET.
+    reconciliationTimer = window.setTimeout(reconcile, reconciliationTimeoutMs);
     eventSource.onopen = () => {
-      consecutiveErrors = 0;
       if (openTimer) window.clearTimeout(openTimer);
       openTimer = 0;
     };
     const handleLifecycleEvent = (rawEvent: MessageEvent<string>) => {
+      if (settled) return;
       try {
         const event = JSON.parse(rawEvent.data) as GenerationLifecycleEvent;
+        if (event.job_id !== jobId || event.conversation_id !== conversationId) return;
         if (!LIFECYCLE_STATUSES.includes(event.status)) return;
         onStatus?.(event);
         if (!TERMINAL_STATUSES.has(event.status) || settled) return;
@@ -129,6 +139,7 @@ export function subscribeGenerationJobLifecycle({
 
   return {
     promise,
+    reconcile: () => reconcile(),
     close: () => {
       if (settled) return;
       settled = true;

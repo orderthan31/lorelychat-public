@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
+from dataclasses import dataclass
+from functools import wraps
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 import hashlib
@@ -88,6 +91,36 @@ class CircuitOpenError(LLMUnavailableError):
     pass
 
 
+class LLMAttemptBudgetError(LLMUnavailableError):
+    """The task's network budget is spent, not a provider outage."""
+
+
+@dataclass
+class LLMAttemptBudget:
+    limit: int = 3
+    used: int = 0
+
+
+_TASK_BUDGET: ContextVar[LLMAttemptBudget | None] = ContextVar("llm_task_budget", default=None)
+
+
+def bounded_llm_task(function):
+    """Isolate concurrent tasks while sharing transport allowance across repair passes."""
+    @wraps(function)
+    async def wrapped(*args, **kwargs):
+        token = _TASK_BUDGET.set(LLMAttemptBudget())
+        try:
+            return await function(*args, **kwargs)
+        finally:
+            _TASK_BUDGET.reset(token)
+    return wrapped
+
+
+def task_attempt_metadata() -> dict[str, int]:
+    budget = _TASK_BUDGET.get()
+    return {"network_attempts": budget.used, "network_attempt_limit": budget.limit} if budget else {}
+
+
 _CIRCUIT_STATES: dict[str, dict[str, float | int]] = {}
 _CIRCUIT_LOCK = threading.Lock()
 
@@ -104,6 +137,7 @@ class LLMResponse(BaseModel):
     estimated: bool = False
     usage_event_id: str | None = None
     provider_diagnostics: dict[str, int | str | bool | None] | None = None
+    budget_diagnostics: dict[str, int | None] | None = None
 
 
 async def chat_with_optional_conversation_id(
@@ -334,7 +368,7 @@ class LLMClient:
             else:
                 response = await self._chat_openai_compatible(messages, response_format=response_format)
         except LLMUnavailableError as exc:
-            if not isinstance(exc, CircuitOpenError):
+            if not isinstance(exc, (CircuitOpenError, LLMAttemptBudgetError)):
                 self.record_circuit_failure()
             self._record_transport_failure(exc, conversation_id=conversation_id)
             raise
@@ -390,6 +424,7 @@ class LLMClient:
             total_tokens=usage.get("total_tokens"),
             finish_reason=choice.get("finish_reason"),
             generation_attempts=int(response.extensions.get("lorechat_attempts", 1)),
+            budget_diagnostics={"requested_max_output_tokens": max_output_tokens},
         )
 
     def gemini_safety_settings(self) -> list[dict]:
@@ -450,9 +485,18 @@ class LLMClient:
 
     async def _post_with_retries(self, request, *, endpoint_label: str) -> httpx.Response:
         attempts = self.transport_retry_attempts()
+        budget = _TASK_BUDGET.get()
+        if budget is not None:
+            attempts = min(attempts, budget.limit - budget.used)
+        if attempts <= 0:
+            error = LLMAttemptBudgetError("LLM task network attempt budget exhausted", error_type="network_budget_exhausted")
+            error.transport_attempts = 0
+            raise error
         last_exc: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
+                if budget is not None:
+                    budget.used += 1
                 response = await request()
                 response.raise_for_status()
                 response.extensions["lorechat_attempts"] = attempt
@@ -530,7 +574,7 @@ class LLMClient:
         candidates = data.get("candidates") or []
         candidate = candidates[0] if candidates else {}
         parts = ((candidate.get("content") or {}).get("parts") or []) if candidate else []
-        content = "".join(part.get("text", "") for part in parts).strip()
+        content = "".join(part.get("text", "") for part in parts if not part.get("thought")).strip()
         finish_reason = candidate.get("finishReason") if candidate else None
         usage = data.get("usageMetadata") or {}
         return LLMResponse(
@@ -542,6 +586,11 @@ class LLMClient:
             total_tokens=usage.get("totalTokenCount"),
             finish_reason=finish_reason,
             generation_attempts=int(response.extensions.get("lorechat_attempts") or 1),
+            budget_diagnostics={
+                "requested_max_output_tokens": max_output_tokens,
+                "thoughts_token_count": usage.get("thoughtsTokenCount") if type(usage.get("thoughtsTokenCount")) is int else None,
+                "cached_content_token_count": usage.get("cachedContentTokenCount") if type(usage.get("cachedContentTokenCount")) is int else None,
+            },
             provider_diagnostics=(
                 _gemini_empty_response_diagnostics(data)
                 if self.profile == "compression" and not content else None
@@ -573,6 +622,8 @@ class LLMClient:
                         "generation_attempts": response.generation_attempts,
                         "parse_code": None,
                         "validation_code": None,
+                        **({"output_budget": response.budget_diagnostics} if response.budget_diagnostics is not None else {}),
+                        **task_attempt_metadata(),
                         **({"gemini_empty_response": response.provider_diagnostics} if response.provider_diagnostics and self.profile == "compression" else {}),
                     },
                 ))
@@ -602,6 +653,7 @@ class LLMClient:
                     estimated=False,
                     metadata_={
                         "status": "transport_failed",
+                        **task_attempt_metadata(),
                         "transport_attempts": exc.transport_attempts,
                         "http_status": exc.http_status,
                         "error_type": exc.error_type,

@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "node tests/frontend-contract.test.mjs && node tests/generation-job-events.test.mjs && node tests/i18n-contract.test.mjs && node tests/design-system-contract.test.mjs",
+    "test": "node tests/chat-lifecycle-regression.test.mjs && node tests/chat-window-regression.test.mjs && node tests/frontend-contract.test.mjs && node tests/generation-job-events.test.mjs && node tests/i18n-contract.test.mjs && node tests/design-system-contract.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

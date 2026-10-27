@@ -78,6 +78,11 @@ async def test_generate_replies_exposes_prompt_snapshot_payload_to_callback():
         "parse_attempts": 1,
         "parse_status": "success",
         "fallback_used": False,
+        "attempt_diagnostics": [],
+        "semantic_attempts": 1,
+        "output_budget": None,
+        "network_attempts": 0,
+        "network_attempt_limit": 3,
     }
 
 

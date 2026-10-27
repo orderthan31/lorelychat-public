@@ -645,7 +645,7 @@ assert.match(app, /if \(payload\.battle_control\) await loadBattleState\(selecte
 assert.match(app, /if \(selectedConversationIdRef\.current !== conversationId\) return state;/, 'late battle-state responses must not overwrite the newly selected room');
 assert.match(app, /if \(selectedConversationIdRef\.current !== conversationId\) return;/, 'late conversation responses must not overwrite the newly selected room');
 const immediateBattleSync = app.indexOf("await loadBattleState(selectedConversationId, conversation, true).catch(() => null)");
-const generationWait = app.indexOf('const job = await waitForGenerationJob(selectedConversationId, jobId)');
+const generationWait = app.indexOf('await resumeGeneration()', immediateBattleSync);
 assert.ok(immediateBattleSync >= 0 && immediateBattleSync < generationWait, 'battle state should sync as soon as the job applies control');
 assert.match(app, /battle-control-panel/);
 assert.match(app, /battle-control-fab/);
