@@ -300,6 +300,16 @@ Use counterpart personality details to shape chemistry, teasing, conflict, affec
 )
 
 
+# Renewal uses independent entries; legacy field/count policies remain untouched.
+from app.engine.free_body_protocol import DEFAULT_FREE_BODY_CORE, DEFAULT_FREE_BODY_RULES
+SYSTEM_PROMPT_REGISTRY = (*SYSTEM_PROMPT_REGISTRY,
+    {"key": "free_body_generation_core", "title": "Free-body generation core", "order_index": 91,
+     "category": "dialogue", "content": DEFAULT_FREE_BODY_CORE, "description": "Renewal identity and prose contract"},
+    {"key": "free_body_output_rules", "title": "Free-body output rules", "order_index": 92,
+     "category": "dialogue", "content": DEFAULT_FREE_BODY_RULES, "description": "Renewal optional semantic marks"},
+)
+
+
 def prompt_settings_map() -> dict[str, str]:
     """Return a fresh runtime map from the version-controlled registry."""
     return {

@@ -297,7 +297,7 @@ assert.match(app, /export function useConversationComposer\(\{ compose, composer
 assert.match(app, /useConversationMutations/);
 assert.match(app, /export type ConversationMutationsState/);
 assert.match(app, /export function useConversationMutations\(\): ConversationMutationsState/);
-assert.match(app, /updateMessage: \(id: Id, messageId: Id, payload: Payload\) => api\(`\/conversations\/\$\{id\}\/messages\/\$\{messageId\}`/);
+assert.match(app, /updateMessage: \(id: Id, messageId: Id, payload: MessageEditDraft\) => api\(`\/conversations\/\$\{id\}\/messages\/\$\{messageId\}`/);
 assert.match(app, /updateSceneSummary: \(id: Id, payload: Payload\) => api\(`\/conversations\/\$\{id\}\/scene-summary`/);
 assert.match(app, /버블 대사 수정/);
 assert.match(app, /버블 행동 수정/);

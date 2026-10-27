@@ -72,6 +72,7 @@ async def test_generate_replies_exposes_prompt_snapshot_payload_to_callback():
     assert snapshot["completion_tokens"] == 5
     assert snapshot["total_tokens"] == 15
     assert snapshot["metadata"] == {
+        "response_protocol": "legacy_json",
         "finish_reason": "STOP",
         "response_length": len('[{"character_id":"char_a","text":"응답","emotion":"calm","action":"","thought":""}]'),
         "generation_attempts": 1,

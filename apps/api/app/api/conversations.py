@@ -11,6 +11,7 @@ from sqlmodel import Session, col, select
 from app.db.models import BattleMatchRecord, CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, GenerationJobEvent, Message, MessageGenerationJob, PostCommitTask, SceneState
 from app.db.session import engine, get_session
 from app.engine.character_runtime import CharacterRuntime, CharacterRuntimeError, format_runtime_source_message, generation_control_reserve_tokens
+from app.engine import free_body_protocol as free_body
 from app.engine import prompts
 from app.engine.llm_client import LLMClient, LLMUnavailableError
 from app.engine.prompt_harness import PromptHarness, approx_tokens
@@ -777,7 +778,7 @@ async def persist_generated_reply_messages(
     character_ids = {character.id for character in room_characters}
     silent_character_ids = silent_character_ids or set()
     generated_replies = list(generated_replies or [])
-    required_bubbles = max(1, int(min_bubbles))
+    required_bubbles = 1 if generated_replies and all(getattr(r, "response_protocol", "legacy_json") in free_body.PROTOCOLS for r in generated_replies) else max(1, int(min_bubbles))
     if len(generated_replies) < required_bubbles:
         raise CharacterRuntimeError(
             f"Validated response had {len(generated_replies)} replies before persistence; at least {required_bubbles} are required"
@@ -799,7 +800,7 @@ async def persist_generated_reply_messages(
         if generated.reply_type == "storytelling":
             persisted_messages.append(conversation_service.build_message(
                 conversation_id,
-                MessageCreate(speaker_type="storytelling", speaker_id="storyteller", content=generated.text),
+                MessageCreate(speaker_type="storytelling", speaker_id="storyteller", content=generated.text, metadata=free_body.metadata_for_reply(generated)),
                 emotion=generated.emotion,
                 action=generated.action,
                 thought=generated.thought,
@@ -807,7 +808,7 @@ async def persist_generated_reply_messages(
             continue
         persisted_messages.append(conversation_service.build_message(
             conversation_id,
-            MessageCreate(speaker_type="character", speaker_id=generated.character_id, content=generated.text),
+            MessageCreate(speaker_type="character", speaker_id=generated.character_id, content=generated.text, metadata=free_body.metadata_for_reply(generated)),
             emotion=generated.emotion,
             action=generated.action,
             thought=generated.thought,
@@ -863,7 +864,7 @@ def build_generated_turn_post_commit_tasks(
                     "asset_id": selected_asset.id,
                 },
             })
-        if conversation.tts_enabled:
+        if conversation.tts_enabled and (message.content or "").strip():
             tasks.append({
                 "unique_key": f"{task_prefix}:tts",
                 "task_type": "tts",
@@ -1351,6 +1352,8 @@ async def generate_replies_from_message(
             speaker_type=payload.speaker_type,
             min_bubbles=min_reply_bubbles,
             max_bubbles=max_reply_bubbles,
+            characters=room_characters,
+            room_cast_roles=room_cast_roles,
         )
 
         def evaluate_automatic_context() -> AutomaticGenerationContextEvaluation:

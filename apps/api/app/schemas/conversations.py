@@ -110,6 +110,7 @@ class MessageCreate(BaseModel):
 
 
 class MessageUpdate(BaseModel):
+    raw_body: str | None = Field(default=None, max_length=100000)
     content: str | None = Field(default=None, max_length=8000)
     emotion: str | None = Field(default=None, max_length=120)
     action: str | None = Field(default=None, max_length=4000)

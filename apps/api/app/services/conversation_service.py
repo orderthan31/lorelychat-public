@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 from datetime import datetime, timedelta, timezone
 from app.engine.llm_client import LLMClient, LLMUnavailableError, chat_with_optional_conversation_id
-from app.engine import prompts
+from app.engine import prompts, free_body_protocol as free_body
 from sqlmodel import Session, select, delete
 from sqlalchemy import text, update as sa_update
 from app.db.models import Character, Conversation, ConversationParticipant, ConversationReadState, GenerationJobEvent, MessageGenerationJob, PostCommitTask, ConversationRelationshipState, CharacterMemory, Message, SceneState, MessageAsset, BattleMatchRecord, BattleStanding, RuntimeSetting, WorldSetting
@@ -2627,6 +2627,9 @@ def build_scene_memory_source(
         if cast_role_contract:
             lines.append(f"Room cast role contract:\n{cast_role_contract}")
     for message in recent_messages:
+        if (message.metadata_ or {}).get("response_protocol") in free_body.PROTOCOLS:
+            lines.append("- " + prompts.format_message_for_context(message, include_thought=False))
+            continue
         parts = [f"speaker_type={message.speaker_type}", f"speaker_id={message.speaker_id}"]
         if message.emotion:
             parts.append(f"emotion={message.emotion}")
@@ -2718,6 +2721,9 @@ def build_quality_compression_evidence_source(scene_state: SceneState, recent_me
         "Chronological Messages To Fold Into The Summary:",
     ]
     for message in recent_messages:
+        if (message.metadata_ or {}).get("response_protocol") in free_body.PROTOCOLS:
+            lines.append(f"- message_id={message.id} | " + prompts.format_message_for_context(message, include_thought=False))
+            continue
         parts = [
             f"message_id={message.id}",
             f"speaker_type={message.speaker_type}",
@@ -3464,11 +3470,22 @@ def update_scene_summary_manually(
 
 
 def update_message_bubble(session: Session, message: Message, changes: dict) -> Message:
-    editable_fields = {"content", "emotion", "action", "thought"}
+    editable_fields = {"content", "emotion", "action", "thought", "raw_body"}
     normalized_changes = {key: changes[key] for key in editable_fields if key in changes}
     if not normalized_changes:
         raise ValueError("At least one editable bubble field is required")
 
+    existing_metadata = dict(message.metadata_ or {})
+    is_free_body = existing_metadata.get("response_protocol") in free_body.PROTOCOLS
+    if "raw_body" in normalized_changes and not is_free_body:
+        raise ValueError("raw_body edits require a free-body message")
+    if is_free_body and set(normalized_changes) & {"content", "action", "thought"}:
+        raise ValueError("Edit raw_body to preserve ordered free-body semantics")
+    parsed_parts = None
+    if "raw_body" in normalized_changes:
+        parsed_parts = free_body.parse_body(normalized_changes["raw_body"])
+        if message.speaker_type == "storytelling" and any(p["type"] == "thought" for p in parsed_parts):
+            raise ValueError("Narration cannot own private thoughts")
     content = message.content or ""
     action = message.action or ""
     thought = message.thought or ""
@@ -3481,6 +3498,9 @@ def update_message_bubble(session: Session, message: Message, changes: dict) -> 
         thought = str(normalized_changes["thought"] or "").strip()
     if "emotion" in normalized_changes:
         emotion = str(normalized_changes["emotion"] or "").strip()
+    if parsed_parts is not None:
+        values = free_body.aggregates(parsed_parts)
+        content, action, thought = values["dialogue"], values["action"], values["thought"]
     if not any((content, action, thought)):
         raise ValueError("A bubble must keep at least one dialogue, action, or thought value")
 
@@ -3492,7 +3512,13 @@ def update_message_bubble(session: Session, message: Message, changes: dict) -> 
         render_parts.append({"type": "dialogue", "text": content})
     if thought:
         render_parts.append({"type": "thought", "text": thought})
-    metadata["render_parts"] = render_parts
+    if is_free_body:
+        # Emotion-only updates retain the exact body and interleaving.
+        if parsed_parts is not None:
+            metadata["raw_body"] = normalized_changes["raw_body"]
+            metadata["render_parts"] = parsed_parts
+    else:
+        metadata["render_parts"] = render_parts
     for key in ["tts_audio_url", "tts_text", "tts_voice_style", "tts_provider", "tts_model"]:
         metadata.pop(key, None)
     metadata["manual_edit"] = {

@@ -334,6 +334,10 @@ class LLMClient:
     async def chat(self, messages: list[dict], *, response_format: dict | None = None, conversation_id: str | None = None) -> LLMResponse:
         if self.settings.llm_mock:
             user_text = _mock_visible_user_text(next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""))
+            if (response_format or {}).get("name") == "free_body_replies":
+                return LLMResponse(content=json.dumps({"replies": [{"who": "C1", "text": f"Mock reply to: {user_text[:80]}"}]}), provider="mock", model="mock")
+            if response_format is None and "Return only <m c=" in str(messages):
+                return LLMResponse(content='<m c="C1">Mock reply.</m>', provider="mock", model="mock")
             if response_format and response_format.get("type") == "json_object":
                 schema = response_format.get("schema") if isinstance(response_format, dict) else None
                 replies_schema = (schema or {}).get("properties", {}).get("replies", {}) if isinstance(schema, dict) else {}
@@ -401,7 +405,7 @@ class LLMClient:
                     "type": "json_schema",
                     "json_schema": {
                         "name": (response_format or {}).get("name") or "character_chat_replies",
-                        "strict": self.strict_structured_output(),
+                        "strict": (response_format or {}).get("strict", self.strict_structured_output()),
                         "schema": schema,
                     },
                 }

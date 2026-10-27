@@ -138,6 +138,7 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
                 is_multi_room = len(character_ids) >= 2
                 mandatory_prompt_tokens += generation_control_reserve_tokens(
                     speaker_type=preview_source_message.speaker_type,
+                    characters=characters,
                     min_bubbles=runtime_settings_service.min_bubbles_for_preset(
                         preset_key,
                         is_multi_room=is_multi_room,

@@ -44,6 +44,8 @@ export interface ConversationSummary {
 
 export type CompressionStrategy = 'fast' | 'quality';
 
+export type MessageEditDraft = { raw_body?: string; content?: string; action?: string; thought?: string; emotion: string };
+
 export interface RuntimeSetting {
   scope?: 'default' | 'conversation' | string;
   model_key?: string | null;

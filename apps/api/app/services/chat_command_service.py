@@ -665,7 +665,9 @@ async def apply_chat_command_postprocess(
             for item in objects:
                 session.refresh(item)
 
-    character_bubbles = [message for message in generated_messages if message.speaker_type == "character" and message.content.strip()]
+    character_bubbles = [message for message in generated_messages if message.speaker_type == "character" and (
+        message.content.strip() or ((message.metadata_ or {}).get("response_protocol") in {"tagged_text", "free_body_json"} and (message.action or message.thought))
+    )]
     if not character_bubbles:
         source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "skipped_no_character_reply"}
         track_changes(source_message)
@@ -682,7 +684,12 @@ async def apply_chat_command_postprocess(
         return generated_messages
 
     client = llm_client or LLMClient(profile="chat", purpose="chat_command_postprocess")
-    original_block = "\n\n".join(f"[{message.speaker_id}]\n{message.content}" for message in targets)
+    original_block = "\n\n".join(
+        prompts.format_message_for_context(message, include_thought=False)
+        if (message.metadata_ or {}).get("response_protocol") in {"tagged_text", "free_body_json"}
+        else f"[{message.speaker_id}]\n{message.content}"
+        for message in targets
+    )
     expected_count = 1 if overlay_mode else len(targets)
     response_instruction = command_response_instruction(expected_count, overlay_mode=overlay_mode)
     postprocess_prompt = getattr(command, "postprocess_prompt", None) or command.prompt
@@ -823,7 +830,13 @@ async def apply_chat_command_postprocess(
                 "command_postprocess_target": target_mode,
                 "command_postprocess_probability": getattr(command, "postprocess_probability", 100),
             })
-            message.content = item["content"] or message.content
+            rewritten = item["content"] or message.content
+            if rewritten != message.content:
+                # A command returns legacy spoken content, not a free-body envelope.
+                # Invalidate the derived view rather than showing pre-rewrite prose.
+                for key in ("raw_body", "render_parts", "response_protocol", "tts_audio_url", "tts_text", "tts_voice_style", "tts_provider", "tts_model"):
+                    metadata.pop(key, None)
+            message.content = rewritten
             message.metadata_ = metadata
             track_changes(message)
         source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_status": "applied", **terminal_metadata}

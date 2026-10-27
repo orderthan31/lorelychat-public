@@ -30,10 +30,15 @@ from app.engine.prompt_harness import PromptHarness, approx_tokens
 from app.engine.prompt_graph import build_prompt_generation_graph, run_prompt_generation_pipeline
 from app.engine.prompts import build_character_messages, build_multi_character_prompt_harness, is_silent_cast_role
 from app.schemas.dialogue import CharacterReply, MultiCharacterReply
+from app.engine import free_body_protocol as free_body
 
 
 class CharacterRuntimeError(RuntimeError):
     pass
+
+
+class FreeBodyRuntimeError(CharacterRuntimeError):
+    code = "free_body_invalid"
 
 
 class StructuredOutputIncompleteError(CharacterRuntimeError):
@@ -215,8 +220,14 @@ def generation_control_reserve_tokens(
     speaker_type: str,
     min_bubbles: int,
     max_bubbles: int,
+    characters: list[Character] | None = None,
+    room_cast_roles: dict[str, str] | None = None,
 ) -> int:
     """Reserve the larger of the initial and retry request-control envelopes."""
+    if free_body.current_protocol() != "legacy_json":
+        controls = free_body.FREE_BODY_RETRY + free_body.FREE_BODY_CONTINUATION
+        aliases = free_body.speaker_aliases(characters, room_cast_roles) if characters is not None else None
+        return approx_tokens(controls + json.dumps(free_body.response_format(free_body.current_protocol(), aliases))) + 32
 
     retry_instruction = character_retry_instruction(min_bubbles)
     initial_response_tokens = approx_tokens(json.dumps(
@@ -720,6 +731,8 @@ class CharacterRuntime:
     ) -> list[CharacterReply] | Any:
         if not characters:
             return []
+        protocol = free_body.current_protocol()
+        aliases = free_body.speaker_aliases(characters, room_cast_roles) if protocol != "legacy_json" else {}
         max_bubbles = max(1, min(8, int(max_bubbles)))
         min_bubbles = max(1, min(max_bubbles, int(min_bubbles)))
         harness = prepared_harness or build_multi_character_prompt_harness(
@@ -788,11 +801,36 @@ class CharacterRuntime:
             nonlocal last_response_content, last_parser_shadow, parse_attempts
             parse_attempts += 1
             last_response_content = content or ""
-            last_parser_shadow = build_parser_shadow_metrics(
-                last_response_content,
-                compatibility_replies=None,
+            last_parser_shadow = (
+                build_parser_shadow_metrics(last_response_content, compatibility_replies=None)
+                if protocol == "legacy_json"
+                else {"response_protocol": protocol, "parser": "free_body_v1"}
             )
             finish_reason = str(getattr(last_llm_response, "finish_reason", "") or "").strip().upper()
+            if protocol != "legacy_json":
+                # A closed first bubble does not prove the whole turn survived truncation.
+                if finish_reason in {"MAX_TOKENS", "LENGTH"}:
+                    raise StructuredOutputTruncatedError("Free-body response reached the output limit")
+                if finish_reason and finish_reason not in SUCCESSFUL_FINISH_REASONS:
+                    raise CharacterRuntimeError(f"Free-body generation ended with {finish_reason}")
+                try:
+                    replies = free_body.parse_response(content, protocol=protocol, aliases=aliases)
+                except free_body.FreeBodyError as exc:
+                    raise FreeBodyRuntimeError(str(exc)) from exc
+                for reply in replies:
+                    if internal_control_token_reason(free_body._masked(reply.raw_body or "")):
+                        raise FreeBodyRuntimeError("Free-body output exposed an internal control token")
+                    # Keep the existing quality firewall without counting tag syntax
+                    # or literal code samples as repeated narrative prose.
+                    for value in (reply.text, reply.action, reply.thought, reply.emotion):
+                        reason = degenerate_repetition_reason(free_body._masked(value or ""))
+                        if reason:
+                            raise FreeBodyRuntimeError(f"Free-body output contained a degenerate repetition loop: {reason}")
+                last_parser_shadow = {"response_protocol": protocol, "parser": "free_body_v1"}
+                if hasattr(active_llm_client, "record_response_outcome"):
+                    active_llm_client.record_response_outcome(last_llm_response, status="validated",
+                        parse_code="free_body_ok", validation_code="envelope_ok", metadata_updates=last_parser_shadow)
+                return replies
             if not last_response_content.strip():
                 if finish_reason in {"MAX_TOKENS", "LENGTH"}:
                     raise StructuredOutputTruncatedError("Structured JSON response was truncated or incomplete")
@@ -839,6 +877,8 @@ class CharacterRuntime:
             min_bubbles=min_bubbles,
             max_bubbles=max_bubbles,
         )
+        if protocol != "legacy_json":
+            response_format = free_body.response_format(protocol, aliases)
         last_error: Exception | None = None
         last_response_content = ""
         result = None
@@ -860,11 +900,14 @@ class CharacterRuntime:
                     "Preserve roleplay detail and natural dialogue; do not shorten, summarize or censor the prose. "
                     "Close every string, array and object. Return JSON only."
                 )
+            if protocol != "legacy_json":
+                attempt_response_format = response_format
+                retry_instruction = "" if attempt == 0 else free_body.FREE_BODY_RETRY
             current_turn_role = "assistant" if source_speaker_type == "character" else "user"
             attempt_user_message = user_message
             continuation_instruction = ""
             if current_turn_role == "assistant":
-                continuation_instruction = CHARACTER_TURN_CONTINUATION_INSTRUCTION
+                continuation_instruction = free_body.FREE_BODY_CONTINUATION if protocol != "legacy_json" else CHARACTER_TURN_CONTINUATION_INSTRUCTION
                 if retry_instruction:
                     continuation_instruction = f"{continuation_instruction}\n\n{retry_instruction}"
             elif retry_instruction:
@@ -929,7 +972,7 @@ class CharacterRuntime:
                                 "generation_attempts": getattr(last_llm_response, "generation_attempts", 1),
                                 "parse_attempts": parse_attempts,
                                 "parse_status": "failed",
-                                "fallback_used": fallback_used,
+                                "fallback_used": fallback_used, "response_protocol": protocol,
                                 "attempt_diagnostics": attempt_diagnostics,
                                 "semantic_attempts": semantic_attempts,
                                 **task_attempt_metadata(),
@@ -964,7 +1007,7 @@ class CharacterRuntime:
                     "generation_attempts": getattr(response, "generation_attempts", 1),
                     "parse_attempts": parse_attempts,
                     "parse_status": "success" if parse_attempts == 1 else "retry_success",
-                    "fallback_used": fallback_used,
+                    "fallback_used": fallback_used, "response_protocol": protocol,
                     "attempt_diagnostics": attempt_diagnostics,
                     "semantic_attempts": semantic_attempts,
                     "output_budget": getattr(response, "budget_diagnostics", None),
@@ -995,6 +1038,13 @@ class CharacterRuntime:
         min_output_tokens: int | None = None,
         conversation_id: str | None = None,
     ) -> CharacterReply:
+        if free_body.current_protocol() != "legacy_json":
+            replies = await self.generate_replies(characters=[character], recent_messages=recent_messages,
+                user_message=user_message, scene_state=scene_state, directive=directive,
+                conversation_mode=conversation_mode, genre_mode=genre_mode,
+                continuity_context_by_character={character.id: continuity_context or ""},
+                prompt_settings=prompt_settings, min_output_tokens=min_output_tokens, conversation_id=conversation_id)
+            return next(reply for reply in replies if reply.reply_type == "character")
         # Backward-compatible wrapper for older call sites/tests. Keep it on
         # the same structured-only parser/validator boundary as room replies
         # so raw provider prose cannot bypass the output firewall.

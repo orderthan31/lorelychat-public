@@ -47,6 +47,7 @@ import { assetUrlFor, avatarUrlFor } from '../utils/assets';
 import { normalizeCharacterForApi } from '../utils/character';
 import { genreModeLabel, normalizeGenreMode } from '../utils/genre';
 import { pageCount } from '../utils/pagination';
+import type { MessageEditDraft } from '../types/domain';
 import { normalizeRuntimeSetting, normalizeRuntimeSettingUpdatePayload } from '../utils/runtimeSettings';
 import { arrayToLines, compactText, linesToArray, parseInputMarkup, parseTagInput, safeJsonParse, tagText } from '../utils/text';
 import {
@@ -1146,7 +1147,7 @@ export function App() {
       setStatus(`${t('선택 버블 삭제 실패 ·')} ${error.message}`);
     } finally { setBusy(false); }
   }
-  async function updateMessageBubble(message, draft) {
+  async function updateMessageBubble(message, draft: MessageEditDraft) {
     if (!message?.id || !selectedConversationId || busy) return null;
     setBusy(true);
     try {

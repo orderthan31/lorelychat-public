@@ -1,8 +1,9 @@
 import { memo } from 'react';
+import type { Plugin } from 'unified';
 import Markdown, { type Components } from 'react-markdown';
 
 export const BUBBLE_MARKDOWN_ELEMENTS: string[] = ['p', 'strong', 'em', 'code', 'br'];
-export type BubbleRichTextProps = { text: string };
+export type BubbleRichTextProps = { text: string; literalHtml?: boolean };
 const MARKDOWN_COMPONENTS: Components = {
   p: ({ children }) => <>{children}</>,
   strong: ({ children }) => <strong className="font-semibold text-inherit">{children}</strong>,
@@ -15,11 +16,18 @@ export function BubbleRichText(props: BubbleRichTextProps) {
   return <MemoBubbleRichText {...props} />;
 }
 
-const MemoBubbleRichText = memo(function RichText({ text }: BubbleRichTextProps) {
+const MemoBubbleRichText = memo(function RichText({ text, literalHtml = false }: BubbleRichTextProps) {
   return <Markdown
+    remarkPlugins={literalHtml ? [disableHtml] : []}
     allowedElements={BUBBLE_MARKDOWN_ELEMENTS}
     skipHtml
     unwrapDisallowed
     components={MARKDOWN_COMPONENTS}
   >{text}</Markdown>;
 });
+
+// Keep HTML-like source visible without enabling HTML nodes or execution.
+const disableHtml: Plugin = function () {
+  const data = this.data() as { micromarkExtensions?: { disable?: { null?: string[] } }[] };
+  data.micromarkExtensions = [...(data.micromarkExtensions || []), { disable: { null: ['htmlFlow', 'htmlText'] } }];
+}

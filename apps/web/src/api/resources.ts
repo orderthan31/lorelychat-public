@@ -1,6 +1,6 @@
 import { api } from './http';
 import { FALLBACK_TTS_MODELS, FALLBACK_TTS_VOICES, MESSAGE_PAGE_TURNS } from '../constants/domain';
-import type { RuntimeSetting, RuntimeSettingUpdatePayload } from '../types/domain';
+import type { MessageEditDraft, RuntimeSetting, RuntimeSettingUpdatePayload } from '../types/domain';
 
 type Id = string;
 type Payload = unknown;
@@ -103,7 +103,7 @@ export const conversationApi = {
   createMessageJob: (id: Id, payload: Payload) => api(`/conversations/${id}/messages/jobs`, { method: 'POST', body: JSON.stringify(payload) }),
   generationJob: (id: Id, jobId: Id) => api(`/conversations/${id}/generation-jobs/${jobId}`),
   regenerateMessage: (id: Id, messageId: Id, payload: RegeneratePayload = { replace_existing: false }) => api(`/conversations/${id}/messages/${messageId}/regenerate`, { method: 'POST', body: JSON.stringify(payload) }),
-  updateMessage: (id: Id, messageId: Id, payload: Payload) => api(`/conversations/${id}/messages/${messageId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  updateMessage: (id: Id, messageId: Id, payload: MessageEditDraft) => api(`/conversations/${id}/messages/${messageId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteMessage: (id: Id, messageId: Id) => api(`/conversations/${id}/messages/${messageId}`, { method: 'DELETE' }),
   bulkDeleteMessages: (id: Id, messageIds: Id[]) => api(`/conversations/${id}/messages/bulk-delete`, { method: 'POST', body: JSON.stringify({ message_ids: messageIds }) }),
   compressNow: (id: Id) => api(`/conversations/${id}/compress-now`, { method: 'POST', body: JSON.stringify({}) }),

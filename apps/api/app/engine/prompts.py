@@ -1,4 +1,5 @@
 from app.db.models import Character, Message, SceneState
+from app.engine import free_body_protocol as free_body
 from app.engine.output_contract import DEFAULT_MULTI_OUTPUT_RULES, SEMANTIC_MARKDOWN_OUTPUT_RULES
 from app.engine.prompt_graph import build_prompt_pipeline_graph, run_prompt_pipeline
 from app.engine.prompt_harness import PromptHarness, PromptSection, approx_tokens
@@ -128,6 +129,17 @@ def format_message_for_context(message: Message, *, include_thought: bool = True
         if character_name:
             speaker_label = f"character:{character_name}({message.speaker_id})"
     parts = [speaker_label]
+    metadata = message.metadata_ or {}
+    if metadata.get("response_protocol") in free_body.PROTOCOLS and isinstance(metadata.get("render_parts"), list):
+        # One authoritative ordered representation, never raw_body plus aggregates.
+        for part in metadata["render_parts"]:
+            kind = part.get("type")
+            if kind == "thought" and not include_thought:
+                continue
+            if kind in {"dialogue", "action", "thought"}:
+                label = "private_character_thought" if kind == "thought" else kind
+                parts.append(f"{label}={part.get('text', '')}")
+        return " | ".join(parts)
     if message.action:
         parts.append(f"action={compact_prompt_text(message.action, 110)}")
     if include_thought and message.thought:
@@ -581,6 +593,13 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
 {multi_output_rules}
 {build_output_length_rule(min_output_tokens, min_bubbles=min_bubbles, max_bubbles=max_bubbles)}"""
 
+    protocol = free_body.current_protocol()
+    if protocol != "legacy_json":
+        base_rules = prompt_setting(prompt_settings, "free_body_generation_core", free_body.DEFAULT_FREE_BODY_CORE)
+        output_rules = free_body.output_instructions(protocol, characters, room_cast_roles)
+        output_rules += "\n" + prompt_setting(prompt_settings, "free_body_output_rules", free_body.DEFAULT_FREE_BODY_RULES)
+        if min_output_tokens:
+            output_rules += f"\nDesired prose richness: approximately {min_output_tokens} output tokens, within the existing output budget; no filler or forced bubble count."
     character_cards_budget = max(2600, approx_tokens(character_cards) + 100)
     output_rules_budget = max(620, approx_tokens(output_rules) + 80)
 
@@ -612,7 +631,7 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
         provider_type=provider_type,
         prompt_settings=prompt_settings,
     )
-    if provider_section is not None:
+    if provider_section is not None and free_body.current_protocol() == "legacy_json":
         sections.append(provider_section)
     budget = total_budget_tokens or prompt_budget_for_context(genre_mode=genre_mode, is_multi_room=len(characters) >= 2)
     return compile_prompt_sections(sections=sections, total_budget_tokens=budget)
@@ -775,7 +794,7 @@ Keep the reply vivid, specific, and naturally paced."""
         provider_type=provider_type,
         prompt_settings=prompt_settings,
     )
-    if provider_section is not None:
+    if provider_section is not None and free_body.current_protocol() == "legacy_json":
         sections.append(provider_section)
     return sections
 

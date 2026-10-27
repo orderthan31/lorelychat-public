@@ -1,6 +1,6 @@
 # Renewal development isolation
 
-`renewal` is the shared frontend/backend branch in this monorepo. Run it from a separate Git worktree so the ordinary development checkout can keep serving its existing users. This environment setup does not change the generated-response protocol.
+`renewal` is the shared frontend/backend branch in this monorepo. Run it from a separate Git worktree so the ordinary development checkout can keep serving its existing users. Runtime isolation and response-protocol selection are separate: the protocol defaults to the existing JSON contract unless explicitly enabled for a deployment.
 
 ## Isolation contract
 
@@ -43,6 +43,24 @@ Record counts, the UTC cutoff, integrity checks and copy verification in a priva
 `UPLOAD_ROOT` remains the renewal runtime's writable upload directory. Optional `SHARED_UPLOAD_ROOT` supplies a fallback for existing `/uploads` files. Look up renewal files first and shared files second. Shared files are served by the static GET/HEAD surface only; do not symlink or hardlink the two writable roots.
 
 Keep the source directory read-only in the renewal service's filesystem view. New uploads and TTS files belong to `UPLOAD_ROOT`; copied asset records may continue referring to the existing `/uploads/...` URLs. Do not copy provider-secret files into a static root.
+
+## Response protocol opt-in
+
+Set `CHAT_RESPONSE_PROTOCOL` in the API deployment environment, then restart only that isolated API owner:
+
+- `legacy_json` (default): retains the existing JSON contract and legacy validation.
+- `tagged_text`: requests plain text without a provider JSON response schema. A bubble has an explicit speaker alias and a natural body, for example `<m c="C1"><a>She turns.</a>Hello.<t>A private possibility.</t></m>`. `C1`, `C2`, etc. map exactly to the speaking room cast; `N` denotes narration.
+- `free_body_json`: alternative minimal envelope `{"replies":[{"who":"C1","text":"Hello.","emotion":"calm"}]}`. Only `who` and `text` are required; the body uses the same optional semantic tags.
+
+There is no extra model, embedding key or classifier call. Action and character-inner-thought tags are optional, can alternate with dialogue, and are never inferred from parentheses or Markdown emphasis. Inner thoughts here are fictional character text, not provider reasoning. Existing output-token and compression-quality settings are unchanged.
+
+Ordered body parts and the original body are persisted alongside compatibility fields, but public history/compression use one ordered public representation without private character thoughts. HTML is not executed. Unknown or ambiguous speakers, incomplete envelopes, truncated responses and degenerate repetition loops fail/retry the whole turn rather than saving a partial result.
+
+Existing messages retain their old representation. New free-body messages use one body editor plus optional emotion; edits reparse the body and invalidate TTS cache. TTS uses explicit spoken dialogue only, so action-only or thought-only bubbles do not create speech. Legacy command postprocessing remains a separate surface; a spoken-content rewrite invalidates the old ordered free-body view rather than displaying stale prose.
+
+The free-body prompt keys live in the current version-controlled prompt registry and do not overwrite the legacy keys. To roll the generation protocol back, restore `CHAT_RESPONSE_PROTOCOL=legacy_json` and restart that API owner; already stored free-body messages remain readable and editable.
+
+Local parser, mocked-provider HTTP, atomic API persistence and real-browser tests do not establish live model creativity, provider acceptance or billed-token savings. Those require a separately approved controlled comparison with the same room, model and length settings. See `apps/web/tests/README.md` for the offline browser regression workflow.
 
 ## Verification
 
