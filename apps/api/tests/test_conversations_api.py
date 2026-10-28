@@ -364,7 +364,9 @@ def test_automatic_hard_pressure_no_progress_never_calls_chat_provider(
 
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "context_maintenance_required"
-    assert response.json()["detail"]["catchup_batches"] == 1
+    # Fixed authored controls alone exceed this 100-token capacity: no
+    # compression can repair it, so fail before attempting the compressor.
+    assert response.json()["detail"]["catchup_batches"] == 0
     assert provider_calls == 0
     persisted = session.exec(
         select(Message).where(Message.conversation_id == room["id"])

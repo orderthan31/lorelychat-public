@@ -119,15 +119,18 @@ async def test_invalid_primary_never_persists(mode, protocol, failure):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('protocol', ['tagged_text', 'free_body_json'])
 @pytest.mark.parametrize('provider', ['gemini', 'xai'])
-async def test_combined_real_http_transport_budget_unchanged(mode, monkeypatch, protocol, provider):
+@pytest.mark.parametrize('finish', ['STOP', 'LENGTH'])
+async def test_combined_real_http_transport_budget_unchanged(mode, monkeypatch, protocol, provider, finish):
     mode(protocol)
     payloads = []
     def handler(request):
         payloads.append(json.loads(request.content))
         raw = encode(protocol)
+        if finish == 'LENGTH':
+            raw = raw.split('Ready.')[0] + 'Partial panel'
         if provider == 'gemini':
-            return httpx.Response(200, json={'candidates': [{'content': {'parts': [{'text': raw}]}, 'finishReason': 'STOP'}]})
-        return httpx.Response(200, json={'choices': [{'message': {'content': raw}, 'finish_reason': 'stop'}]})
+            return httpx.Response(200, json={'candidates': [{'content': {'parts': [{'text': raw}]}, 'finishReason': finish}]})
+        return httpx.Response(200, json={'choices': [{'message': {'content': raw}, 'finish_reason': finish.lower()}]})
     real = httpx.AsyncClient
     monkeypatch.setattr(httpx, 'AsyncClient', lambda *a, **kw: real(*a, **kw, transport=httpx.MockTransport(handler)))
     client = LLMClient(Settings(_env_file=None, llm_mock=False), overrides={'provider': provider, 'provider_type': provider,
@@ -137,7 +140,8 @@ async def test_combined_real_http_transport_budget_unchanged(mode, monkeypatch, 
     limit = client.max_output_tokens()
     assert limit == 2560
     result = await CharacterRuntime(client).generate_replies(characters=[Character(id='a', name='Aria')], recent_messages=[], user_message='source', command_overlay_plan=co.build_plan([command()]))
-    assert result.command_panels and len(payloads) == 1
+    assert bool(result.command_panels) == (finish == 'STOP') and len(payloads) == 1
+    assert result[0].text == 'First.\nLast.' and result[0].thought == 'Secret.'
     payload = payloads[0]
     if protocol == 'tagged_text':
         assert 'response_format' not in payload
@@ -188,7 +192,7 @@ def test_sqlite_additive_migration_preserves_existing_rows():
 
 
 @pytest.mark.parametrize('protocol', ['tagged_text', 'free_body_json'])
-@pytest.mark.parametrize('bad', [False, True])
+@pytest.mark.parametrize('bad', [False, True, 'truncated'])
 def test_actual_job_combined_or_targeted_fallback_atomic_readback(client, session, monkeypatch, mode, protocol, bad):
     from app.api.conversations import _run_message_generation_job_in_session
     mode(protocol)
@@ -205,7 +209,10 @@ def test_actual_job_combined_or_targeted_fallback_atomic_readback(client, sessio
         calls.append({'messages': messages, 'format': response_format, 'purpose': self.purpose})
         if self.purpose == 'chat_command_postprocess':
             return LLMResponse(content='{"messages":[{"content":"","blocks":[{"type":"note","text":"Fallback ready."}]}]}')
-        return LLMResponse(content=encode(protocol, bad=bad), finish_reason='STOP')
+        raw = encode(protocol, bad=bad is True)
+        if bad == 'truncated':
+            raw = raw.split('Ready.')[0] + 'Partial panel'
+        return LLMResponse(content=raw, finish_reason='LENGTH' if bad == 'truncated' else 'STOP')
     monkeypatch.setattr(LLMClient, 'chat', chat)
     response = client.post(f'/conversations/{room}/messages/jobs', json={'speaker_type': 'user', 'speaker_id': 'u', 'content': 'UNIQUE_SOURCE'})
     assert response.status_code == 200, response.text

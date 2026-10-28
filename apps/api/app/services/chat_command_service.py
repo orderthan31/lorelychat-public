@@ -4,7 +4,8 @@ import hashlib
 import json
 import logging
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from collections.abc import Sequence
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
@@ -13,6 +14,11 @@ from sqlmodel import Session, select
 
 from app.db.models import ChatCommand, Character, CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, Message, SceneState, WorldSetting
 from app.engine import prompts
+from app.engine.harness_comparison import ComparisonOptions
+from app.services.context_management_service import (
+    ContextCapacity, ContextMaintenanceRequired, enforce_rendered_context_capacity,
+    resolve_model_context_capacity,
+)
 from app.engine.llm_client import LLMClient, bounded_llm_task, task_attempt_metadata, chat_with_optional_conversation_id
 from app.services.chat_command_contract import command_response_format, parse_command_payload
 from app.schemas.chat_commands import ChatCommandCreate, ChatCommandUpdate, DEFAULT_POSTPROCESS_CONTEXT_OPTIONS, normalize_command_name
@@ -477,9 +483,13 @@ def _room_characters_and_roles(session: Session, conversation_id: str) -> tuple[
     return characters, roles
 
 
-def _build_scene_context(scene: SceneState | None) -> list[str]:
+def _build_scene_context(scene: SceneState | None, *, comparison_options: ComparisonOptions | None = None,
+                         has_durable_history: bool = False) -> list[str]:
     if not scene:
         return []
+    if comparison_options and comparison_options.context_policy == "full_history":
+        return [prompts.build_scene_text(scene, include_summary=False,
+            include_opening=not (has_durable_history or scene.summary or scene.last_compression_source_message_id))]
     return [
         "[현재 장면]",
         f"- 장소: {compact_block_text(scene.location, 120)}",
@@ -559,7 +569,28 @@ def _build_relationship_memory_context(session: Session, conversation_id: str, c
     return lines if added else []
 
 
-def _build_recent_messages_context(session: Session, conversation_id: str, character_names: dict[str, str], exclude_ids=()) -> list[str]:
+def _command_source_prefix(session: Session, conversation_id: str, source_message: Message,
+                           source_messages: Sequence[Message] | None = None) -> list[Message]:
+    """Canonical available prefix, frozen by the API before the main provider await."""
+    if source_messages is not None:
+        for index, message in enumerate(source_messages):
+            if message.id == source_message.id:
+                return list(source_messages[:index + 1])
+        raise prompts.ContextCoverageError("current source missing from command history")
+    return list(session.exec(select(Message).where(
+        Message.conversation_id == conversation_id,
+        or_(Message.created_at < source_message.created_at,
+            and_(Message.created_at == source_message.created_at, Message.id <= source_message.id)),
+    ).order_by(asc(Message.created_at), asc(Message.id))).all())
+
+
+def _build_recent_messages_context(session: Session, conversation_id: str, character_names: dict[str, str], exclude_ids=(),
+                                   *, full_source_prefix: Sequence[Message] | None = None) -> list[str]:
+    if full_source_prefix is not None:
+        lines = [prompts.format_message_for_context(message, character_names=character_names,
+                 include_thought=False, compact=False)
+                 for message in full_source_prefix if message.id not in exclude_ids]
+        return ["[최근 메시지]", *lines] if lines else []
     # Auxiliary provider calls must honor the same exclusive summary boundary
     # as main generation. Filter before taking the latest ten, using the
     # canonical (created_at, id) ordering even when timestamps are equal.
@@ -599,8 +630,12 @@ def _build_turn_messages_context(source_message: Message, generated_messages: li
     return lines if len(lines) > 1 else []
 
 
-def build_command_postprocess_context(session: Session, command: ChatCommand, conversation_id: str, source_message: Message, generated_messages: list[Message], represented_ids=()) -> str:
+def build_command_postprocess_context(session: Session, command: ChatCommand, conversation_id: str, source_message: Message, generated_messages: list[Message], represented_ids=(),
+                                      *, comparison_options: ComparisonOptions | None = None,
+                                      source_messages: Sequence[Message] | None = None) -> str:
     options = _command_context_options(command)
+    full_history = comparison_options is not None and comparison_options.context_policy == "full_history"
+    prefix = _command_source_prefix(session, conversation_id, source_message, source_messages) if full_history else None
     conversation = session.get(Conversation, conversation_id)
     scene = session.get(SceneState, conversation_id)
     world = session.get(WorldSetting, conversation.world_setting_id) if conversation and conversation.world_setting_id else None
@@ -608,7 +643,8 @@ def build_command_postprocess_context(session: Session, command: ChatCommand, co
     character_names = {character.id: character.name for character in characters}
     blocks: list[str] = []
     if "scene" in options:
-        blocks.extend(_build_scene_context(scene))
+        blocks.extend(_build_scene_context(scene, comparison_options=comparison_options,
+            has_durable_history=bool(prefix and any(m.id != source_message.id for m in prefix))))
     if "world" in options:
         blocks.extend(_build_world_context(world, scene))
     if "characters" in options:
@@ -616,13 +652,15 @@ def build_command_postprocess_context(session: Session, command: ChatCommand, co
     if "relationship_memory" in options:
         blocks.extend(_build_relationship_memory_context(session, conversation_id, characters))
     if "recent_messages" in options:
-        blocks.extend(_build_recent_messages_context(session, conversation_id, character_names, exclude_ids=set(represented_ids) | ({source_message.id, *(m.id for m in generated_messages)} if "turn_messages" in options else set())))
+        blocks.extend(_build_recent_messages_context(session, conversation_id, character_names,
+            exclude_ids=set(represented_ids) | ({source_message.id, *(m.id for m in generated_messages)} if "turn_messages" in options else set()),
+            full_source_prefix=prefix))
     if "turn_messages" in options:
         blocks.extend(_build_turn_messages_context(source_message, generated_messages, character_names, exclude_ids=represented_ids))
     return "후속 생성 참고 컨텍스트:\n" + "\n".join(blocks) if blocks else "후속 생성 참고 컨텍스트: 선택된 추가 컨텍스트 없음"
 
 
-def prepare_combined_context(session, plan, conversation_id, primary_scene):
+def prepare_combined_context(session, plan, conversation_id, primary_scene, *, comparison_options: ComparisonOptions | None = None):
     """Add only explicit persisted fields absent from primary scene serialization.
 
     Never infer context from command prose, nor copy cards/history/generated text.
@@ -631,7 +669,11 @@ def prepare_combined_context(session, plan, conversation_id, primary_scene):
     options = set().union(*(_command_context_options(c) for c in plan.eligible.values())) if plan.eligible else set()
     lines = []
     stored = session.get(SceneState, conversation_id)
-    if "scene" in options and stored:
+    # The full-history primary renderer already owns every permitted scene field
+    # (fixed canon/policy and fresh opening). Absence is not permission to restore
+    # its deliberately suppressed derived fields through an auxiliary panel.
+    full_history = comparison_options is not None and comparison_options.context_policy == "full_history"
+    if "scene" in options and stored and not full_history:
         for key in ("location", "mood", "current_conflict", "last_event", "summary"):
             value = getattr(stored, key, None)
             represented = key == "summary" or (key in {"location", "mood"} and not getattr(primary_scene, "summary", None))
@@ -662,6 +704,9 @@ async def apply_chat_command_postprocess(
     commit: bool = True,
     combined_messages: list[dict] | None = None,
     execution_outcome: dict | None = None,
+    comparison_options: ComparisonOptions | None = None,
+    source_messages: Sequence[Message] | None = None,
+    context_capacity: ContextCapacity | None = None,
 ) -> list[Message]:
     """Apply command postprocess to generated chat bubbles.
 
@@ -717,45 +762,65 @@ async def apply_chat_command_postprocess(
     expected_count = 1 if overlay_mode else len(targets)
     response_instruction = command_response_instruction(expected_count, overlay_mode=overlay_mode, block_types=command.postprocess_block_types)
     postprocess_prompt = getattr(command, "postprocess_prompt", None) or command.prompt
-    postprocess_context = "" if combined_validated is not None else build_command_postprocess_context(
-        session, command, conversation_id, source_message, generated_messages, {source_message.id, *(m.id for m in targets)}
-    )
-    settings = prompt_settings or {}
-    system_prompt = "\n\n".join(
-        part.strip()
-        for part in [
-            settings.get("chat_command_postprocess_base", ""),
-            settings.get("chat_command_postprocess_source_priority", ""),
-        ]
-        if part and part.strip()
-    )
-    messages = [
-        {
-            "role": "system",
-            "content": system_prompt,
-        },
-        {
-            "role": "user",
-            "content": (
-                f"커맨드: !{command.name}\n"
-                f"설명: {command.description}\n"
-                f"후처리 대상: {target_mode}\n"
-                f"postprocess_prompt:\n{postprocess_prompt}\n\n"
-                f"{postprocess_context}\n\n"
-                f"커맨드 요청/연출 지시:\n{prompts.format_full_public_message(source_message)}\n\n"
-                "대상 생성 버블 (1차 응답 메시지):\n"
-                f"{original_block}\n\n"
-                f"{response_instruction}"
-            ),
-        },
-    ]
     originals = [(message, message.content, deepcopy(message.metadata_ or {})) for message in targets]
     diagnostics: list[dict] = []
     attempt = 0
     command_messages = combined_validated
+    auxiliary_capacity = None
     try:
+        postprocess_context = "" if combined_validated is not None else build_command_postprocess_context(
+            session, command, conversation_id, source_message, generated_messages, {source_message.id, *(m.id for m in targets)},
+            comparison_options=comparison_options, source_messages=source_messages
+        )
+        settings = prompt_settings or {}
+        system_prompt = "\n\n".join(
+            part.strip()
+            for part in [
+                settings.get("chat_command_postprocess_base", ""),
+                settings.get("chat_command_postprocess_source_priority", ""),
+            ]
+            if part and part.strip()
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"커맨드: !{command.name}\n"
+                    f"설명: {command.description}\n"
+                    f"후처리 대상: {target_mode}\n"
+                    f"postprocess_prompt:\n{postprocess_prompt}\n\n"
+                    f"{postprocess_context}\n\n"
+                    f"커맨드 요청/연출 지시:\n{prompts.format_full_public_message(source_message)}\n\n"
+                    "대상 생성 버블 (1차 응답 메시지):\n"
+                    f"{original_block}\n\n"
+                    f"{response_instruction}"
+                ),
+            },
+        ]
+        comparison = comparison_options or ComparisonOptions()
+        if comparison.context_policy != "compact" and combined_validated is None:
+            # Reserve the actual command client's unchanged output allowance.
+            # A caller-supplied narrow/reachable capacity may only be lowered.
+            output_reserve = max(2048, int(client.max_output_tokens() or 0)) if client is not None and callable(getattr(client, "max_output_tokens", None)) else 2048
+            auxiliary_capacity = context_capacity or resolve_model_context_capacity(
+                None, room_prompt_budget_tokens=comparison.input_budget_tokens,
+                completion_reserve_tokens=output_reserve)
+            reserve = max(auxiliary_capacity.completion_reserve_tokens, output_reserve)
+            available = max(0, auxiliary_capacity.context_window_tokens - reserve - auxiliary_capacity.mandatory_reserve_tokens)
+            auxiliary_capacity = replace(auxiliary_capacity, completion_reserve_tokens=reserve,
+                available_input_tokens=available, working_input_tokens=min(auxiliary_capacity.working_input_tokens, available))
         response_format = command_response_format(expected_count, overlay=overlay_mode, block_types=command.postprocess_block_types)
         for attempt in ([] if combined_validated is not None else range(1, 3)):
+            if auxiliary_capacity is not None:
+                # Schema is also input on structured transports. This accounting
+                # row is never sent; retain all actual messages and output limits.
+                capacity_messages = [*messages, {"content": json.dumps(response_format, ensure_ascii=False)}]
+                enforce_rendered_context_capacity(capacity_messages, auxiliary_capacity,
+                    history_serialization=comparison.history_serialization)
             response = await chat_with_optional_conversation_id(
                 messages=messages, client=client, conversation_id=conversation_id,
                 response_format=response_format,
@@ -800,7 +865,7 @@ async def apply_chat_command_postprocess(
             "command_postprocess_execution": {command.id: outcome},
             "command_postprocess_mode": "combined_overlay" if combined_validated is not None else "separate",
             "command_postprocess_attempts": attempt,
-            "command_postprocess_parse_attempts": len(diagnostics),
+            "command_postprocess_parse_attempts": sum("response_sha256" in d for d in diagnostics),
             "command_postprocess_network_attempts": 0 if combined_validated is not None else task_attempt_metadata().get("network_attempts", 0),
             "command_postprocess_diagnostics": diagnostics,
             "command_postprocess_error_code": None,
@@ -878,11 +943,18 @@ async def apply_chat_command_postprocess(
             if diagnostics and isinstance(exc, ValueError) and diagnostics[-1]["code"] != "schema_ok"
             else "command_postprocess_failed"
         )
+        if isinstance(exc, ContextMaintenanceRequired):
+            error_code = exc.code
+            diagnostics.append({"code": exc.code, "semantic_attempt": attempt,
+                "projected_tokens": exc.projected_tokens, "working_tokens": exc.working_tokens,
+                "completion_reserve_tokens": auxiliary_capacity.completion_reserve_tokens if auxiliary_capacity else None,
+                "capacity_source": auxiliary_capacity.source if auxiliary_capacity else None,
+                **task_attempt_metadata()})
         terminal_metadata = {
             "command_postprocess_execution": {command.id: outcome},
             "command_postprocess_mode": "combined_overlay" if combined_validated is not None else "separate",
             "command_postprocess_attempts": attempt,
-            "command_postprocess_parse_attempts": len(diagnostics),
+            "command_postprocess_parse_attempts": sum("response_sha256" in d for d in diagnostics),
             "command_postprocess_network_attempts": 0 if combined_validated is not None else task_attempt_metadata().get("network_attempts", 0),
             "command_postprocess_diagnostics": diagnostics,
             "command_postprocess_error_code": error_code,

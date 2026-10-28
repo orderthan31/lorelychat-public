@@ -194,6 +194,7 @@ docker compose up -d --wait
 
 - [아키텍처](docs/architecture.ko.md)
 - [환경 설정](docs/configuration.ko.md)
+- [대화 이력·컨텍스트 비교 옵션 (실험적)](docs/harness-comparisons.md)
 - [Provider 설정](docs/providers.ko.md)
 - [셀프 호스팅](docs/self-hosting.ko.md)
 - [보안 정책](SECURITY.ko.md)

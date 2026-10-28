@@ -2098,12 +2098,12 @@ def build_continuity_context(memories: list[CharacterMemory] | None = None, rela
         ]))
     if memories:
         common_lines = [
-            f"- {memory.memory_type}/{memory.importance}: {compact_text(memory.content, 100)}"
+            f"- {memory.memory_type}/{memory.importance}: {memory.content if memory.memory_type == 'user_note' else compact_text(memory.content, 100)}"
             for memory in memories
             if memory.character_id == COMMON_ROOM_MEMORY_CHARACTER_ID
         ]
         character_lines = [
-            f"- {memory.memory_type}/{memory.importance}: {compact_text(memory.content, 100)}"
+            f"- {memory.memory_type}/{memory.importance}: {memory.content if memory.memory_type == 'user_note' else compact_text(memory.content, 100)}"
             for memory in memories
             if memory.character_id != COMMON_ROOM_MEMORY_CHARACTER_ID
         ]
@@ -2148,6 +2148,7 @@ def automatic_context_plan(
     mandatory_prompt_tokens: int,
     job_source_message_ids: Mapping[str, str] | None = None,
     token_estimator: Callable[[Message], int] | None = None,
+    history_token_estimator: Callable[[list[Message]], int] | None = None,
 ) -> AutomaticContextPlan:
     suffix = messages_after_compression_boundary(scene_state, messages)
     return build_automatic_context_plan(
@@ -2157,15 +2158,41 @@ def automatic_context_plan(
         job_source_message_ids=job_source_message_ids,
         token_estimator=token_estimator or automatic_context_message_tokens,
         batch_message_limit=COMPRESSION_BATCH_MESSAGE_LIMIT,
+        history_token_estimator=history_token_estimator,
     )
+
+
+def automatic_context_history_token_estimator(
+    character_names: Mapping[str, str] | None = None,
+    *, history_serialization: str = "transcript", accounting=None,
+    excluded_message_ids: frozenset[str] = frozenset(),
+) -> Callable[[list[Message]], int]:
+    """Linear serialized-history cost, separate from advisory per-row weights.
+
+    Without an envelope this counts the standalone public join, useful for
+    legacy callers that supply their own fixed prompt cost. Production callers
+    pass the compiled envelope to include its header and whole-message rounding.
+    """
+    from app.engine.harness_comparison import HistoryAccounting
+    envelope = accounting or HistoryAccounting()
+    names = dict(character_names or {})
+
+    def estimate(messages: list[Message]) -> int:
+        rows = [prompts.format_message_for_context(message, include_thought=False,
+                character_names=names, compact=False)
+                for message in messages if message.id not in excluded_message_ids]
+        return envelope.tokens(rows, history_serialization=history_serialization)
+
+    return estimate
 
 
 def automatic_context_message_tokens(
     message: Message,
     *,
     character_names: Mapping[str, str] | None = None,
+    history_serialization: str = "transcript",
 ) -> int:
-    """Estimate the exact message fields rendered into automatic raw history."""
+    """Advisory row weight for complete-group fold selection, not request cost."""
 
     return max(
         1,
@@ -2174,18 +2201,21 @@ def automatic_context_message_tokens(
                 message,
                 include_thought=False,
                 character_names=dict(character_names or {}),
+                compact=False,
             )
-        ) + 1,
+        ) + (4 if history_serialization == "native" else 1),
     )
 
 
 def automatic_context_message_token_estimator(
     character_names: Mapping[str, str] | None = None,
+    *, history_serialization: str = "transcript",
 ) -> Callable[[Message], int]:
     names = dict(character_names or {})
 
     def estimate(message: Message) -> int:
-        return automatic_context_message_tokens(message, character_names=names)
+        return automatic_context_message_tokens(message, character_names=names,
+                                                history_serialization=history_serialization)
 
     return estimate
 
@@ -3203,6 +3233,7 @@ def should_update_scene_orchestration_summary(
     mandatory_prompt_tokens: int = 0,
     job_source_message_ids: Mapping[str, str] | None = None,
     token_estimator: Callable[[Message], int] | None = None,
+    history_token_estimator: Callable[[list[Message]], int] | None = None,
 ) -> bool:
     """Choose automatic pressure policy or the unchanged rollback cadence."""
     interval_turns = max(1, min(30, int(interval_turns or 5)))
@@ -3235,6 +3266,7 @@ def should_update_scene_orchestration_summary(
                 mandatory_prompt_tokens=mandatory_prompt_tokens,
                 job_source_message_ids=job_source_message_ids,
                 token_estimator=token_estimator,
+                history_token_estimator=history_token_estimator,
             )
         except ValueError:
             # A dangling boundary must be handled by maintenance, never hidden by cadence.

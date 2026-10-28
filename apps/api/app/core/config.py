@@ -1,5 +1,6 @@
 from functools import lru_cache
 from typing import Literal
+from pydantic import PositiveInt
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,9 @@ class Settings(BaseSettings):
     # Deployment opt-in only; no extra provider, model, or user credential.
     chat_response_protocol: Literal["legacy_json", "free_body_json", "tagged_text"] = "legacy_json"
     chat_command_postprocess_mode: Literal["separate", "combined_overlay"] = "separate"
+    chat_history_serialization: Literal["transcript", "native"] = "transcript"
+    chat_context_policy: Literal["compact", "expanded", "full_history"] = "compact"
+    chat_context_input_budget_tokens: PositiveInt | None = None
     llm_timeout_seconds: float = 120.0
     # Context pressure is the product default. legacy/shadow remain explicit
     # rollback modes for operators and existing deployments.

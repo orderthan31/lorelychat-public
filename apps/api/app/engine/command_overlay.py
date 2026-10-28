@@ -13,6 +13,7 @@ from xml.etree import ElementTree as ET
 
 from app.core.config import get_settings
 from app.engine import free_body_protocol as body
+from app.engine.combined_prefix_validation import validate_auxiliary_cut
 from app.services.chat_command_contract import block_examples, command_response_format, parse_command_payload
 
 SUPPORTED_TYPES = {'text', 'note', 'comments', 'commentary', 'table'}
@@ -190,6 +191,21 @@ def _split_tagged(raw):
     return raw, ''
 
 
+def _reject_json_primary_suffix(auxiliary):
+    # Inspect every JSON string token, including in an unclosed panel wrapper.
+    # Decoding keys catches escaped spellings; values containing quoted examples
+    # remain single tokens and cannot masquerade as primary envelope fields.
+    for token in re.finditer(r'"(?:[^"\\]|\\.)*"', auxiliary):
+        if not re.compile(r'\s*:').match(auxiliary, token.end()):
+            continue
+        try:
+            key = json.loads(token.group())
+        except ValueError:
+            continue
+        if key.lower() in {'replies', 'who'}:
+            raise body.FreeBodyError('Primary field after auxiliary envelope')
+
+
 def _split_json(raw):
     # Parse the primary array independently. A corrupt auxiliary tail must not
     # cause a second primary generation. Envelope order is explicit on the wire.
@@ -206,7 +222,8 @@ def _split_json(raw):
     marker = re.match(r'\s*,\s*"panels"\s*:\s*', tail, re.I)
     if not marker:
         raise body.FreeBodyError('Unknown or duplicate primary envelope key')
-    auxiliary = tail[marker.end():].rstrip()
+    auxiliary = tail[marker.end():]
+    _reject_json_primary_suffix(auxiliary)
     try:
         _, panel_end = json.JSONDecoder(object_pairs_hook=body._unique_object).raw_decode(auxiliary)
     except (ValueError, RecursionError):
@@ -217,12 +234,26 @@ def _split_json(raw):
     return raw[:end] + '}', auxiliary[:panel_end]
 
 
-def split_response(raw, protocol, plan):
+def split_response(raw, protocol, plan, *, truncated=False):
+    if truncated:
+        # Admission precedes ALL legacy splitting, trimming and literal masking.
+        # The proof contains original offsets, never normalized/repaired prose.
+        proof = validate_auxiliary_cut(raw, protocol)
+        primary = proof.payload[:proof.primary_end]
+        if protocol == 'free_body_json':
+            primary += '}'  # Project the already-complete primary value only.
+        outcomes = deepcopy(plan.outcomes)
+        for command in plan.eligible.values():
+            outcomes[command.id].update(status='fallback', reason='auxiliary_output_truncated')
+        return primary, {}, outcomes
     if not isinstance(raw, str) or len(raw) > body.MAX_RESPONSE_CHARS:
         raise body.FreeBodyError('Oversized combined response')
     fenced = re.fullmatch(r'\s*```(?:json|xml|text)?\s*\n([\s\S]*?)\n```\s*', raw, re.I)
     if fenced:
-        raw = fenced.group(1).strip()
+        # Remove framing only. Trimming the captured payload can erase an
+        # illegal control character inside an unfinished JSON/XML string and
+        # falsely turn malformed output into a valid truncation prefix.
+        raw = fenced.group(1)
     outcomes = deepcopy(plan.outcomes)
     entries = []
     bad_aliases = set()
@@ -234,8 +265,8 @@ def split_response(raw, protocol, plan):
             # Scan before recovery, including inside panels and unclosed wrappers.
             if re.search(r'<\s*/?\s*m\b', masked_aux, re.I):
                 raise body.FreeBodyError('Primary bubble after auxiliary envelope')
-            wrapper_end = masked_aux.rfind('</panels>')
-            if wrapper_end >= 0 and masked_aux[wrapper_end + len('</panels>'):].strip():
+            wrapper_ends = list(re.finditer(r'<\s*/\s*panels\s*>', masked_aux, re.I))
+            if wrapper_ends and masked_aux[wrapper_ends[-1].end():].strip():
                 auxiliary = ''  # malformed auxiliary tail, not a primary repair
         # Recover only independently closed panel records, never primary pieces.
         # Bound the tail separately; oversize auxiliary => affected commands fall back.

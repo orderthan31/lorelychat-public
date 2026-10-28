@@ -267,7 +267,7 @@ def test_relationship_fact_filter_does_not_block_general_relationship_words():
     assert conversation_service.relationship_fact_for_display(fact) == fact
 
 
-def test_context_preview_compacts_silent_character_card_without_relationship_context(client, session):
+def test_context_preview_preserves_silent_authored_card_without_speaking_permission(client, session):
     speaker = client.post("/characters", json={
         "name": "발화자",
         "description": "말하는 캐릭터",
@@ -307,8 +307,9 @@ def test_context_preview_compacts_silent_character_card_without_relationship_con
 
     assert "침묵자" in character_cards
     assert "role=silent/context-only" in character_cards
-    assert "침묵자의 아주 긴 비밀 페르소나" not in character_cards
-    assert "침묵자가 직접 말할 때 쓰는 말투 예시" not in character_cards
+    assert "침묵자의 아주 긴 비밀 페르소나" in character_cards
+    assert "침묵자가 직접 말할 때 쓰는 말투 예시" in character_cards
+    assert "do_not_generate_dialogue_or_action=true" in character_cards
     allowed_ids = output_rules.split("Allowed character IDs:", 1)[1].split("\n", 1)[0]
     assert silent["id"] not in allowed_ids
     assert "relationship_state_by_character" not in sections

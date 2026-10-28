@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.engine.harness_comparison import generation_input_estimate, rendered_input_tokens
 
 import inspect
 import hashlib
@@ -32,6 +33,10 @@ from app.engine.prompts import build_character_messages, build_multi_character_p
 from app.schemas.dialogue import CharacterReply, MultiCharacterReply
 from app.engine import free_body_protocol as free_body
 from app.engine import command_overlay
+from app.services.context_management_service import (
+    ContextCapacity, ContextMaintenanceRequired, enforce_rendered_context_capacity,
+    resolve_model_context_capacity,
+)
 
 
 class CharacterRuntimeError(RuntimeError):
@@ -730,6 +735,7 @@ class CharacterRuntime:
         source_speaker_type: str = "user",
         prompt_snapshot_callback: Callable[[dict], Any | Awaitable[Any]] | None = None,
         prepared_harness: PromptHarness | None = None,
+        context_capacity: ContextCapacity | None = None,
         command_overlay_plan=None,
     ) -> list[CharacterReply] | Any:
         if not characters:
@@ -763,6 +769,17 @@ class CharacterRuntime:
             provider_type=provider_name_for_client(self.llm_client),
             context_management_mode=getattr(getattr(self.llm_client, "settings", None), "context_management_mode", "shadow"),
         )
+        # API callers supply the narrowest reachable route's capacity. Direct
+        # callers without metadata must retain the conservative default ceiling.
+        effective_capacity = context_capacity or resolve_model_context_capacity(
+            None, room_prompt_budget_tokens=harness.total_budget_tokens,
+            completion_reserve_tokens=max([
+                2048,
+                *(int(client.max_output_tokens() or 0)
+                  for client in (self.llm_client, self.fallback_llm_client)
+                  if client is not None and callable(getattr(client, "max_output_tokens", None))),
+            ]),
+        )
         speaking_characters = [character for character in characters if not is_silent_cast_role((room_cast_roles or {}).get(character.id))]
         output_characters = speaking_characters or characters
         allowed = {character.id for character in output_characters}
@@ -775,12 +792,29 @@ class CharacterRuntime:
         fallback_used = False
         last_request_messages: list[dict] = []
         attempt_diagnostics: list[dict] = []
+        comparison_projected_tokens = generation_input_estimate(
+            harness, user_message, source_speaker_type,
+            generation_control_reserve_tokens(speaker_type=source_speaker_type,
+                min_bubbles=min_bubbles, max_bubbles=max_bubbles, characters=characters,
+                room_cast_roles=room_cast_roles, command_overlay_plan=panel_plan),
+        ) if harness.history_serialization != "transcript" or harness.context_policy != "compact" else 0
+        comparison_metadata = ({**harness.comparison_metadata(),
+            "projected_input_tokens": comparison_projected_tokens,
+            "working_input_tokens": effective_capacity.working_input_tokens,
+            "completion_reserve_tokens": effective_capacity.completion_reserve_tokens,
+            "token_estimator": "heuristic_chars_and_role_overhead",
+        } if harness.comparison_metadata() else {})
 
         async def generate(*, messages, response_format=None, conversation_id=None):
             nonlocal last_llm_response, active_llm_client, fallback_used, last_request_messages, last_response_content
             last_request_messages = [dict(message) for message in messages]
             last_llm_response = None
             last_response_content = ""
+            if comparison_projected_tokens > effective_capacity.working_input_tokens:
+                raise ContextMaintenanceRequired(projected_tokens=comparison_projected_tokens,
+                    working_tokens=effective_capacity.working_input_tokens)
+            enforce_rendered_context_capacity(messages, effective_capacity,
+                history_serialization=harness.history_serialization)
             try:
                 last_llm_response = await chat_with_optional_conversation_id(
                     messages=messages,
@@ -814,18 +848,23 @@ class CharacterRuntime:
             )
             finish_reason = str(getattr(last_llm_response, "finish_reason", "") or "").strip().upper()
             if protocol != "legacy_json":
-                # A closed first bubble does not prove the whole turn survived truncation.
-                if finish_reason in {"MAX_TOKENS", "LENGTH"}:
+                truncated = finish_reason in {"MAX_TOKENS", "LENGTH"}
+                # Closed bubbles alone never prove the complete turn. Recovery
+                # additionally requires the dedicated auxiliary boundary below.
+                if truncated and not panel_plan.eligible:
                     raise StructuredOutputTruncatedError("Free-body response reached the output limit")
-                if finish_reason and finish_reason not in SUCCESSFUL_FINISH_REASONS:
+                if finish_reason and not truncated and finish_reason not in SUCCESSFUL_FINISH_REASONS:
                     raise CharacterRuntimeError(f"Free-body generation ended with {finish_reason}")
                 try:
                     primary, panels = content, {}
                     candidate_outcomes = dict(panel_plan.outcomes)
                     if panel_plan.eligible:
-                        primary, panels, candidate_outcomes = command_overlay.split_response(content, protocol, panel_plan)
+                        primary, panels, candidate_outcomes = command_overlay.split_response(
+                            content, protocol, panel_plan, truncated=truncated)
                     replies = free_body.parse_response(primary, protocol=protocol, aliases=aliases)
                 except free_body.FreeBodyError as exc:
+                    if truncated:
+                        raise StructuredOutputTruncatedError(f"Unproved complete primary at output limit: {exc}") from exc
                     raise FreeBodyRuntimeError(str(exc)) from exc
                 for reply in replies:
                     if internal_control_token_reason(free_body._masked(reply.raw_body or "")):
@@ -836,13 +875,19 @@ class CharacterRuntime:
                         reason = degenerate_repetition_reason(free_body._masked(value or ""))
                         if reason:
                             raise FreeBodyRuntimeError(f"Free-body output contained a degenerate repetition loop: {reason}")
+                if truncated:
+                    # Publish proof only AFTER identity/body and quality checks.
+                    for command in panel_plan.eligible.values():
+                        candidate_outcomes[command.id]['primary_integrity'] = 'validated_complete_before_auxiliary'
                 panel_outcomes = candidate_outcomes
                 last_parser_shadow = {"response_protocol": protocol, "parser": "free_body_v1"}
                 if panel_outcomes:
                     last_parser_shadow["command_postprocess"] = panel_outcomes
                 if hasattr(active_llm_client, "record_response_outcome"):
                     active_llm_client.record_response_outcome(last_llm_response, status="validated",
-                        parse_code="free_body_ok", validation_code="envelope_ok", metadata_updates=last_parser_shadow)
+                        parse_code="free_body_ok",
+                        validation_code="primary_ok_auxiliary_truncated" if truncated else "envelope_ok",
+                        metadata_updates=last_parser_shadow)
                 return command_overlay.GeneratedTurn(replies, panels, panel_outcomes)
             if not last_response_content.strip():
                 if finish_reason in {"MAX_TOKENS", "LENGTH"}:
@@ -933,6 +978,7 @@ class CharacterRuntime:
                     user_message=attempt_user_message,
                     current_turn_role=current_turn_role,
                     continuation_instruction=continuation_instruction,
+                    prior_messages=[message.as_dict() for message in harness.prior_messages],
                     generate=generate,
                     parse=parse_and_validate,
                     persist=persist_replies,
@@ -940,7 +986,7 @@ class CharacterRuntime:
                     conversation_id=conversation_id,
                 )
                 break
-            except (json.JSONDecodeError, ValidationError, CharacterRuntimeError, LLMUnavailableError) as exc:
+            except (json.JSONDecodeError, ValidationError, CharacterRuntimeError, LLMUnavailableError, ContextMaintenanceRequired) as exc:
                 last_error = exc
                 diagnostic = {
                     "semantic_attempt": semantic_attempts,
@@ -952,7 +998,7 @@ class CharacterRuntime:
                     **task_attempt_metadata(),
                 }
                 attempt_diagnostics.append(diagnostic)
-                if not isinstance(exc, LLMUnavailableError) and hasattr(active_llm_client, "record_response_outcome"):
+                if not isinstance(exc, (LLMUnavailableError, ContextMaintenanceRequired)) and hasattr(active_llm_client, "record_response_outcome"):
                     parse_code = getattr(exc, "code", "json_decode_error" if isinstance(exc, json.JSONDecodeError) else "structured_parse_error")
                     validation_code = "schema_validation_error" if isinstance(exc, ValidationError) else type(exc).__name__
                     active_llm_client.record_response_outcome(
@@ -962,7 +1008,7 @@ class CharacterRuntime:
                         validation_code=validation_code,
                         metadata_updates={**last_parser_shadow, **diagnostic},
                     )
-                if attempt >= 1 or isinstance(exc, LLMUnavailableError):
+                if attempt >= 1 or isinstance(exc, (LLMUnavailableError, ContextMaintenanceRequired)):
                     if prompt_snapshot_callback is not None:
                         failure_snapshot = {
                             "conversation_id": conversation_id,
@@ -974,7 +1020,8 @@ class CharacterRuntime:
                             "messages": last_request_messages,
                             "ledger": [entry.__dict__ for entry in harness.ledger],
                             "pipeline_steps": ["route_sections", "budget_context", "compile_prompt", "prepare_messages", "generate", "parse_failed"],
-                            "used_tokens": harness.used_tokens,
+                            "used_tokens": (rendered_input_tokens(last_request_messages,
+                                history_serialization=harness.history_serialization) if comparison_metadata else harness.used_tokens),
                             "prompt_tokens": getattr(last_llm_response, "prompt_tokens", None),
                             "completion_tokens": getattr(last_llm_response, "completion_tokens", None),
                             "total_tokens": getattr(last_llm_response, "total_tokens", None),
@@ -986,6 +1033,7 @@ class CharacterRuntime:
                                 "parse_attempts": parse_attempts,
                                 "parse_status": "failed",
                                 "fallback_used": fallback_used, "response_protocol": protocol,
+                                **comparison_metadata,
                                 **({"command_postprocess": panel_outcomes} if panel_outcomes else {}),
                                 "attempt_diagnostics": attempt_diagnostics,
                                 "semantic_attempts": semantic_attempts,
@@ -1010,7 +1058,8 @@ class CharacterRuntime:
                 "messages": result.get("messages") or [],
                 "ledger": [entry.__dict__ for entry in (result.get("ledger") or [])],
                 "pipeline_steps": result.get("pipeline_steps") or [],
-                "used_tokens": result.get("used_tokens"),
+                "used_tokens": (rendered_input_tokens(result.get("messages") or [],
+                    history_serialization=harness.history_serialization) if comparison_metadata else result.get("used_tokens")),
                 "prompt_tokens": getattr(response, "prompt_tokens", None),
                 "completion_tokens": getattr(response, "completion_tokens", None),
                 "total_tokens": getattr(response, "total_tokens", None),
@@ -1022,6 +1071,7 @@ class CharacterRuntime:
                     "parse_attempts": parse_attempts,
                     "parse_status": "success" if parse_attempts == 1 else "retry_success",
                     "fallback_used": fallback_used, "response_protocol": protocol,
+                    **comparison_metadata,
                     **({"command_postprocess": panel_outcomes} if panel_outcomes else {}),
                     "attempt_diagnostics": attempt_diagnostics,
                     "semantic_attempts": semantic_attempts,
@@ -1052,13 +1102,15 @@ class CharacterRuntime:
         prompt_settings: dict[str, str] | None = None,
         min_output_tokens: int | None = None,
         conversation_id: str | None = None,
+        context_capacity: ContextCapacity | None = None,
     ) -> CharacterReply:
         if free_body.current_protocol() != "legacy_json":
             replies = await self.generate_replies(characters=[character], recent_messages=recent_messages,
                 user_message=user_message, scene_state=scene_state, directive=directive,
                 conversation_mode=conversation_mode, genre_mode=genre_mode,
                 continuity_context_by_character={character.id: continuity_context or ""},
-                prompt_settings=prompt_settings, min_output_tokens=min_output_tokens, conversation_id=conversation_id)
+                prompt_settings=prompt_settings, min_output_tokens=min_output_tokens, conversation_id=conversation_id,
+                context_capacity=context_capacity)
             return next(reply for reply in replies if reply.reply_type == "character")
         # Backward-compatible wrapper for older call sites/tests. Keep it on
         # the same structured-only parser/validator boundary as room replies
@@ -1091,6 +1143,15 @@ class CharacterRuntime:
                         "Do not include markdown fences, explanations, tool calls, internal functions, or raw prose."
                     ),
                 }
+            enforce_rendered_context_capacity(
+                messages, context_capacity or resolve_model_context_capacity(None,
+                    completion_reserve_tokens=max([
+                        2048,
+                        *(int(client.max_output_tokens() or 0)
+                          for client in (self.llm_client, self.fallback_llm_client)
+                          if client is not None and callable(getattr(client, "max_output_tokens", None))),
+                    ])),
+            )
             try:
                 response = await chat_with_optional_conversation_id(
                     messages=messages,

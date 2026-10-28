@@ -10,9 +10,11 @@ from app.db.models import Character, CharacterMemory, Conversation, SceneState
 from app.engine import prompts, command_overlay
 from app.services import chat_command_service
 from app.engine.character_runtime import format_runtime_source_message, generation_control_reserve_tokens
+from app.engine.llm_client import LLMClient
 from app.schemas.conversations import ConversationCompressionPreviewRead, ConversationContextPreviewRead, ContextPreviewSectionRead
 from app.services import conversation_service, domain_actor_service, external_memory_service, genre_domain_service, model_provider_service, runtime_settings_service, system_prompt_service
 from app.services.context_management_service import resolve_safe_model_context_capacity
+from app.engine.harness_comparison import HistoryAccounting, ComparisonOptions, generation_input_estimate
 
 
 def approx_tokens(text: str) -> int:
@@ -71,14 +73,19 @@ def _durable_memories(session: Session, conversation_id: str, active_character_i
     )
 
 
-def _active_command_plan(session: Session, conversation: Conversation | None):
+def _active_commands(session: Session, conversation: Conversation | None):
     commands = [command for cid in chat_command_service.active_command_ids_for_conversation(conversation)
                 if (command := chat_command_service.get_chat_command(session, cid)) and command.enabled]
     commands.sort(key=lambda item: (-item.priority, item.name))
-    return command_overlay.build_plan(commands)
+    return commands
+
+
+def _active_command_plan(session: Session, conversation: Conversation | None):
+    return command_overlay.build_plan(_active_commands(session, conversation))
 
 
 def build_compression_preview(session: Session, conversation_id: str) -> ConversationCompressionPreviewRead:
+    comparison = ComparisonOptions.from_settings(get_settings())
     messages = conversation_service.list_messages(session, conversation_id)
     participants = conversation_service.get_participants(session, conversation_id)
     character_ids = [participant.participant_id for participant in participants if participant.participant_type == "character"]
@@ -88,7 +95,10 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
     selected_messages: list = []
     warnings: list[str] = []
     coverage_valid = True
-    if mode == "automatic":
+    if comparison.context_policy == "full_history":
+        selector_kwargs = None
+        warnings.append("automatic_compression_disabled: full_history; manual compression remains available")
+    elif mode == "automatic":
         runtime_setting = runtime_settings_service.get_effective_setting(session, conversation_id)
         conversation = session.get(Conversation, conversation_id)
         model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
@@ -100,10 +110,17 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
             session,
             getattr(runtime_setting, "fallback_model_key", None),
         )
+        token_target = runtime_settings_service.preset_token_target(
+            getattr(runtime_setting, "response_length_preset", runtime_settings_service.DEFAULT_RESPONSE_LENGTH_PRESET)
+        )
         capacity = resolve_safe_model_context_capacity(
             model_option,
             fallback_model_option,
             room_prompt_budget_tokens=room_prompt_budget,
+            comparison_options=comparison,
+            completion_reserve_tokens=LLMClient(
+                profile="chat", overrides={"min_output_tokens": token_target},
+            ).max_output_tokens(),
         )
         characters = [
             character
@@ -111,54 +128,30 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
             if (character := session.get(Character, character_id)) is not None
         ]
         history_token_estimator = conversation_service.automatic_context_message_token_estimator(
-            {character.id: character.name for character in characters}
+            {character.id: character.name for character in characters},
+            history_serialization=comparison.history_serialization,
         )
         try:
             context_preview = build_context_preview(session, conversation_id)
-            recent_section = next(
-                (section for section in context_preview.sections if section.key == "recent_messages"),
-                None,
+            # The preview exposes the actual included sections. Reconstruct only
+            # their envelope counts, not a new differently budgeted harness.
+            history_ids = set(context_preview.history_message_ids)
+            source_ids = frozenset(message.id for message in messages if message.id not in history_ids)
+            accounting_sections = [section for section in context_preview.sections
+                                   if section.included and section.key != "current_user_input"
+                                   and not section.key.startswith("native_history_")]
+            if not any(section.key == "recent_messages" for section in accounting_sections):
+                accounting_sections.append(make_section(
+                    "recent_messages", prompts.conversation_history_title(scene), ""))
+            accounting = HistoryAccounting.from_sections(accounting_sections)
+            sequence_estimator = conversation_service.automatic_context_history_token_estimator(
+                {character.id: character.name for character in characters},
+                history_serialization=comparison.history_serialization,
+                accounting=accounting, excluded_message_ids=source_ids,
             )
-            current_input_section = next(
-                (section for section in context_preview.sections if section.key == "current_user_input"),
-                None,
-            )
-            mandatory_prompt_tokens = max(
-                0,
-                context_preview.used_tokens
-                - min(
-                    int(getattr(recent_section, "used_tokens", 0) or 0),
-                    int(getattr(recent_section, "approx_tokens", 0) or 0),
-                ),
-            )
-            mandatory_prompt_tokens += int(getattr(current_input_section, "used_tokens", 0) or 0)
-            preview_source_message = (
-                messages[-1]
-                if messages and messages[-1].speaker_type in {"user", "system", "character"}
-                else None
-            )
-            if preview_source_message is not None:
-                preset_key = getattr(
-                    runtime_setting,
-                    "response_length_preset",
-                    runtime_settings_service.DEFAULT_RESPONSE_LENGTH_PRESET,
-                )
-                is_multi_room = len(character_ids) >= 2
-                mandatory_prompt_tokens += generation_control_reserve_tokens(
-                    command_overlay_plan=_active_command_plan(session, conversation),
-                    room_cast_roles={p.participant_id: p.role for p in participants
-                                     if p.participant_type == "character" and p.role},
-                    speaker_type=preview_source_message.speaker_type,
-                    characters=characters,
-                    min_bubbles=runtime_settings_service.min_bubbles_for_preset(
-                        preset_key,
-                        is_multi_room=is_multi_room,
-                    ),
-                    max_bubbles=runtime_settings_service.max_bubbles_for_preset(
-                        preset_key,
-                        is_multi_room=is_multi_room,
-                    ),
-                )
+            mandatory_prompt_tokens = context_preview.projected_input_tokens - sequence_estimator(messages)
+            public_estimator = history_token_estimator
+            history_token_estimator = lambda message: public_estimator(message) if message.id in history_ids else 0
             job_mapping = conversation_service.generation_job_source_message_ids(session, conversation_id)
             plan = conversation_service.automatic_context_plan(
                 scene,
@@ -167,6 +160,7 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
                 mandatory_prompt_tokens=mandatory_prompt_tokens,
                 job_source_message_ids=job_mapping,
                 token_estimator=history_token_estimator,
+                history_token_estimator=sequence_estimator,
             )
             if plan.pressure.status == "low":
                 selector_kwargs = None
@@ -225,6 +219,8 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
 
 
 def build_context_preview(session: Session, conversation_id: str) -> ConversationContextPreviewRead:
+    comparison = ComparisonOptions.from_settings(get_settings())
+    full_history = comparison.context_policy == "full_history"
     runtime_setting = runtime_settings_service.get_effective_setting(session, conversation_id)
     conversation = session.get(Conversation, conversation_id)
     genre_mode = conversation_service.normalize_genre_mode(getattr(conversation, "genre_mode", None))
@@ -244,22 +240,22 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
     if scene and stored_scene and stored_scene.last_compression_error:
         scene.last_compression_error = stored_scene.last_compression_error
     context_mode = get_settings().context_management_mode
-    raw_messages = prompts.messages_after_scene_summary_boundary(
+    raw_messages = messages if full_history else prompts.messages_after_scene_summary_boundary(
         messages,
         scene,
         context_management_mode=context_mode,
     )
     selected_messages = prompts.select_prompt_recent_messages(
         raw_messages,
-        context_management_mode=context_mode,
+        context_management_mode="automatic" if full_history else context_mode,
     )
     is_multi_room = len(characters) >= 2
 
     preview_query = "\n".join(filter(None, [
         f"genre={genre_mode}",
         scene.world_seed if scene else "",
-        scene.current_conflict if scene else "",
-        scene.summary if scene else "",
+        scene.current_conflict if scene and not full_history else "",
+        scene.summary if scene and not full_history else "",
         messages[-1].content if messages else "",
     ]))[:800]
     offstage_recall = domain_actor_service.build_offstage_actor_recall_context(
@@ -287,7 +283,7 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
         continuity_by_character[character.id] = local_context
 
     preset_key = getattr(runtime_setting, "response_length_preset", runtime_settings_service.DEFAULT_RESPONSE_LENGTH_PRESET)
-    directive = "Generate the next natural chat bubbles for this room. In multi-character rooms, let the listed characters interact in one model call."
+    prompt_settings = system_prompt_service.prompt_settings_map()
     token_target = runtime_settings_service.preset_token_target(preset_key)
     min_bubbles = runtime_settings_service.min_bubbles_for_preset(preset_key, is_multi_room=is_multi_room)
     max_bubbles = runtime_settings_service.max_bubbles_for_preset(preset_key, is_multi_room=is_multi_room)
@@ -307,11 +303,41 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
     ) if preview_source_message else ""
     model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
     provider_type = getattr(model_option, "provider_type", None)
+    room_prompt_budget = prompts.prompt_budget_for_context(genre_mode=genre_mode, is_multi_room=is_multi_room)
+    fallback_overrides = runtime_settings_service.fallback_llm_overrides_for_setting(runtime_setting, session=session)
+    fallback_option = model_provider_service.option_by_key(session, getattr(runtime_setting, "fallback_model_key", None)) if fallback_overrides else None
+    primary_overrides = runtime_settings_service.llm_overrides_for_setting(runtime_setting, session=session)
+    primary_overrides["min_output_tokens"] = token_target
+    output_reserve = LLMClient(profile="chat", overrides=primary_overrides).max_output_tokens()
+    if fallback_overrides:
+        fallback_overrides["min_output_tokens"] = token_target
+        output_reserve = max(output_reserve, LLMClient(profile="chat", overrides=fallback_overrides).max_output_tokens())
+    capacity = resolve_safe_model_context_capacity(model_option, fallback_option,
+        room_prompt_budget_tokens=room_prompt_budget, completion_reserve_tokens=output_reserve,
+        comparison_options=comparison)
+    if comparison.context_policy != "compact":
+        room_prompt_budget = capacity.working_input_tokens
 
-    panel_plan = _active_command_plan(session, conversation)
-    chat_command_service.prepare_combined_context(session, panel_plan, conversation_id, scene)
+    active_commands = _active_commands(session, conversation)
+    panel_plan = command_overlay.build_plan(active_commands)
+    source_is_scene_direction = preview_source_message is not None and preview_source_message.speaker_type == "system"
+    base_directive = (
+        prompt_settings.get("directive_scene_direction", "Acknowledge this scene direction as true state and continue the room. Do not treat it as user dialogue.")
+        if source_is_scene_direction
+        else prompt_settings.get("directive_natural_chat", "Generate the next natural chat bubbles for this room. In multi-character rooms, let the listed characters interact in one model call.")
+    )
+    directive = prompts.compose_generation_directive(
+        base_directive=base_directive,
+        commands=active_commands,
+        command_overlay_plan=panel_plan,
+        prompt_settings=prompt_settings,
+    )
+    chat_command_service.prepare_combined_context(session, panel_plan, conversation_id, scene,
+        comparison_options=comparison)
     if characters:
         harness = prompts.build_multi_character_prompt_harness(
+            comparison_options=comparison,
+            total_budget_tokens=room_prompt_budget,
             command_overlay_plan=panel_plan,
             characters=characters,
             recent_messages=preview_history,
@@ -327,7 +353,7 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
             min_bubbles=min_bubbles,
             max_bubbles=max_bubbles,
             min_output_tokens=token_target,
-            prompt_settings=system_prompt_service.prompt_settings_map(),
+            prompt_settings=prompt_settings,
             official_domain_context=official_domain_context,
             room_cast_roles=room_cast_roles,
             provider_type=provider_type,
@@ -355,6 +381,10 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
         for entry in ledger
         if entry.key in source_by_key and (entry.included or entry.excluded_reason == "context_budget_exceeded")
     ]
+    for index, message in enumerate(harness.prior_messages):
+        sections.append(make_section(f"native_history_{index}",
+            f"Prior history (role={message.role}, outside system prompt)", message.content,
+            source="conversation.messages.public_history", included_reason="native_history_channel"))
     if preview_source_message:
         sections.append(make_section(
             "current_user_input",
@@ -371,6 +401,13 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
 
     warnings: list[str] = []
 
+    source_type = preview_source_message.speaker_type if preview_source_message else "user"
+    control_tokens = generation_control_reserve_tokens(speaker_type=source_type,
+        min_bubbles=min_bubbles, max_bubbles=max_bubbles, characters=characters,
+        room_cast_roles=room_cast_roles, command_overlay_plan=panel_plan)
+    projected_tokens = generation_input_estimate(harness, preview_source_text, source_type, control_tokens)
+    if projected_tokens > capacity.working_input_tokens:
+        warnings.append("context_budget_exceeded: 필수 자료를 자르지 않아 작업 입력 예산을 초과함")
     if len(selected_messages) >= 10:
         warnings.append("최근 메시지 선택량이 많음")
     if any(section.key in {"character_cards", "identity_lock"} and section.char_count > 3000 for section in sections):
@@ -389,6 +426,14 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
 
     return ConversationContextPreviewRead(
         conversation_id=conversation_id,
+        history_serialization=harness.history_serialization,
+        context_policy=harness.context_policy,
+        history_message_ids=list(harness.history_message_ids),
+        history_sha256=harness.history_sha256,
+        projected_input_tokens=projected_tokens,
+        working_input_tokens=capacity.working_input_tokens,
+        completion_reserve_tokens=capacity.completion_reserve_tokens,
+        control_reserve_tokens=control_tokens,
         model_key=runtime_setting.model_key,
         compression_model_key=runtime_setting.compression_model_key,
         response_length_preset=runtime_setting.response_length_preset,

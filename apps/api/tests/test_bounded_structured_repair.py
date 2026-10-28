@@ -112,7 +112,7 @@ def command_valid():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("recovered", [True, False])
 async def test_command_repair_full_targets_and_usage_status(session, monkeypatch, caplog, recovered):
-    monkeypatch.setattr("app.services.chat_command_service.build_command_postprocess_context", lambda *args: "")
+    monkeypatch.setattr("app.services.chat_command_service.build_command_postprocess_context", lambda *args, **kwargs: "")
     invalid = json.dumps({"messages": [{"content": "PRIVATE-RAW", "blocks": []}, {"content": "bad", "blocks": ["bad"]}]})
     client, requests = provider_client(session, monkeypatch, [(invalid, "STOP"), (command_valid() if recovered else invalid, "STOP")], purpose="chat_command_postprocess")
     command, source, targets = command_fixtures()
@@ -149,7 +149,7 @@ def test_command_rejects_entire_malformed_contract(payload):
 
 @pytest.mark.asyncio
 async def test_command_transport_failure_sanitized_and_originals_retained(session, monkeypatch, caplog):
-    monkeypatch.setattr("app.services.chat_command_service.build_command_postprocess_context", lambda *args: "")
+    monkeypatch.setattr("app.services.chat_command_service.build_command_postprocess_context", lambda *args, **kwargs: "")
     command, source, targets = command_fixtures()
 
     class BrokenClient:
@@ -175,7 +175,7 @@ def test_generation_failure_terminates_source_pending_command(session):
 
 @pytest.mark.asyncio
 async def test_command_overlay_repairs_missing_blocks_without_mutating_originals(session, monkeypatch):
-    monkeypatch.setattr("app.services.chat_command_service.build_command_postprocess_context", lambda *args: "")
+    monkeypatch.setattr("app.services.chat_command_service.build_command_postprocess_context", lambda *args, **kwargs: "")
     command, source, targets = command_fixtures()
     command.postprocess_target = "last_bubble"
     invalid = json.dumps({"messages": [{"content": "Not a renderable overlay", "blocks": []}]})
@@ -190,7 +190,7 @@ async def test_command_overlay_repairs_missing_blocks_without_mutating_originals
 
 @pytest.mark.asyncio
 async def test_command_mixed_retry_exhaustion_never_exceeds_network_cap(session, monkeypatch):
-    monkeypatch.setattr("app.services.chat_command_service.build_command_postprocess_context", lambda *args: "")
+    monkeypatch.setattr("app.services.chat_command_service.build_command_postprocess_context", lambda *args, **kwargs: "")
     command, source, targets = command_fixtures()
     client, requests = provider_client(session, monkeypatch, [503, ("PRIVATE-RAW", "STOP"), 503, (command_valid(), "STOP")], purpose="chat_command_postprocess")
     await apply_chat_command_postprocess(session=session, command=command, conversation_id="room", source_message=source, generated_messages=targets, llm_client=client, commit=False)

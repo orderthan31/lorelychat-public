@@ -22,6 +22,7 @@ from sqlmodel import Session
 from app.core.config import Settings, get_settings
 from app.db.models import LLMUsageEvent
 from app.db.session import engine
+from app.engine.provider_capabilities import capabilities, safe_count, safe_model_version
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +81,13 @@ class LLMUnavailableError(RuntimeError):
         transport_attempts: int = 1,
         http_status: int | None = None,
         error_type: str | None = None,
+        provider_warning_count: int = 0,
     ) -> None:
         super().__init__(message)
-        self.transport_attempts = max(1, int(transport_attempts))
+        self.transport_attempts = max(0, int(transport_attempts))
         self.http_status = http_status
         self.error_type = error_type or type(self).__name__
+        self.provider_warning_count = provider_warning_count
 
 
 class CircuitOpenError(LLMUnavailableError):
@@ -129,6 +132,11 @@ class LLMResponse(BaseModel):
     content: str
     provider: str | None = None
     model: str | None = None
+    requested_model: str | None = None
+    reported_model_version: str | None = None
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    transport_diagnostics: dict[str, object] | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
@@ -201,7 +209,8 @@ class LLMClient:
             open_until = float(state.get("open_until") or 0.0)
             if open_until > now:
                 raise CircuitOpenError(
-                    f"LLM circuit breaker is open for {self.provider()}:{self.model()}"
+                    f"LLM circuit breaker is open for {self.provider()}:{self.model()}",
+                    transport_attempts=0,
                 )
             if open_until:
                 _CIRCUIT_STATES.pop(key, None)
@@ -231,11 +240,47 @@ class LLMClient:
     def strict_structured_output(self) -> bool:
         return self.provider() == "xai"
 
-    def openai_compatible_temperature(self) -> float:
-        # Grok's structured-output path otherwise collapses into unusually terse,
-        # literal replies. Keep the higher sampling temperature isolated to xAI;
-        # other OpenAI-compatible providers retain the established default.
-        return 1.1 if self.provider() == "xai" else 0.7
+    def transport_capabilities(self, *, model: str | None = None):
+        gemini = self.provider() == "gemini"
+        return capabilities(
+            model=model or self.model(),
+            endpoint="https://generativelanguage.googleapis.com/v1beta" if gemini else self.base_url(),
+            transport="generate_content" if gemini else "chat_completions",
+            reasoning_effort=self.overrides.get("reasoning_effort"),
+        )
+
+    def openai_compatible_temperature(self) -> float | None:
+        return self.transport_capabilities().temperature
+
+    def sampling_parameters(self, *, model: str | None = None) -> tuple[dict, list[str]]:
+        policy = self.transport_capabilities(model=model)
+        gemini = self.provider() == "gemini"
+        params = {"temperature": self.overrides.get("temperature", policy.temperature)}
+        if self.overrides.get("top_p", policy.top_p) is not None:
+            params["topP" if gemini else "top_p"] = self.overrides.get("top_p", policy.top_p)
+        if self.overrides.get("top_k") is not None:
+            params["topK" if gemini else "top_k"] = self.overrides["top_k"]
+        if policy.temperature is None:
+            return {}, list(params)
+        omitted = []
+        if not gemini and "top_k" in params:
+            # No generic Chat Completions top_k contract.
+            params.pop("top_k")
+            omitted.append("top_k")
+        return {key: value for key, value in params.items() if value is not None}, omitted
+
+    def transport_diagnostics(self, *, model: str | None = None, warning_count: int = 0) -> dict:
+        diagnostics = self.transport_capabilities(model=model).diagnostics()
+        _, omitted = self.sampling_parameters(model=model)
+        diagnostics["omitted_parameters"] = omitted
+        diagnostics["warning_codes"] = ["sampling_omitted"] if omitted else []
+        diagnostics["provider_warning_count"] = warning_count
+        if warning_count:
+            diagnostics["warning_codes"].append("provider_warning_present")
+        return diagnostics
+
+    def usage_context(self) -> dict:
+        return {"stage": self.overrides.get("stage") or self.purpose}
 
     def gemini_response_schema(self, response_format: dict | None) -> dict | None:
         if not response_format or response_format.get("type") != "json_object":
@@ -370,7 +415,7 @@ class LLMClient:
             if self.provider() == "gemini":
                 response = await self._chat_gemini(messages, response_format=response_format)
             else:
-                response = await self._chat_openai_compatible(messages, response_format=response_format)
+                response = await self._chat_openai_compatible(messages, response_format=response_format, conversation_id=conversation_id)
         except LLMUnavailableError as exc:
             if not isinstance(exc, (CircuitOpenError, LLMAttemptBudgetError)):
                 self.record_circuit_failure()
@@ -386,17 +431,25 @@ class LLMClient:
             )
         return response
 
-    async def _chat_openai_compatible(self, messages: list[dict], *, response_format: dict | None = None) -> LLMResponse:
+    async def _chat_openai_compatible(self, messages: list[dict], *, response_format: dict | None = None, conversation_id: str | None = None) -> LLMResponse:
         url = self.base_url().rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {self.api_key()}"}
+        policy = self.transport_capabilities()
+        if policy.cache_affinity and conversation_id:
+            headers["x-grok-conv-id"] = hashlib.sha256(("lorechat:" + conversation_id).encode("utf-8")).hexdigest()
         payload = {
             "model": self.model(),
             "messages": messages,
-            "temperature": self.openai_compatible_temperature(),
         }
+        sampling, _ = self.sampling_parameters()
+        payload.update(sampling)
+        # An explicit effort is never silently dropped or lowered, including on
+        # custom compatible endpoints. Unselected effort uses provider defaults.
+        if self.overrides.get("reasoning_effort") is not None:
+            payload["reasoning_effort"] = self.overrides["reasoning_effort"]
         max_output_tokens = self.max_output_tokens()
         if max_output_tokens:
-            payload["max_tokens"] = max_output_tokens
+            payload[policy.output_cap_parameter] = max_output_tokens
         normalized_response_format = self.normalize_response_format(response_format)
         if normalized_response_format:
             schema = response_format.get("schema") if isinstance(response_format, dict) else None
@@ -418,14 +471,21 @@ class LLMClient:
         response = await self._post_with_retries(request, endpoint_label="LLM endpoint")
         data = response.json()
         usage = data.get("usage") or {}
+        prompt_details = usage.get("prompt_tokens_details")
+        completion_details = usage.get("completion_tokens_details")
         choice = data["choices"][0]
         return LLMResponse(
             content=choice["message"]["content"],
             provider=self.provider(),
             model=self.model(),
-            prompt_tokens=usage.get("prompt_tokens"),
-            completion_tokens=usage.get("completion_tokens"),
-            total_tokens=usage.get("total_tokens"),
+            requested_model=self.model(),
+            reported_model_version=safe_model_version(data.get("model")),
+            cached_tokens=safe_count(prompt_details.get("cached_tokens")) if isinstance(prompt_details, dict) else None,
+            reasoning_tokens=safe_count(completion_details.get("reasoning_tokens")) if isinstance(completion_details, dict) else None,
+            transport_diagnostics=self.transport_diagnostics(warning_count=len(response.headers.get_list("warning"))),
+            prompt_tokens=safe_count(usage.get("prompt_tokens")),
+            completion_tokens=safe_count(usage.get("completion_tokens")),
+            total_tokens=safe_count(usage.get("total_tokens")),
             finish_reason=choice.get("finish_reason"),
             generation_attempts=int(response.extensions.get("lorechat_attempts", 1)),
             budget_diagnostics={"requested_max_output_tokens": max_output_tokens},
@@ -514,6 +574,7 @@ class LLMClient:
                         transport_attempts=attempt,
                         http_status=status,
                         error_type=type(exc).__name__,
+                        provider_warning_count=len(exc.response.headers.get_list("warning")) if isinstance(exc, httpx.HTTPStatusError) else 0,
                     ) from exc
                 await asyncio.sleep(self.retry_delay_seconds(exc, attempt=attempt))
         assert last_exc is not None
@@ -558,11 +619,19 @@ class LLMClient:
                 contents.append({"role": "user", "parts": [{"text": text}]})
         payload: dict = {
             "contents": contents,
-            "generationConfig": {
-                "temperature": 0.7,
-            },
+            "generationConfig": {},
             "safetySettings": self.gemini_safety_settings(),
         }
+        sampling, _ = self.sampling_parameters(model=model)
+        payload["generationConfig"].update(sampling)
+        # Explicit quality is preserved; omission retains provider defaults.
+        thinking_config = {}
+        if self.overrides.get("thinking_level") is not None:
+            thinking_config["thinkingLevel"] = self.overrides["thinking_level"]
+        if self.overrides.get("thinking_budget") is not None:
+            thinking_config["thinkingBudget"] = self.overrides["thinking_budget"]
+        if thinking_config:
+            payload["generationConfig"]["thinkingConfig"] = thinking_config
         max_output_tokens = self.max_output_tokens()
         if max_output_tokens:
             payload["generationConfig"]["maxOutputTokens"] = max_output_tokens
@@ -585,15 +654,20 @@ class LLMClient:
             content=content,
             provider="gemini",
             model=model,
-            prompt_tokens=usage.get("promptTokenCount"),
-            completion_tokens=usage.get("candidatesTokenCount"),
-            total_tokens=usage.get("totalTokenCount"),
+            requested_model=model,
+            reported_model_version=safe_model_version(data.get("modelVersion")),
+            cached_tokens=safe_count(usage.get("cachedContentTokenCount")),
+            reasoning_tokens=safe_count(usage.get("thoughtsTokenCount")),
+            transport_diagnostics=self.transport_diagnostics(model=model, warning_count=len(response.headers.get_list("warning"))),
+            prompt_tokens=safe_count(usage.get("promptTokenCount")),
+            completion_tokens=safe_count(usage.get("candidatesTokenCount")),
+            total_tokens=safe_count(usage.get("totalTokenCount")),
             finish_reason=finish_reason,
             generation_attempts=int(response.extensions.get("lorechat_attempts") or 1),
             budget_diagnostics={
                 "requested_max_output_tokens": max_output_tokens,
-                "thoughts_token_count": usage.get("thoughtsTokenCount") if type(usage.get("thoughtsTokenCount")) is int else None,
-                "cached_content_token_count": usage.get("cachedContentTokenCount") if type(usage.get("cachedContentTokenCount")) is int else None,
+                "thoughts_token_count": safe_count(usage.get("thoughtsTokenCount")),
+                "cached_content_token_count": safe_count(usage.get("cachedContentTokenCount")),
             },
             provider_diagnostics=(
                 _gemini_empty_response_diagnostics(data)
@@ -619,6 +693,11 @@ class LLMClient:
                     estimated=response.estimated,
                     metadata_={
                         "status": "transport_success",
+                        **self.usage_context(),
+                        "requested_model": response.requested_model or response.model or self.model(),
+                        "reported_model_version": response.reported_model_version,
+                        "token_details": {"cached_tokens": response.cached_tokens, "reasoning_tokens": response.reasoning_tokens},
+                        **({"transport": response.transport_diagnostics} if response.transport_diagnostics is not None else {}),
                         "finish_reason": response.finish_reason,
                         "response_length": len(response.content or ""),
                         "response_sha256": hashlib.sha256((response.content or "").encode("utf-8")).hexdigest(),
@@ -657,6 +736,12 @@ class LLMClient:
                     estimated=False,
                     metadata_={
                         "status": "transport_failed",
+                        **self.usage_context(),
+                        "requested_model": self.model(),
+                        "reported_model_version": None,
+                        "token_details": {"cached_tokens": None, "reasoning_tokens": None},
+                        "transport": self.transport_diagnostics(warning_count=exc.provider_warning_count),
+                        "output_budget": {"requested_max_output_tokens": self.max_output_tokens()},
                         **task_attempt_metadata(),
                         "transport_attempts": exc.transport_attempts,
                         "http_status": exc.http_status,

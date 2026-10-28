@@ -13,6 +13,10 @@ services:
       LORECHAT_SEED_DEMO: ${LORECHAT_SEED_DEMO:-true}
       CHAT_RESPONSE_PROTOCOL: ${CHAT_RESPONSE_PROTOCOL:-legacy_json}
       CHAT_COMMAND_POSTPROCESS_MODE: ${CHAT_COMMAND_POSTPROCESS_MODE:-separate}
+      CHAT_HISTORY_SERIALIZATION: ${CHAT_HISTORY_SERIALIZATION:-transcript}
+      CHAT_CONTEXT_POLICY: ${CHAT_CONTEXT_POLICY:-compact}
+      # Inherit only when set; an unset optional integer must not become "".
+      CHAT_CONTEXT_INPUT_BUDGET_TOKENS:
       LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}

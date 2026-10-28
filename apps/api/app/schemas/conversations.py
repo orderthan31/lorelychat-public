@@ -271,6 +271,14 @@ class ContextPreviewSectionRead(BaseModel):
 
 class ConversationContextPreviewRead(BaseModel):
     conversation_id: str
+    history_serialization: str = "transcript"
+    context_policy: str = "compact"
+    history_message_ids: list[str] = Field(default_factory=list)
+    history_sha256: str = ""
+    projected_input_tokens: int = 0
+    working_input_tokens: int = 0
+    completion_reserve_tokens: int = 0
+    control_reserve_tokens: int = 0
     model_key: str | None = None
     compression_model_key: str | None = None
     response_length_preset: str | None = None

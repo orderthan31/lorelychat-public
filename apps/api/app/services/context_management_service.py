@@ -62,6 +62,37 @@ class ContextCapacity:
     used_fallback: bool
 
 
+class ContextMaintenanceRequired(RuntimeError):
+    """Recoverable fail-closed generation error with content-free diagnostics."""
+
+    code = "context_maintenance_required"
+
+    def __init__(self, *, projected_tokens: int, working_tokens: int, backlog_groups: int = 0, batches: int = 0):
+        self.projected_tokens = max(0, int(projected_tokens))
+        self.working_tokens = max(0, int(working_tokens))
+        self.backlog_groups = max(0, int(backlog_groups))
+        self.batches = max(0, int(batches))
+        super().__init__(
+            f"{self.code}: projected_tokens={self.projected_tokens}; "
+            f"working_tokens={self.working_tokens}; backlog_groups={self.backlog_groups}; "
+            f"catchup_batches={self.batches}"
+        )
+
+
+def enforce_rendered_context_capacity(messages: Sequence[Mapping], capacity: ContextCapacity, *, history_serialization: str = "transcript") -> None:
+    """Check the actual transport messages, including retry/continuation controls.
+
+    Use the existing estimator and working budget; never trim authored input or
+    borrow the output/mandatory reserve to make a request appear to fit.
+    """
+    from app.engine.harness_comparison import rendered_input_tokens
+    projected_tokens = rendered_input_tokens(messages, history_serialization=history_serialization)
+    if projected_tokens > capacity.working_input_tokens:
+        raise ContextMaintenanceRequired(
+            projected_tokens=projected_tokens, working_tokens=capacity.working_input_tokens,
+        )
+
+
 @dataclass(frozen=True)
 class ContextPressureReport:
     status: PressureStatus
@@ -83,7 +114,12 @@ class ContextPressureReport:
 
 @dataclass(frozen=True)
 class AutomaticContextPlan:
-    """One authoritative pressure/coverage and complete-turn fold plan."""
+    """Authoritative pressure/coverage plus an advisory complete-turn fold plan.
+
+    Raw-tail budgets and oversized_indivisible_turn use per-row weights for
+    linear group selection, not admission. Serialized history cost controls
+    pressure; a fitting current request cannot become hard through those weights.
+    """
 
     pressure: ContextPressureReport
     raw_tail_token_budget: int
@@ -123,8 +159,8 @@ def resolve_model_context_capacity(
     max_output = _positive_int(metadata_output, DEFAULT_MAX_OUTPUT_TOKENS)
     mandatory_reserve = max(0, int(mandatory_reserve_tokens or 0))
     requested_completion = _positive_int(completion_reserve_tokens, max_output)
-    completion_reserve = min(requested_completion, max(1, context_window - 1))
-    available_input = max(1, context_window - completion_reserve - mandatory_reserve)
+    completion_reserve = requested_completion
+    available_input = max(0, context_window - completion_reserve - mandatory_reserve)
 
     if room_prompt_budget_tokens is None or room_prompt_budget_tokens <= 0:
         working_input = available_input
@@ -155,17 +191,31 @@ def resolve_safe_model_context_capacity(
     *,
     room_prompt_budget_tokens: int | None = None,
     mandatory_reserve_tokens: int = DEFAULT_MANDATORY_RESERVE_TOKENS,
+    completion_reserve_tokens: int | None = None,
+    comparison_options=None,
 ) -> ContextCapacity:
     """Use the narrowest usable input capacity across reachable generation routes."""
 
     options = [primary_model_option]
     if fallback_model_option is not None:
         options.append(fallback_model_option)
+    if (comparison_options is not None
+            and comparison_options.context_policy != "compact"
+            and comparison_options.input_budget_tokens is not None):
+        target = comparison_options.input_budget_tokens
+        # Missing route metadata cannot authorize a larger working target.
+        contexts = [getattr(option, "context_window_tokens", None) for option in options]
+        if any(type(context) is not int or context <= 0 for context in contexts):
+            target = min(target, room_prompt_budget_tokens or DEFAULT_CONTEXT_WINDOW_TOKENS)
+        room_prompt_budget_tokens = target
     capacities = [
         resolve_model_context_capacity(
             option,
             room_prompt_budget_tokens=room_prompt_budget_tokens,
-            completion_reserve_tokens=getattr(option, "max_output_tokens", None),
+            completion_reserve_tokens=max(
+                _positive_int(getattr(option, "max_output_tokens", None), DEFAULT_MAX_OUTPUT_TOKENS),
+                int(completion_reserve_tokens or 0),
+            ),
             mandatory_reserve_tokens=mandatory_reserve_tokens,
         )
         for option in options
@@ -316,12 +366,16 @@ def estimate_context_pressure(
     messages: Sequence[Message],
     job_source_message_ids: Mapping[str, str] | None = None,
     token_estimator: TokenEstimator = estimate_visible_message_tokens,
+    history_token_estimator: Callable[[Sequence[Message]], int] | None = None,
     high_watermark: float = DEFAULT_HIGH_WATERMARK,
 ) -> ContextPressureReport:
     groups = group_complete_turns(messages, job_source_message_ids=job_source_message_ids)
     mandatory_tokens = max(0, int(mandatory_prompt_tokens))
     group_costs = [_group_token_cost(group, token_estimator) for group in groups]
-    raw_tokens = sum(group_costs)
+    # Per-row weights size advisory fold groups; only the serialized sequence
+    # determines request pressure (ceil is not additive for transcript rows).
+    raw_tokens = (max(0, int(history_token_estimator(messages)))
+                  if history_token_estimator is not None else sum(group_costs))
     projected_tokens = mandatory_tokens + raw_tokens
     working_tokens = max(1, capacity.working_input_tokens)
     raw_tail_budget = max(0, working_tokens - mandatory_tokens)
@@ -330,6 +384,10 @@ def estimate_context_pressure(
         token_budget=raw_tail_budget,
         token_estimator=token_estimator,
     )
+
+    if projected_tokens <= working_tokens:
+        # Advisory row rounding must never invent uncovered backlog for a fit.
+        selected_groups = groups
 
     if projected_tokens > working_tokens:
         status: PressureStatus = "hard"
@@ -368,6 +426,7 @@ def build_automatic_context_plan(
     messages: Sequence[Message],
     job_source_message_ids: Mapping[str, str] | None = None,
     token_estimator: TokenEstimator = estimate_visible_message_tokens,
+    history_token_estimator: Callable[[Sequence[Message]], int] | None = None,
     high_watermark: float = DEFAULT_HIGH_WATERMARK,
     low_watermark: float = DEFAULT_LOW_WATERMARK,
     batch_message_limit: int = DEFAULT_COMPRESSION_BATCH_MESSAGE_LIMIT,
@@ -385,6 +444,7 @@ def build_automatic_context_plan(
         messages=messages,
         job_source_message_ids=job_source_message_ids,
         token_estimator=token_estimator,
+        history_token_estimator=history_token_estimator,
         high_watermark=high_watermark,
     )
     groups = group_complete_turns(messages, job_source_message_ids=job_source_message_ids)

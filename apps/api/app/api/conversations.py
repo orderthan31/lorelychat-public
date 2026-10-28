@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
@@ -46,7 +46,8 @@ from app.schemas.conversations import (
 )
 from app.core.config import get_settings
 from app.services import asset_service, battle_ledger_service, character_service, chat_command_service, context_preview_service, conversation_service, domain_actor_service, genre_domain_service, model_provider_service, prompt_snapshot_service, runtime_settings_service, system_prompt_service, tts_service, usage_service
-from app.services.context_management_service import AutomaticContextPlan, ContextCapacity, resolve_safe_model_context_capacity, sync_turn_group_id
+from app.services.context_management_service import AutomaticContextPlan, ContextCapacity, ContextMaintenanceRequired, resolve_safe_model_context_capacity, sync_turn_group_id
+from app.engine.harness_comparison import HistoryAccounting, ComparisonOptions, generation_input_estimate, source_role_overhead
 from app.services.generation_dispatcher import generation_dispatcher
 from app.services.post_commit_dispatcher import post_commit_dispatcher
 
@@ -57,23 +58,6 @@ _scene_compression_locks: dict[str, threading.Lock] = {}
 AUTOMATIC_PREGENERATION_MAX_COMPRESSION_BATCHES = 3
 
 
-class ContextMaintenanceRequired(RuntimeError):
-    """Recoverable fail-closed generation error with content-free diagnostics."""
-
-    code = "context_maintenance_required"
-
-    def __init__(self, *, projected_tokens: int, working_tokens: int, backlog_groups: int, batches: int):
-        self.projected_tokens = max(0, int(projected_tokens))
-        self.working_tokens = max(0, int(working_tokens))
-        self.backlog_groups = max(0, int(backlog_groups))
-        self.batches = max(0, int(batches))
-        super().__init__(
-            f"{self.code}: projected_tokens={self.projected_tokens}; "
-            f"working_tokens={self.working_tokens}; backlog_groups={self.backlog_groups}; "
-            f"catchup_batches={self.batches}"
-        )
-
-
 @dataclass(frozen=True)
 class AutomaticGenerationContextEvaluation:
     scene_state: SceneState
@@ -82,6 +66,7 @@ class AutomaticGenerationContextEvaluation:
     plan: AutomaticContextPlan
     mandatory_without_current: int
     job_source_message_ids: dict[str, str]
+    irreducible_prompt_tokens: int | None = None
 
 
 async def _ensure_automatic_generation_context(
@@ -107,6 +92,18 @@ async def _ensure_automatic_generation_context(
             ) from exc
 
         plan = evaluation.plan
+        # The Arc is rewritable; authored cards/world/notes/controls are not.
+        # Callers without a separate floor have supplied mandatory fixed input.
+        irreducible_tokens = evaluation.irreducible_prompt_tokens
+        if irreducible_tokens is None:
+            irreducible_tokens = plan.pressure.mandatory_prompt_tokens
+        if irreducible_tokens > capacity.working_input_tokens:
+            raise ContextMaintenanceRequired(
+                projected_tokens=plan.pressure.projected_input_tokens,
+                working_tokens=capacity.working_input_tokens,
+                backlog_groups=plan.pressure.backlog_group_count,
+                batches=batches,
+            )
         status = plan.pressure.status
         catchup_in_progress = batches > 0
         needs_compression = status == "hard" or (
@@ -830,7 +827,10 @@ def build_generated_turn_post_commit_tasks(
     generation_attempt_id: str | None = None,
     compression_raw_tail_token_budget: int | None = None,
     compression_mandatory_prompt_tokens: int | None = None,
+    compression_history_accounting: dict | None = None,
+    comparison_options: ComparisonOptions | None = None,
 ) -> list[dict]:
+    comparison = comparison_options or ComparisonOptions.from_settings(get_settings())
     if generation_job_id:
         identity = f"job:{generation_job_id}"
     elif generation_attempt_id:
@@ -872,7 +872,7 @@ def build_generated_turn_post_commit_tasks(
                 "payload": {"conversation_id": conversation.id, "message_id": message.id},
             })
 
-    if enqueue_compression:
+    if enqueue_compression and comparison.context_policy != "full_history":
         tasks.append({
             "unique_key": f"{identity}:compression",
             "task_type": "compression",
@@ -882,6 +882,10 @@ def build_generated_turn_post_commit_tasks(
                 "character_ids": character_ids,
                 "raw_tail_token_budget": compression_raw_tail_token_budget,
                 "mandatory_prompt_tokens": compression_mandatory_prompt_tokens,
+                "history_accounting": compression_history_accounting,
+                "chat_context_policy": comparison.context_policy,
+                "chat_history_serialization": comparison.history_serialization,
+                "chat_context_input_budget_tokens": comparison.input_budget_tokens,
             },
         })
     return tasks
@@ -895,7 +899,12 @@ async def _run_scene_compression_in_session(
     character_ids: list[str],
     raw_tail_token_budget: int | None = None,
     mandatory_prompt_tokens: int | None = None,
+    history_accounting: dict | None = None,
+    comparison_options: ComparisonOptions | None = None,
 ) -> bool:
+    comparison = comparison_options or ComparisonOptions.from_settings(get_settings())
+    if comparison.context_policy == "full_history" or getattr(get_settings(), "chat_context_policy", "compact") == "full_history":
+        return True
     if generated_character_count <= 0:
         return True
     conversation = conversation_service.get_conversation(session, conversation_id)
@@ -911,7 +920,7 @@ async def _run_scene_compression_in_session(
         if (character := character_service.get_character(session, character_id)) is not None
     }
     history_token_estimator = conversation_service.automatic_context_message_token_estimator(
-        character_names
+        character_names, history_serialization=comparison.history_serialization,
     )
     if get_settings().context_management_mode == "automatic":
         selected_model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
@@ -926,6 +935,11 @@ async def _run_scene_compression_in_session(
                 genre_mode=getattr(conversation, "genre_mode", None),
                 is_multi_room=len(character_ids) >= 2,
             ),
+            comparison_options=comparison,
+            completion_reserve_tokens=LLMClient(profile="chat", overrides={
+                **runtime_settings_service.llm_overrides_for_setting(runtime_setting, session=session),
+                "min_output_tokens": runtime_settings_service.preset_token_target(getattr(runtime_setting, "response_length_preset", None)),
+            }).max_output_tokens(),
         )
         execution_plan = conversation_service.automatic_context_plan(
             current_scene,
@@ -934,6 +948,10 @@ async def _run_scene_compression_in_session(
             mandatory_prompt_tokens=max(0, int(mandatory_prompt_tokens or 0)),
             job_source_message_ids=job_mapping,
             token_estimator=history_token_estimator,
+            history_token_estimator=conversation_service.automatic_context_history_token_estimator(
+                character_names, history_serialization=comparison.history_serialization,
+                accounting=HistoryAccounting(**history_accounting) if history_accounting else None,
+            ),
         )
         if execution_plan.pressure.status == "low":
             return True
@@ -1058,11 +1076,17 @@ async def _execute_claimed_post_commit_task(
                 session,
                 conversation_id,
                 generated_character_count=int(payload.get("generated_character_count") or 0),
+                comparison_options=ComparisonOptions(
+                    payload.get("chat_history_serialization", "transcript"),
+                    payload.get("chat_context_policy", "compact"),
+                    payload.get("chat_context_input_budget_tokens"),
+                ),
                 character_ids=[str(item) for item in (payload.get("character_ids") or []) if item],
                 raw_tail_token_budget=(
                     int(payload["raw_tail_token_budget"])
                     if payload.get("raw_tail_token_budget") is not None else None
                 ),
+                history_accounting=payload.get("history_accounting"),
                 mandatory_prompt_tokens=(
                     int(payload["mandatory_prompt_tokens"])
                     if payload.get("mandatory_prompt_tokens") is not None else None
@@ -1140,6 +1164,8 @@ async def generate_replies_from_message(
     generation_job: MessageGenerationJob | None = None,
 ) -> list[Message]:
     replies = [incoming_message] if include_incoming_in_response else []
+    comparison = ComparisonOptions.from_settings(get_settings())
+    full_history = comparison.context_policy == "full_history"
     participants = conversation_service.get_participants(session, conversation_id)
     character_participants = [p for p in participants if p.participant_type == "character"]
     room_cast_roles = {
@@ -1200,23 +1226,12 @@ async def generate_replies_from_message(
             seen_command_ids.add(command.id)
     commands.sort(key=lambda item: (-item.priority, item.name))
     panel_plan = command_overlay.build_plan(commands)
-    overlay_command_active = any((getattr(command, "postprocess_target", "") or "") in {"first_bubble", "last_bubble"} for command in commands)
-    generation_prompts = [command.generation_prompt for command in commands if getattr(command, "generation_prompt", "").strip()]
-    if generation_prompts:
-        command_generation_intro = prompt_settings.get("command_generation_prompt_intro", "")
-        directive_parts = [directive]
-        if command_generation_intro.strip():
-            directive_parts.append(command_generation_intro.strip())
-        directive_parts.extend(
-            f"- !{command.name}: {command.generation_prompt}"
-            for command in commands
-            if getattr(command, "generation_prompt", "").strip()
-        )
-        directive = "\n\n".join(part for part in directive_parts if part)
-    if overlay_command_active:
-        overlay_guard = prompt_settings.get("command_generation_overlay_guard", "")
-        if overlay_guard.strip():
-            directive = "\n\n".join(part for part in [directive, overlay_guard.strip()] if part)
+    directive = prompts.compose_generation_directive(
+        base_directive=directive,
+        commands=commands,
+        command_overlay_plan=panel_plan,
+        prompt_settings=prompt_settings,
+    )
     active_character_ids = {character.id for character in room_characters}
     silent_character_ids = {
         participant.participant_id
@@ -1232,6 +1247,14 @@ async def generate_replies_from_message(
         conversation_id=conversation_id,
     )
     recent_for_prompt = recent_messages if recent_messages is not None else conversation_service.list_messages(session, conversation_id)
+    def through_source(messages):
+        for index, message in enumerate(messages):
+            if message.id == incoming_message.id:
+                return list(messages[:index + 1])
+        raise prompts.ContextCoverageError("current source missing from available history")
+
+    if full_history:
+        recent_for_prompt = through_source(conversation_service.list_messages(session, conversation_id))
     room_characters = select_runtime_room_characters(
         room_characters=room_characters,
         recent_messages=recent_for_prompt,
@@ -1282,7 +1305,12 @@ async def generate_replies_from_message(
         selected_model_option,
         fallback_model_option,
         room_prompt_budget_tokens=room_prompt_budget,
+        completion_reserve_tokens=max(runtime.llm_client.max_output_tokens(),
+            fallback_client.max_output_tokens() if fallback_client is not None else 0),
+        comparison_options=comparison,
     )
+    if comparison.context_policy != "compact":
+        room_prompt_budget = capacity.working_input_tokens
     job_mapping = conversation_service.generation_job_source_message_ids(
         session,
         conversation_id,
@@ -1296,8 +1324,8 @@ async def generate_replies_from_message(
         base_recall_query = "\n".join(filter(None, [
             f"genre={genre_mode}",
             current_scene.world_seed,
-            current_scene.current_conflict,
-            current_scene.summary,
+            current_scene.current_conflict if not full_history else "",
+            current_scene.summary if not full_history else "",
             runtime_message_text,
         ]))[:800]
         offstage_recall = domain_actor_service.build_offstage_actor_recall_context(
@@ -1309,8 +1337,10 @@ async def generate_replies_from_message(
             query=base_recall_query,
         )
         latest_offstage_context = offstage_recall.content
-        chat_command_service.prepare_combined_context(session, panel_plan, conversation_id, current_scene)
+        chat_command_service.prepare_combined_context(session, panel_plan, conversation_id, current_scene,
+            comparison_options=comparison)
         return prompts.build_multi_character_prompt_harness(
+            comparison_options=comparison,
             command_overlay_plan=panel_plan,
             characters=room_characters,
             recent_messages=[message for message in current_messages if message.id != incoming_message.id],
@@ -1339,12 +1369,12 @@ async def generate_replies_from_message(
     pressure_plan = None
     generation_mandatory_without_current = 0
     catchup_batches = 0
-    if context_mode == "automatic":
+    if context_mode == "automatic" and not full_history:
         compression_overrides = runtime_settings_service.compression_llm_overrides_for_setting(runtime_setting, session=session)
         compression_fallback_overrides = runtime_settings_service.compression_fallback_llm_overrides_for_setting(runtime_setting, session=session)
 
         rendered_history_token_estimator = conversation_service.automatic_context_message_token_estimator(
-            character_names
+            character_names, history_serialization=comparison.history_serialization,
         )
 
         def generation_history_token_estimator(message: Message) -> int:
@@ -1362,7 +1392,7 @@ async def generate_replies_from_message(
         )
 
         def evaluate_automatic_context() -> AutomaticGenerationContextEvaluation:
-            current_messages = conversation_service.list_messages(session, conversation_id)
+            current_messages = through_source(conversation_service.list_messages(session, conversation_id))
             current_job_mapping = conversation_service.generation_job_source_message_ids(
                 session,
                 conversation_id,
@@ -1377,24 +1407,17 @@ async def generate_replies_from_message(
                 session.get(SceneState, conversation_id),
             )
             harness = build_generation_harness(current_scene, current_messages)
-            recent_entry = next(
-                (entry for entry in harness.ledger if entry.key == "recent_messages"),
-                None,
-            )
-            recent_section = next(
-                (section for section in harness.sections if section.key == "recent_messages"),
-                None,
+            accounting = HistoryAccounting.from_harness(harness)
+            history_estimator = conversation_service.automatic_context_history_token_estimator(
+                character_names, history_serialization=comparison.history_serialization,
+                accounting=accounting, excluded_message_ids=frozenset({incoming_message.id}),
             )
             current_input_tokens = approx_tokens(runtime_message_text)
-            mandatory_tokens = (
-                harness.used_tokens
-                - min(
-                    int(getattr(recent_entry, "used_tokens", 0) or 0),
-                    approx_tokens(getattr(recent_section, "content", "") or ""),
-                )
-                + current_input_tokens
-                + current_turn_control_tokens
-            )
+            # Remove history as one serialized unit, including section framing
+            # and whole-system rounding, never as individually rounded rows.
+            mandatory_tokens = (accounting.base_tokens + current_input_tokens
+                                + current_turn_control_tokens
+                                + source_role_overhead(payload.speaker_type, comparison.history_serialization))
             plan = conversation_service.automatic_context_plan(
                 session.get(SceneState, conversation_id) or SceneState(conversation_id=conversation_id),
                 current_messages,
@@ -1402,6 +1425,22 @@ async def generate_replies_from_message(
                 mandatory_prompt_tokens=mandatory_tokens,
                 job_source_message_ids=current_job_mapping,
                 token_estimator=generation_history_token_estimator,
+                history_token_estimator=history_estimator,
+            )
+            # Subtract only the complete rendered Arc, not the scene section:
+            # rendering an empty Arc would reactivate dormant opening fields.
+            fixed_scene_text = prompts.build_scene_text(current_scene)
+            rendered_arc = (current_scene.summary or "").strip()
+            if rendered_arc:
+                fixed_scene_text = fixed_scene_text.removesuffix(rendered_arc)
+            fixed_sections = [
+                replace(section, content=fixed_scene_text)
+                if section.key == "scene" else section
+                for section in harness.sections
+                if section.required and section.key != "recent_messages"
+            ]
+            fixed_harness = prompts.compile_prompt_sections(
+                sections=fixed_sections, total_budget_tokens=room_prompt_budget,
             )
             return AutomaticGenerationContextEvaluation(
                 scene_state=current_scene,
@@ -1410,6 +1449,10 @@ async def generate_replies_from_message(
                 plan=plan,
                 mandatory_without_current=max(0, mandatory_tokens - current_input_tokens),
                 job_source_message_ids=current_job_mapping,
+                irreducible_prompt_tokens=(
+                    fixed_harness.used_tokens + current_input_tokens + current_turn_control_tokens
+                    + source_role_overhead(payload.speaker_type, comparison.history_serialization)
+                ),
             )
 
         async def compress_automatic_context(
@@ -1484,6 +1527,12 @@ async def generate_replies_from_message(
             )
         )
 
+    history_accounting = HistoryAccounting.from_harness(prepared_harness)
+    postcommit_history_estimator = conversation_service.automatic_context_history_token_estimator(
+        character_names, history_serialization=comparison.history_serialization,
+        accounting=history_accounting,
+    )
+
     async def persist_prompt_snapshot(snapshot: dict):
         try:
             prompt_snapshot_service.record_prompt_snapshot(session, **snapshot)
@@ -1516,6 +1565,7 @@ async def generate_replies_from_message(
         source_speaker_type=payload.speaker_type,
         prompt_snapshot_callback=persist_prompt_snapshot,
         prepared_harness=prepared_harness,
+        context_capacity=capacity,
         command_overlay_plan=panel_plan,
     )
     generated_messages = await persist_generated_reply_messages(
@@ -1544,6 +1594,9 @@ async def generate_replies_from_message(
             generated_messages=generated_messages,
             llm_client=LLMClient(profile="chat", purpose="chat_command_postprocess", overrides=llm_overrides),
             prompt_settings=prompt_settings,
+            comparison_options=comparison,
+            source_messages=recent_for_prompt if full_history else None,
+            context_capacity=capacity,
             commit=False,
         )
     character_ids = [character.id for character in room_characters]
@@ -1559,7 +1612,7 @@ async def generate_replies_from_message(
             conversation_id,
             extra={turn_group_id: incoming_message.id},
         )
-    enqueue_compression = generated_character_count > 0 and conversation_service.should_update_scene_orchestration_summary(
+    enqueue_compression = not full_history and generated_character_count > 0 and conversation_service.should_update_scene_orchestration_summary(
         session,
         conversation_id,
         generated_character_messages=generated_character_count,
@@ -1570,6 +1623,7 @@ async def generate_replies_from_message(
         context_management_mode=context_mode,
         capacity=capacity,
         mandatory_prompt_tokens=generation_mandatory_without_current,
+        history_token_estimator=postcommit_history_estimator,
         job_source_message_ids=job_mapping,
         token_estimator=(
             rendered_history_token_estimator
@@ -1589,9 +1643,11 @@ async def generate_replies_from_message(
             mandatory_prompt_tokens=generation_mandatory_without_current,
             job_source_message_ids=job_mapping,
             token_estimator=rendered_history_token_estimator,
+            history_token_estimator=postcommit_history_estimator,
         )
         compression_raw_tail_token_budget = enqueue_plan.raw_tail_token_budget
     post_commit_tasks = build_generated_turn_post_commit_tasks(
+        comparison_options=comparison,
         session=session,
         conversation=conversation,
         scene_state=scene_state,
@@ -1602,6 +1658,7 @@ async def generate_replies_from_message(
         generation_job_id=generation_job.id if generation_job else None,
         generation_attempt_id=turn_group_id,
         compression_raw_tail_token_budget=compression_raw_tail_token_budget,
+        compression_history_accounting=asdict(history_accounting),
         compression_mandatory_prompt_tokens=(
             generation_mandatory_without_current if context_mode == "automatic" else None
         ),

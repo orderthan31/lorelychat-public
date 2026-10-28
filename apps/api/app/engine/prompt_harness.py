@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.engine.harness_comparison import PriorMessage
+
+
+def approx_tokens_for_char_count(char_count: int) -> int:
+    return int(math.ceil(char_count / 2.2))
 
 
 def approx_tokens(text: str) -> int:
-    return int(math.ceil(len(text or "") / 2.2))
+    return approx_tokens_for_char_count(len(text or ""))
 
 
 @dataclass(frozen=True)
@@ -39,40 +47,39 @@ class PromptHarness:
     total_budget_tokens: int
     used_tokens: int
     sections: list[PromptSection]
+    prior_messages: tuple[PriorMessage, ...] = ()
+    history_message_ids: tuple[str, ...] = ()
+    history_sha256: str = ""
+    history_serialization: str = "transcript"
+    context_policy: str = "compact"
 
-
-def _clamp_to_budget(text: str, budget_tokens: int) -> str:
-    value = text or ""
-    max_chars = max(0, int(max(0, budget_tokens) * 2.2))
-    if not max_chars or len(value) <= max_chars:
-        return value
-    marker = "\n…[section compacted to prompt budget]…\n"
-    available = max(0, max_chars - len(marker))
-    head_chars = int(available * 0.65)
-    tail_chars = available - head_chars
-    return value[:head_chars].rstrip() + marker + value[-tail_chars:].lstrip()
+    def comparison_metadata(self) -> dict:
+        if self.history_serialization == "transcript" and self.context_policy == "compact":
+            return {}
+        return {"history_serialization": self.history_serialization,
+                "context_policy": self.context_policy,
+                "history_message_ids": list(self.history_message_ids),
+                "history_sha256": self.history_sha256}
 
 
 def compile_prompt_harness(*, sections: list[PromptSection], total_budget_tokens: int) -> PromptHarness:
     """Compile prompt sections with an auditable context-budget ledger.
 
-    Required sections are compacted to their own per-section budget and kept.
-    Optional sections are included only when their compacted form fits the
-    remaining total budget. The ledger is metadata for preview/diagnostics and
-    is intentionally not injected into the prompt text.
+    Required sections are retained verbatim, even under pressure; used_tokens
+    exceeding total_budget_tokens exposes overflow to the runtime guard/preview.
+    Optional sections fit as complete units or are explicitly excluded. Section
+    budgets remain diagnostic targets, never permission to cut authored facts.
     """
-    remaining = max(0, total_budget_tokens)
     rendered_sections: list[str] = []
     ledger: list[PromptLedgerEntry] = []
 
-    for section in sections:
+    for index, section in enumerate(sections):
         raw_content = section.content or ""
         raw_tokens = approx_tokens(raw_content)
-        compacted = _clamp_to_budget(raw_content, section.budget_tokens)
-        include = bool(compacted.strip())
+        include = bool(raw_content.strip())
         excluded_reason = ""
 
-        rendered_section = f"[{section.title}]\n{compacted}"
+        rendered_section = f"[{section.title}]\n{raw_content}"
         current_text = "\n\n".join(rendered_sections)
         candidate_text = "\n\n".join([*rendered_sections, rendered_section])
         rendered_tokens = max(
@@ -80,18 +87,22 @@ def compile_prompt_harness(*, sections: list[PromptSection], total_budget_tokens
             approx_tokens(candidate_text) - approx_tokens(current_text),
         )
 
-        if include and not section.required and rendered_tokens > remaining:
+        # Reserve all later required units before admitting optional material.
+        required_tail = [
+            f"[{item.title}]\n{item.content}"
+            for item in sections[index + 1:]
+            if item.required and (item.content or "").strip()
+        ]
+        projected_tokens = approx_tokens("\n\n".join([*rendered_sections, rendered_section, *required_tail]))
+        if include and not section.required and projected_tokens > total_budget_tokens:
             include = False
             excluded_reason = "total_budget_exhausted"
-        # Required sections survive total-budget pressure after their own
-        # section-level compaction; optional context never displaces them.
 
         if not include and not excluded_reason:
             excluded_reason = "empty"
 
         if include:
             rendered_sections.append(rendered_section)
-            remaining = max(0, remaining - rendered_tokens)
 
         ledger.append(PromptLedgerEntry(
             key=section.key,

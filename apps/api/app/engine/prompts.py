@@ -1,4 +1,9 @@
 from app.db.models import Character, Message, SceneState
+from dataclasses import replace
+import hashlib
+import json
+from app.core.config import get_settings
+from app.engine.harness_comparison import ComparisonOptions, PriorMessage
 from app.engine import free_body_protocol as free_body
 from app.engine.output_contract import DEFAULT_MULTI_OUTPUT_RULES, SEMANTIC_MARKDOWN_OUTPUT_RULES
 from app.engine.prompt_graph import build_prompt_pipeline_graph, run_prompt_pipeline
@@ -93,6 +98,30 @@ def prompt_setting(settings: PromptSettings | None, key: str, fallback: str = ""
     return (settings or {}).get(key) or fallback
 
 
+def compose_generation_directive(*, base_directive: str, commands: list, command_overlay_plan=None, prompt_settings: PromptSettings | None = None) -> str:
+    """Keep complete generation intent; scope separate-only policy to its owners."""
+    settings = prompt_settings or {}
+    parts = [base_directive]
+    generation_commands = [command for command in commands if (getattr(command, "generation_prompt", "") or "").strip()]
+    if generation_commands:
+        intro = settings.get("command_generation_prompt_intro", "")
+        if intro.strip():
+            parts.append(intro)
+        parts.extend(f"- !{command.name}: {command.generation_prompt}" for command in generation_commands)
+    combined_ids = {command.id for command in command_overlay_plan.eligible.values()} if command_overlay_plan else set()
+    separate_overlays = [command for command in commands
+                         if command.id not in combined_ids
+                         and getattr(command, "postprocess_target", "") in {"first_bubble", "last_bubble"}]
+    guard = settings.get("command_generation_overlay_guard", "")
+    if separate_overlays and guard.strip():
+        if combined_ids:
+            names = ", ".join(f"!{command.name}" for command in separate_overlays)
+            parts.append(f"Separate postprocessing only for {names} (not the combined auxiliary panels):\n{guard}")
+        else:
+            parts.append(guard)
+    return "\n\n".join(part for part in parts if part)
+
+
 def provider_roleplay_rendering_section(
     *,
     provider_type: str | None,
@@ -125,7 +154,10 @@ def format_message_for_context(message: Message, *, include_thought: bool = True
         return compact_prompt_text(value, limit) if compact else (value or "")
 
     if message.speaker_type == "system":
-        return f"system:scene_direction | directive={text(message.content, 220)}"
+        parts = [f"system:scene_direction | directive={text(message.content, 220)}"]
+        if message.action:
+            parts.append(f"action={text(message.action, 110)}")
+        return " | ".join(parts)
     speaker_label = f"{message.speaker_type}:{message.speaker_id}"
     if message.speaker_type == "character" and message.speaker_id:
         character_name = (character_names or {}).get(message.speaker_id)
@@ -152,7 +184,7 @@ def format_message_for_context(message: Message, *, include_thought: bool = True
 
 
 def format_full_public_message(message: Message) -> str:
-    """Lossless standalone command input, not a general-history budget change."""
+    """Lossless public content; private character thoughts stay out of shared input."""
     return format_message_for_context(message, include_thought=False, compact=False)
 
 
@@ -191,7 +223,7 @@ def build_prompt_history(
         context_management_mode=context_management_mode,
     )
     return "\n".join(
-        format_message_for_context(message, include_thought=False, character_names=character_names)
+        format_message_for_context(message, include_thought=False, character_names=character_names, compact=False)
         for message in selected
     )
 
@@ -251,32 +283,21 @@ def format_character_card(character: Character, *, mark: str = "") -> str:
     if trait_scores:
         parts.append("  trait_scores:")
         parts.extend(f"  {line}" for line in trait_scores.splitlines())
+    for label in ("emotional_rules", "forbidden_rules"):
+        rules = getattr(character, label, None) or []
+        if rules:
+            parts.append(f"  {label}:")
+            parts.extend(rules)
     return "\n".join(parts)
 
 
 def format_compact_character_card(character: Character, *, per_character_char_budget: int = 520) -> str:
-    """Return a balanced multi-character card that cannot starve later participants.
+    """Compatibility entry point: authored cards are indivisible complete units.
 
-    The prompt harness clamps whole sections from the head.  Full cards joined into
-    one section therefore over-preserve early participants and can cut later active
-    characters out entirely.  Multi-character generation needs every active speaker
-    represented, so each card gets its own small budget before section clamping.
+    The historical per-card target is diagnostic only, not permission to clip
+    persona, speech, or rules. Pressure is handled by the context budget guard.
     """
-    trait_scores = format_trait_scores(character)
-    parts = [f"- name: {character.name} ({character.id})"]
-    if character.description:
-        parts.append(f"desc={compact_prompt_text(character.description, 90)}")
-    if character.persona:
-        parts.append(f"persona={compact_prompt_text(character.persona, 150)}")
-    if character.appearance:
-        parts.append(f"appearance={compact_prompt_text(character.appearance, 90)}")
-    if character.behavior_style:
-        parts.append(f"behavior={compact_prompt_text(character.behavior_style, 110)}")
-    if character.speech_style:
-        parts.append(f"speech={compact_prompt_text(character.speech_style, 110)}")
-    if trait_scores:
-        parts.append(f"traits={compact_prompt_text(trait_scores.replace(chr(10), '; '), 90)}")
-    return compact_prompt_text(" | ".join(parts), per_character_char_budget)
+    return format_character_card(character)
 
 
 def is_silent_cast_role(role: str | None) -> bool:
@@ -284,28 +305,19 @@ def is_silent_cast_role(role: str | None) -> bool:
 
 
 def format_silent_character_presence(character: Character) -> str:
-    parts = [f"- name: {character.name} ({character.id})", "role=silent/context-only", "do_not_generate_dialogue_or_action=true"]
-    if character.description:
-        parts.append(f"desc={compact_prompt_text(character.description, 90)}")
-    trait_scores = format_trait_scores(character)
-    if trait_scores:
-        parts.append(f"traits={compact_prompt_text(trait_scores.replace(chr(10), '; '), 80)}")
-    return " | ".join(parts)
+    return format_character_card(character) + "\nrole=silent/context-only | do_not_generate_dialogue_or_action=true"
 
 
 def format_multi_character_cards(characters: list[Character], room_cast_roles: RoomCastRoles | None = None) -> str:
     if not characters:
         return ""
     formatted_cards = []
-    per_card_budget = max(560, min(760, 5200 // max(1, len(characters))))
     for character in characters:
         if is_silent_cast_role((room_cast_roles or {}).get(character.id)):
             formatted_cards.append(format_silent_character_presence(character))
-        elif len(characters) == 1:
-            formatted_cards.append(format_character_card(character))
         else:
-            formatted_cards.append(format_compact_character_card(character, per_character_char_budget=per_card_budget))
-    return "\n\n".join(formatted_cards) if len(characters) == 1 else "\n".join(formatted_cards)
+            formatted_cards.append(format_character_card(character))
+    return "\n\n".join(formatted_cards)
 
 
 CAST_ROLE_GUIDANCE = {
@@ -419,19 +431,14 @@ RELATIONSHIP_ARCHETYPE_GUIDANCE = {
 
 
 def format_relationship_archetype(archetype: str | None) -> str:
-    key = (archetype or "").strip().lower().replace("-", "_")
+    authored = archetype or ""
+    key = authored.strip().lower().replace("-", "_")
     if not key:
         return ""
-    guidance = RELATIONSHIP_ARCHETYPE_GUIDANCE.get(
-        key,
-        "Use this room relationship archetype to shape resistance, reward pacing, and what should not be granted too early.",
-    )
-    return (
-        f"Relationship archetype: {key}\n"
-        f"Relationship guidance: {guidance}\n"
-        "Allowed reward: visible reaction, attention, jealousy, curiosity, softened tone, or partial vulnerability.\n"
-        "Blocked outcome: instant stable commitment or fully secure trust unless the room history explicitly earns it."
-    )
+    guidance = RELATIONSHIP_ARCHETYPE_GUIDANCE.get(key)
+    if guidance is None:
+        return f"Relationship archetype: {authored}"
+    return f"Relationship archetype: {key}\nRelationship guidance: {guidance}"
 
 
 def format_room_tone_preset(tone_preset: str | None) -> str:
@@ -442,10 +449,10 @@ def format_room_tone_preset(tone_preset: str | None) -> str:
     return f"Room tone preset: {key}\nRoom tone guidance: {guidance}"
 
 
-def build_scene_text(scene_state: SceneState | None) -> str:
+def build_scene_text(scene_state: SceneState | None, *, include_summary: bool = True, include_opening: bool = True) -> str:
     if not scene_state:
         return ""
-    story_arc = (scene_state.summary or "").strip()
+    story_arc = (scene_state.summary or "").strip() if include_summary else ""
     tone_text = format_room_tone_preset(getattr(scene_state, "tone_preset", None))
     relationship_text = format_relationship_archetype(getattr(scene_state, "relationship_archetype", None))
     lines = [
@@ -454,7 +461,7 @@ def build_scene_text(scene_state: SceneState | None) -> str:
         tone_text,
         relationship_text,
     ]
-    if not story_arc:
+    if not story_arc and include_opening:
         opening_scene = getattr(scene_state, "opening_scene", None) or ""
         opening_line = getattr(scene_state, "opening_line", None) or ""
         lines.extend([
@@ -464,7 +471,7 @@ def build_scene_text(scene_state: SceneState | None) -> str:
             f"Opening line / first character beat: {opening_line}",
             "Opening rule: Establish this hook once. Do not repeat the opening line verbatim after the room is already underway.",
         ])
-    else:
+    elif story_arc:
         lines.extend([
             "[Past story]",
             story_arc,
@@ -567,18 +574,26 @@ def build_multi_character_prompt_harness(
     total_budget_tokens: int | None = None,
     context_management_mode: str = "legacy",
     command_overlay_plan=None,
+    comparison_options: ComparisonOptions | None = None,
 ) -> PromptHarness:
+    comparison = comparison_options or ComparisonOptions.from_settings(get_settings())
+    full_history = comparison.context_policy == "full_history"
+    has_durable_history = bool(recent_messages or (scene_state and (
+        scene_state.summary or scene_state.last_compression_source_message_id)))
     character_names = {character.id: character.name for character in characters}
-    raw_messages = messages_after_scene_summary_boundary(
+    raw_messages = list(recent_messages) if full_history else messages_after_scene_summary_boundary(
         recent_messages,
         scene_state,
         context_management_mode=context_management_mode,
     )
-    history = build_prompt_history(
-        raw_messages,
-        character_names=character_names,
-        context_management_mode=context_management_mode,
-    )
+    selected_history = select_prompt_recent_messages(raw_messages,
+        context_management_mode="automatic" if full_history else context_management_mode)
+    public_rows = [format_message_for_context(message, include_thought=False,
+                   character_names=character_names, compact=False) for message in selected_history]
+    history = "\n".join(public_rows) if comparison.history_serialization == "transcript" else ""
+    prior_messages = tuple(PriorMessage(
+        "user" if message.speaker_type in {"user", "system"} else "assistant", text,
+    ) for message, text in zip(selected_history, public_rows)) if comparison.history_serialization == "native" else ()
     character_cards = format_multi_character_cards(characters, room_cast_roles=room_cast_roles)
     speaking_characters = [character for character in characters if not is_silent_cast_role((room_cast_roles or {}).get(character.id))]
     output_characters = speaking_characters or characters
@@ -618,8 +633,9 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
         PromptSection("base_rules", "Generation core contract", base_rules, "backend.system_prompt_registry.generation_core_contract", "always_required", 520, True),
         PromptSection("output_rules", "Output contract", output_rules, "runtime.response_contract", "json_contract", output_rules_budget, True),
         PromptSection("character_cards", "Active character cards", character_cards, "conversation.participants.character_cards", "active_room_participants", character_cards_budget, True),
-        PromptSection("scene", "Room world and past story", build_scene_text(scene_state), "scene_state", "durable_room_context", 1800, True),
-        PromptSection("directive", "Current directive", directive or "", "message.directive", "current_user_intent", 180, False),
+        PromptSection("scene", "Room world and past story", build_scene_text(scene_state,
+            include_summary=not full_history, include_opening=not full_history or not has_durable_history), "scene_state", "durable_room_context", 1800, True),
+        PromptSection("directive", "Current directive", directive or "", "message.directive", "current_user_intent", 180, bool(directive)),
         PromptSection(
             "recent_messages",
             conversation_history_title(scene_state),
@@ -629,12 +645,12 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
             max(1800, approx_tokens(history) + 1) if context_management_mode.strip().lower() == "automatic" else 1800,
             True,
         ),
-        PromptSection("official_domain_state", "Official domain state", official_domain_context or "none", "genre_domain.battle_ledger", f"genre_route:{genre_mode or 'battle'}", 520, genre_mode == "battle"),
-        PromptSection("battle_control_hint", "Battle control hint", format_battle_control_hint(battle_control_context), "ui.battle_control_payload", "live_ui_override", 220, False),
-        PromptSection("user_description", "User persona", user_description_text, "scene_state.user_description", "room_user_persona", 320, False),
-        PromptSection("room_cast_roles", "Cast roles", format_room_cast_roles(room_cast_roles, characters=characters), "conversation.participants.roles", "room_cast_role_contract", 260, False),
-        PromptSection("room_memory", "Common room user notes", common_memory_context, "conversation.local_memory.__room__", "manual_room_memory", 360, False),
-        PromptSection("continuity_state_by_character", "Character-specific user notes", "\n\n".join(continuity_lines), "conversation.local_memory.character", "manual_character_memory", 520, False),
+        PromptSection("official_domain_state", "Official domain state", official_domain_context or "none", "genre_domain.battle_ledger", f"genre_route:{genre_mode or 'battle'}", 520, bool(official_domain_context) or genre_mode == "battle"),
+        PromptSection("battle_control_hint", "Battle control hint", format_battle_control_hint(battle_control_context), "ui.battle_control_payload", "live_ui_override", 220, bool(battle_control_context)),
+        PromptSection("user_description", "User persona", user_description_text, "scene_state.user_description", "room_user_persona", 320, bool(user_description_text)),
+        PromptSection("room_cast_roles", "Cast roles", format_room_cast_roles(room_cast_roles, characters=characters), "conversation.participants.roles", "room_cast_role_contract", 260, bool(room_cast_roles)),
+        PromptSection("room_memory", "Common room user notes", common_memory_context, "conversation.local_memory.__room__", "manual_room_memory", 360, bool(common_memory_context)),
+        PromptSection("continuity_state_by_character", "Character-specific user notes", "\n\n".join(continuity_lines), "conversation.local_memory.character", "manual_character_memory", 520, bool(continuity_lines)),
         PromptSection("offstage_actor_recall", "Relevant offstage actor", offstage_actor_context or "", "domain_actor.offstage_recall", "router:offstage_actor_context", 320, False),
         PromptSection("genre_mode", "Genre routing", build_genre_mode_policy(genre_mode), "conversation.genre_mode", f"genre_route:{genre_mode or 'battle'}", 120, False),
     ]
@@ -647,7 +663,17 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
     if panel_instructions:
         sections.append(PromptSection("command_panels", "Command panel contract", panel_instructions, "runtime.command_contract", "explicit_overlay", approx_tokens(panel_instructions) + 16, True))
     budget = total_budget_tokens or prompt_budget_for_context(genre_mode=genre_mode, is_multi_room=len(characters) >= 2)
-    return compile_prompt_sections(sections=sections, total_budget_tokens=budget)
+    if full_history:
+        sections = [replace(section, title="Conversation so far") if section.key == "recent_messages" else section for section in sections]
+    if comparison.history_serialization == "native":
+        sections = [section for section in sections if section.key != "recent_messages"]
+    harness = compile_prompt_sections(sections=sections, total_budget_tokens=budget)
+    return replace(harness, prior_messages=prior_messages,
+        history_message_ids=tuple(message.id for message in selected_history),
+        history_sha256=hashlib.sha256(json.dumps([
+            (message.id, text) for message, text in zip(selected_history, public_rows)
+        ], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest(),
+        history_serialization=comparison.history_serialization, context_policy=comparison.context_policy)
 
 
 def build_multi_character_messages(
@@ -697,6 +723,7 @@ def build_multi_character_messages(
     )
     return [
         {"role": "system", "content": harness.compiled_text},
+        *[message.as_dict() for message in harness.prior_messages],
         {"role": "user", "content": user_message},
     ]
 
@@ -772,24 +799,24 @@ Keep the reply vivid, specific, and naturally paced."""
         PromptSection("base_rules", "Single character base rules", base_rules, "runtime.prompt_settings.single_character_base", "always_required", 520, True),
         PromptSection("source_priority_rules", "Source Priority / Scope Rules", prompt_setting(prompt_settings, "source_priority_rules"), "backend.system_prompt_registry.source_priority_rules", "source_scope_contract", 900, True),
         PromptSection("identity_lock", "Identity lock - highest priority", f"{identity_rules}\n{identity_card}", "character.card.identity_lock", "active_character", 760, True),
-        PromptSection("user_description", "User Description / User Persona", user_description_text, "scene_state.user_description", "room_user_persona", 420, False),
+        PromptSection("user_description", "User Description / User Persona", user_description_text, "scene_state.user_description", "room_user_persona", 420, bool(user_description_text)),
         PromptSection("output_style", "Output style", output_style, "runtime.prompt_settings.output_style_single", "json_style_contract", 260, True),
         PromptSection("character_card_section_rules", "Character card section rules", section_rules, "runtime.prompt_settings.character_card_section_rules", "quality_guard", 260, False),
         PromptSection("persona_background", "Persona background", character.persona or "", "character.persona", "active_character_card", 420, True),
-        PromptSection("appearance_reference", "Appearance reference", character.appearance or "", "character.appearance", "active_character_card", 260, False),
-        PromptSection("behavior_style", "Behavior style", f"Reference for context-appropriate actions, reactions, initiative, distance, gestures, and pacing. Do not quote this text directly.\n{character.behavior_style or ''}", "character.behavior_style", "active_character_card", 320, False),
-        PromptSection("speech_examples", "Speech examples / tone-and-manner samples", f"Use these examples only to infer tone, rhythm, honorific level, vocabulary, and emotional color. Do not copy/repeat only these lines.\n{character.speech_style or ''}", "character.speech_style", "active_character_card", 320, False),
-        PromptSection("trait_scores", "Character trait scores", f"These are 1-5 intensity sliders. Reflect them in dialogue, action, thought, initiative, conflict handling, jealousy, sensual tension, and emotional pacing without stating the numbers directly.\n{trait_scores}", "character.trait_scores", "active_character_card", 220, False),
-        PromptSection("emotional_rules", "Emotional rules", chr(10).join(character.emotional_rules or []), "character.emotional_rules", "active_character_card", 240, False),
-        PromptSection("forbidden_rules", "Forbidden rules", chr(10).join(character.forbidden_rules or []), "character.forbidden_rules", "safety_character_rules", 240, False),
+        PromptSection("appearance_reference", "Appearance reference", character.appearance or "", "character.appearance", "active_character_card", 260, True),
+        PromptSection("behavior_style", "Behavior style", f"Reference for context-appropriate actions, reactions, initiative, distance, gestures, and pacing. Do not quote this text directly.\n{character.behavior_style or ''}", "character.behavior_style", "active_character_card", 320, True),
+        PromptSection("speech_examples", "Speech examples / tone-and-manner samples", f"Use these examples only to infer tone, rhythm, honorific level, vocabulary, and emotional color. Do not copy/repeat only these lines.\n{character.speech_style or ''}", "character.speech_style", "active_character_card", 320, True),
+        PromptSection("trait_scores", "Character trait scores", f"These are 1-5 intensity sliders. Reflect them in dialogue, action, thought, initiative, conflict handling, jealousy, sensual tension, and emotional pacing without stating the numbers directly.\n{trait_scores}", "character.trait_scores", "active_character_card", 220, True),
+        PromptSection("emotional_rules", "Emotional rules", chr(10).join(character.emotional_rules or []), "character.emotional_rules", "active_character_card", 240, True),
+        PromptSection("forbidden_rules", "Forbidden rules", chr(10).join(character.forbidden_rules or []), "character.forbidden_rules", "safety_character_rules", 240, True),
         PromptSection("scene_relevance_gate", "Scene relevance gate", scene_gate, "runtime.prompt_settings.scene_relevance_gate", "quality_guard", 160, False),
         PromptSection("appearance_reference_rules", "Appearance reference rules", appearance_rules, "runtime.prompt_settings.appearance_reference_rules", "quality_guard", 160, False),
         PromptSection("scene", "Scene", scene, "scene_state", "current_room_scene", 1800, True),
         PromptSection("genre_mode", "Genre mode", build_genre_mode_policy(genre_mode), "conversation.genre_mode", f"genre_route:{genre_mode or 'battle'}", 180, True),
         PromptSection("genre_mode_policy_scope", "Genre Mode Policy Scope", prompt_setting(prompt_settings, "genre_mode_policy_scope"), "backend.system_prompt_registry.genre_mode_policy_scope", "genre_scope_contract", 320, True),
         PromptSection("offstage_actor_recall", "Offstage actor recall", offstage_actor_context or "", "domain_actor.offstage_recall", "router:offstage_actor_context", 360, False),
-        PromptSection("continuity_state_by_character", "Continuity state", continuity_context or "", "conversation.local_memory", "router:legacy_continuity_context", 360, False),
-        PromptSection("room_context", "Room context", room_context, "conversation.participants.counterpart_cards", "character_character_room" if conversation_mode == "character_character" else "single_character_room", 700, False),
+        PromptSection("continuity_state_by_character", "Continuity state", continuity_context or "", "conversation.local_memory", "router:legacy_continuity_context", 360, bool(continuity_context)),
+        PromptSection("room_context", "Room context", room_context, "conversation.participants.counterpart_cards", "character_character_room" if conversation_mode == "character_character" else "single_character_room", 700, bool(room_context)),
         PromptSection(
             "recent_messages",
             conversation_history_title(scene_state),
@@ -799,8 +826,8 @@ Keep the reply vivid, specific, and naturally paced."""
             max(1200, approx_tokens(history) + 1) if context_management_mode.strip().lower() == "automatic" else 1200,
             True,
         ),
-        PromptSection("directive", "Directive", directive or "", "message.directive", "current_user_intent", 180, False),
-        PromptSection("minimum_output_target", "Minimum output target", build_output_length_rule(min_output_tokens) or "none", "runtime.response_length_preset", "length_contract", 220, False),
+        PromptSection("directive", "Directive", directive or "", "message.directive", "current_user_intent", 180, bool(directive)),
+        PromptSection("minimum_output_target", "Minimum output target", build_output_length_rule(min_output_tokens) or "none", "runtime.response_length_preset", "length_contract", 220, True),
         PromptSection("output_rules", "Output rules", output_rules, "runtime.response_contract", "json_contract", 220, True),
     ]
     provider_section = provider_roleplay_rendering_section(
@@ -892,5 +919,6 @@ def build_character_messages(
     )
     return [
         {"role": "system", "content": harness.compiled_text},
+        *[message.as_dict() for message in harness.prior_messages],
         {"role": "user", "content": user_message},
     ]

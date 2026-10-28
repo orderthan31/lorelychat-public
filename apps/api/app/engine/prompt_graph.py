@@ -151,6 +151,7 @@ PersistCallable = Callable[[Any], Any | Awaitable[Any]]
 
 
 class PromptGenerationPipelineState(PromptPipelineState, total=False):
+    prior_messages: list[dict]
     user_message: str
     current_turn_role: str
     continuation_instruction: str
@@ -172,6 +173,7 @@ def prepare_messages(state: PromptGenerationPipelineState) -> PromptGenerationPi
         raise ValueError(f"Unsupported current turn role: {current_turn_role}")
     messages = [
         {"role": "system", "content": state.get("compiled_text") or ""},
+        *[dict(message) for message in state.get("prior_messages") or []],
         {"role": current_turn_role, "content": state.get("user_message") or ""},
     ]
     continuation_instruction = state.get("continuation_instruction") or ""
@@ -259,6 +261,7 @@ async def run_prompt_generation_pipeline(
     user_message: str,
     current_turn_role: str = "user",
     continuation_instruction: str = "",
+    prior_messages: list[dict] | None = None,
     generate: GenerationCallable,
     parse: ParseCallable,
     persist: PersistCallable | None = None,
@@ -271,6 +274,7 @@ async def run_prompt_generation_pipeline(
         "user_message": user_message,
         "current_turn_role": current_turn_role,
         "continuation_instruction": continuation_instruction,
+        "prior_messages": prior_messages or [],
         "generate": generate,
         "parse": parse,
         "persist": persist,

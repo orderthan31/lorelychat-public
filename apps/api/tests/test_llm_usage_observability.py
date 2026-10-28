@@ -47,6 +47,10 @@ def test_record_usage_persists_finish_reason_and_response_attempt_metadata(sessi
     assert response.usage_event_id == event.id
     assert event.metadata_ == {
         "status": "validated",
+        "stage": "chat_generation",
+        "requested_model": "gemini-test",
+        "reported_model_version": None,
+        "token_details": {"cached_tokens": None, "reasoning_tokens": None},
         "finish_reason": "STOP",
         "response_length": len("structured response"),
         "response_sha256": hashlib.sha256(b"structured response").hexdigest(),
@@ -129,6 +133,15 @@ async def test_terminal_transport_failure_persists_sanitized_attempt_metadata(se
     assert event.prompt_tokens is None
     assert event.metadata_ == {
         "status": "transport_failed",
+        "stage": "chat_generation",
+        "requested_model": "provider-test",
+        "reported_model_version": None,
+        "token_details": {"cached_tokens": None, "reasoning_tokens": None},
+        "output_budget": {"requested_max_output_tokens": None},
+        "transport": {
+            "policy": "generic_compatible", "output_cap_parameter": "max_tokens",
+            "omitted_parameters": [], "warning_codes": [], "provider_warning_count": 0,
+        },
         "transport_attempts": 2,
         "http_status": 503,
         "error_type": "ReadTimeout",

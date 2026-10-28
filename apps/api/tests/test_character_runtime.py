@@ -196,7 +196,8 @@ def test_scene_prompt_separates_opening_hook_from_world_seed():
     assert "Prioritize restrained tension, delayed emotional payoff, and subtle resistance" in prompt
     assert "Relationship archetype: tsundere_hidden_affection" in prompt
     assert "visible reaction while verbally deflecting" in prompt
-    assert "Blocked outcome: instant stable commitment or fully secure trust" in prompt
+    assert "Block instant stable commitment or fully secure trust." in prompt
+    assert "Blocked outcome:" not in prompt
     assert "Do not repeat the opening line verbatim after the room is already underway" in prompt
 
 
@@ -1839,7 +1840,8 @@ def test_multi_character_prompt_uses_adaptive_recent_history_and_excludes_though
     assert "thought 12" not in prompt
     assert "thought 16" not in prompt
     assert "z" * 120 not in prompt
-    assert "x" * 260 not in prompt
+    assert "x" * 300 in prompt  # selected public content is no longer clipped
+    assert "y" * 180 in prompt
 
 
 def test_relationship_context_prefers_active_counterparts_over_recent_inactive(session):

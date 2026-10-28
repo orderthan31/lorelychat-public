@@ -29,12 +29,12 @@ def test_json_object_response_format_is_preserved_for_structured_outputs():
     assert client.normalize_response_format({"type": "json_object"}) == {"type": "json_object"}
 
 
-def test_higher_temperature_is_isolated_to_xai():
+def test_provider_label_does_not_apply_prose_temperature_hack():
     settings = Settings(llm_mock=False)
     xai_client = LLMClient(settings, overrides={"provider": "xai"})
     compatible_client = LLMClient(settings, overrides={"provider": "openai_compatible"})
 
-    assert xai_client.openai_compatible_temperature() == 1.1
+    assert xai_client.openai_compatible_temperature() == 0.7
     assert compatible_client.openai_compatible_temperature() == 0.7
 
 
@@ -93,7 +93,8 @@ async def test_xai_uses_openai_compatible_chat_with_strict_structured_output(mon
     assert captured["kwargs"]["headers"] == {"Authorization": "Bearer xai-test-key"}
     payload = captured["kwargs"]["json"]
     assert payload["model"] == "grok-4.5"
-    assert payload["temperature"] == 1.1
+    assert payload["temperature"] == 1.0
+    assert payload["top_p"] == 0.95
     assert payload["response_format"] == {
         "type": "json_schema",
         "json_schema": {
