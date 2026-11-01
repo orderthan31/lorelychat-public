@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = ""
     llm_mock: bool = True
+    llm_transport: Literal["legacy_http", "litellm"] = "legacy_http"
     # Deployment opt-in only; no extra provider, model, or user credential.
     chat_response_protocol: Literal["legacy_json", "free_body_json", "tagged_text"] = "legacy_json"
     chat_command_postprocess_mode: Literal["separate", "combined_overlay"] = "separate"

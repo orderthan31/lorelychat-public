@@ -9,8 +9,7 @@ RUN groupadd --gid 10001 lorechat \
 
 WORKDIR /app
 COPY requirements.txt pyproject.toml ./
-RUN python -m pip install --upgrade pip \
-    && python -m pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements.txt
 
 COPY app ./app
 COPY scripts ./scripts

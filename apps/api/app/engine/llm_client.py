@@ -241,7 +241,7 @@ class LLMClient:
         return self.provider() == "xai"
 
     def transport_capabilities(self, *, model: str | None = None):
-        gemini = self.provider() == "gemini"
+        gemini = self.provider() == "gemini" or (self.settings.llm_transport == "litellm" and self.provider() == "google")
         return capabilities(
             model=model or self.model(),
             endpoint="https://generativelanguage.googleapis.com/v1beta" if gemini else self.base_url(),
@@ -254,7 +254,7 @@ class LLMClient:
 
     def sampling_parameters(self, *, model: str | None = None) -> tuple[dict, list[str]]:
         policy = self.transport_capabilities(model=model)
-        gemini = self.provider() == "gemini"
+        gemini = self.provider() == "gemini" or (self.settings.llm_transport == "litellm" and self.provider() == "google")
         params = {"temperature": self.overrides.get("temperature", policy.temperature)}
         if self.overrides.get("top_p", policy.top_p) is not None:
             params["topP" if gemini else "top_p"] = self.overrides.get("top_p", policy.top_p)
@@ -271,7 +271,7 @@ class LLMClient:
 
     def thinking_parameters(self, *, model: str | None = None, wire_confirmed: bool = False) -> tuple[dict, dict]:
         """Preserve explicit transport controls; auto-OFF is chat-only and exact-gated."""
-        gemini = self.provider() == "gemini"
+        gemini = self.provider() == "gemini" or (self.settings.llm_transport == "litellm" and self.provider() == "google")
         explicit = {key: self.overrides[key] for key in ("reasoning_effort", "thinking_level", "thinking_budget")
                     if self.overrides.get(key) is not None}
         names = ({"thinking_level": "thinkingLevel", "thinking_budget": "thinkingBudget"}
@@ -360,6 +360,12 @@ class LLMClient:
         return self.settings.chat_llm_model or self.settings.llm_model
 
     def base_url(self) -> str:
+        if self.settings.llm_transport == "litellm":
+            from app.engine.litellm_transport import resolve_route
+            # The resolver calls this legacy helper only for explicit legacy
+            # compatible configuration (handled below to avoid recursion).
+            if self.provider() != "openai_compatible" or self.overrides.get("provider_account_id") is not None:
+                return resolve_route(self).base_url
         if self.overrides.get("base_url"):
             return str(self.overrides["base_url"])
         if self.profile == "compression":
@@ -453,8 +459,13 @@ class LLMClient:
             return LLMResponse(content=f"Mock reply to: {user_text[:80]}", provider="mock", model="mock")
 
         try:
+            if self.settings.llm_transport == "litellm":
+                from app.engine.litellm_transport import resolve_route
+                route = resolve_route(self)
             self.ensure_circuit_available()
-            if self.provider() == "gemini":
+            if self.settings.llm_transport == "litellm":
+                response = await self._chat_litellm(route, messages, response_format=response_format, conversation_id=conversation_id)
+            elif self.provider() == "gemini":
                 response = await self._chat_gemini(messages, response_format=response_format)
             else:
                 response = await self._chat_openai_compatible(messages, response_format=response_format, conversation_id=conversation_id)
@@ -472,6 +483,58 @@ class LLMClient:
                 response.provider_diagnostics,
             )
         return response
+
+    async def _chat_litellm(self, route, messages, *, response_format=None, conversation_id=None) -> LLMResponse:
+        from app.engine import litellm_transport as sdk
+
+        sampling, _ = self.sampling_parameters()
+        parameters = { {"topP": "top_p", "topK": "top_k"}.get(key, key): value
+                       for key, value in sampling.items() }
+        thinking, _ = self.thinking_parameters()
+        parameters.update(thinking)
+        if "reasoning" in parameters:
+            parameters["extra_body"] = {"reasoning": parameters.pop("reasoning")}
+        cap = self.max_output_tokens()
+        if cap is not None:
+            parameters["max_tokens"] = cap
+        schema = sdk.response_format_copy(response_format, strict=self.strict_structured_output())
+        if schema is not None:
+            parameters["response_format"] = schema
+        if route.sdk_provider == "gemini":
+            parameters["safety_settings"] = self.gemini_safety_settings()
+        if self.transport_capabilities().cache_affinity and conversation_id:
+            parameters["extra_headers"] = {"x-grok-conv-id": hashlib.sha256(
+                ("lorechat:" + conversation_id).encode("utf-8")).hexdigest()}
+
+        async def request(reserve):
+            return await sdk.completion(route, messages=messages, parameters=parameters,
+                                        timeout=self.timeout_seconds(), reserve=reserve)
+
+        response = await self._post_with_retries(request, endpoint_label="LLM endpoint", boundary_counted=True)
+        observed, data = sdk.native_observation(response, route)
+        budget = {"requested_max_output_tokens": cap}
+        diagnostics = None
+        if route.sdk_provider == "gemini":
+            budget.update(thoughts_token_count=observed["reasoning_tokens"],
+                          cached_content_token_count=observed["cached_tokens"])
+            if self.profile == "compression" and not observed["content"]:
+                diagnostics = _gemini_empty_response_diagnostics(data)
+        transport_diagnostics = self.transport_diagnostics(
+            warning_count=len(response.headers.get_list("warning")), wire_confirmed=False)
+        _, omitted = self.sampling_parameters()
+        transport_diagnostics.update(sdk.control_diagnostics(response, parameters, self.overrides, omitted))
+        wire_controls = transport_diagnostics["serialized_wire_controls"]
+        thinking_controls = sdk.control_fields(thinking)
+        confirmed = bool(thinking_controls) and all(wire_controls.get(k) == v for k, v in thinking_controls.items())
+        _, transport_diagnostics["thinking_policy"] = self.thinking_parameters(wire_confirmed=confirmed)
+        if not transport_diagnostics["omitted_parameters"]:
+            transport_diagnostics["warning_codes"] = [c for c in transport_diagnostics["warning_codes"] if c != "sampling_omitted"]
+        return LLMResponse(
+            **observed, provider=self.provider(), model=route.model, requested_model=route.model,
+            generation_attempts=response.extensions["lorechat_attempts"],
+            transport_diagnostics=transport_diagnostics,
+            budget_diagnostics=budget, provider_diagnostics=diagnostics,
+        )
 
     async def _chat_openai_compatible(self, messages: list[dict], *, response_format: dict | None = None, conversation_id: str | None = None) -> LLMResponse:
         url = self.base_url().rstrip("/") + "/chat/completions"
@@ -587,7 +650,7 @@ class LLMClient:
             return f"{endpoint_label} unavailable for {self.provider()}:{self.model()} (HTTP {exc.response.status_code})"
         return f"{endpoint_label} unavailable for {self.provider()}:{self.model()} ({type(exc).__name__})"
 
-    async def _post_with_retries(self, request, *, endpoint_label: str) -> httpx.Response:
+    async def _post_with_retries(self, request, *, endpoint_label: str, boundary_counted: bool = False) -> httpx.Response:
         attempts = self.transport_retry_attempts()
         budget = _TASK_BUDGET.get()
         if budget is not None:
@@ -597,21 +660,36 @@ class LLMClient:
             error.transport_attempts = 0
             raise error
         last_exc: Exception | None = None
+        dispatched = 0
+
+        def reserve():
+            nonlocal dispatched
+            if budget is not None:
+                if budget.used >= budget.limit:
+                    raise LLMAttemptBudgetError("LLM task network attempt budget exhausted", transport_attempts=0,
+                                               error_type="network_budget_exhausted")
+                budget.used += 1
+            dispatched += 1
+
         for attempt in range(1, attempts + 1):
             try:
-                if budget is not None:
-                    budget.used += 1
-                response = await request()
+                if boundary_counted:
+                    response = await request(reserve)
+                else:
+                    reserve()
+                    response = await request()
                 response.raise_for_status()
-                response.extensions["lorechat_attempts"] = attempt
+                response.extensions["lorechat_attempts"] = dispatched
                 return response
             except Exception as exc:
+                if boundary_counted and isinstance(exc, (ValueError, LLMAttemptBudgetError)):
+                    raise
                 last_exc = exc
                 if not self.is_retryable_transport_exception(exc) or attempt >= attempts:
                     status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
                     raise LLMUnavailableError(
                         self.transport_error_message(exc, endpoint_label=endpoint_label),
-                        transport_attempts=attempt,
+                        transport_attempts=dispatched,
                         http_status=status,
                         error_type=type(exc).__name__,
                         provider_warning_count=len(exc.response.headers.get_list("warning")) if isinstance(exc, httpx.HTTPStatusError) else 0,
