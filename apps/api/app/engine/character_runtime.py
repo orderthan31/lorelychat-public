@@ -32,6 +32,7 @@ from app.engine.prompt_graph import build_prompt_generation_graph, run_prompt_ge
 from app.engine.prompts import build_character_messages, build_multi_character_prompt_harness, is_silent_cast_role
 from app.schemas.dialogue import CharacterReply, MultiCharacterReply
 from app.engine import free_body_protocol as free_body
+from app.engine.free_body_prefix_recovery import prove_reply_prefix
 from app.engine import command_overlay
 from app.services.context_management_service import (
     ContextCapacity, ContextMaintenanceRequired, enforce_rendered_context_capacity,
@@ -849,18 +850,40 @@ class CharacterRuntime:
             finish_reason = str(getattr(last_llm_response, "finish_reason", "") or "").strip().upper()
             if protocol != "legacy_json":
                 truncated = finish_reason in {"MAX_TOKENS", "LENGTH"}
-                # Closed bubbles alone never prove the complete turn. Recovery
-                # additionally requires the dedicated auxiliary boundary below.
-                if truncated and not panel_plan.eligible:
+                if truncated and protocol != "free_body_json" and not panel_plan.eligible:
                     raise StructuredOutputTruncatedError("Free-body response reached the output limit")
                 if finish_reason and not truncated and finish_reason not in SUCCESSFUL_FINISH_REASONS:
                     raise CharacterRuntimeError(f"Free-body generation ended with {finish_reason}")
+                prefix_proof = None
+                auxiliary_cut = False
                 try:
                     primary, panels = content, {}
                     candidate_outcomes = dict(panel_plan.outcomes)
-                    if panel_plan.eligible:
+                    if truncated and protocol == "free_body_json":
+                        try:
+                            prefix_proof = prove_reply_prefix(content, allow_panels=bool(panel_plan.eligible))
+                        except free_body.FreeBodyError:
+                            if not panel_plan.eligible:
+                                raise
+                            # Independently prove the original auxiliary cut; this
+                            # cannot admit a malformed/incomplete primary member.
+                            primary, panels, candidate_outcomes = command_overlay.split_response(
+                                content, protocol, panel_plan, truncated=True)
+                            auxiliary_cut = True
+                        else:
+                            primary = prefix_proof.primary
+                            if prefix_proof.complete_envelope and panel_plan.eligible:
+                                primary, panels, candidate_outcomes = command_overlay.split_response(
+                                    content, protocol, panel_plan, truncated=False)
+                                # At an output limit, complete invalid auxiliary
+                                # members remain failures, not apparent recovery.
+                                entries = json.loads(content, object_pairs_hook=free_body._unique_object).get('panels', [])
+                                if len(entries) != len(panels):
+                                    raise free_body.FreeBodyError('Invalid complete auxiliary member at output limit')
+                    elif panel_plan.eligible:
                         primary, panels, candidate_outcomes = command_overlay.split_response(
                             content, protocol, panel_plan, truncated=truncated)
+                        auxiliary_cut = truncated
                     replies = free_body.parse_response(primary, protocol=protocol, aliases=aliases)
                 except free_body.FreeBodyError as exc:
                     if truncated:
@@ -875,18 +898,22 @@ class CharacterRuntime:
                         reason = degenerate_repetition_reason(free_body._masked(value or ""))
                         if reason:
                             raise FreeBodyRuntimeError(f"Free-body output contained a degenerate repetition loop: {reason}")
-                if truncated:
-                    # Publish proof only AFTER identity/body and quality checks.
+                if auxiliary_cut:
+                    # Publish this older proof only for an actual auxiliary cut.
                     for command in panel_plan.eligible.values():
                         candidate_outcomes[command.id]['primary_integrity'] = 'validated_complete_before_auxiliary'
                 panel_outcomes = candidate_outcomes
                 last_parser_shadow = {"response_protocol": protocol, "parser": "free_body_v1"}
+                if prefix_proof is not None:
+                    last_parser_shadow['output_limit_recovery'] = prefix_proof.metadata(
+                        content, str(getattr(last_llm_response, 'finish_reason', finish_reason)))
                 if panel_outcomes:
                     last_parser_shadow["command_postprocess"] = panel_outcomes
                 if hasattr(active_llm_client, "record_response_outcome"):
                     active_llm_client.record_response_outcome(last_llm_response, status="validated",
                         parse_code="free_body_ok",
-                        validation_code="primary_ok_auxiliary_truncated" if truncated else "envelope_ok",
+                        validation_code=("complete_reply_prefix" if prefix_proof is not None else
+                                         "primary_ok_auxiliary_truncated" if auxiliary_cut else "envelope_ok"),
                         metadata_updates=last_parser_shadow)
                 return command_overlay.GeneratedTurn(replies, panels, panel_outcomes)
             if not last_response_content.strip():
@@ -1070,6 +1097,8 @@ class CharacterRuntime:
                     "generation_attempts": getattr(response, "generation_attempts", 1),
                     "parse_attempts": parse_attempts,
                     "parse_status": "success" if parse_attempts == 1 else "retry_success",
+                    **({"output_limit_recovery": last_parser_shadow["output_limit_recovery"]}
+                       if "output_limit_recovery" in last_parser_shadow else {}),
                     "fallback_used": fallback_used, "response_protocol": protocol,
                     **comparison_metadata,
                     **({"command_postprocess": panel_outcomes} if panel_outcomes else {}),

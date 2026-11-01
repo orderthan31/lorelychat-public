@@ -141,6 +141,11 @@ async def test_terminal_transport_failure_persists_sanitized_attempt_metadata(se
         "transport": {
             "policy": "generic_compatible", "output_cap_parameter": "max_tokens",
             "omitted_parameters": [], "warning_codes": [], "provider_warning_count": 0,
+            "thinking_policy": {
+                "requested": "provider_default", "applied_on_wire": False,
+                "parameter": None, "omission_reason": "provider_default",
+                "explicit_parameters_on_wire": [],
+            },
         },
         "transport_attempts": 2,
         "http_status": 503,

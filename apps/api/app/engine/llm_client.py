@@ -22,7 +22,7 @@ from sqlmodel import Session
 from app.core.config import Settings, get_settings
 from app.db.models import LLMUsageEvent
 from app.db.session import engine
-from app.engine.provider_capabilities import capabilities, safe_count, safe_model_version
+from app.engine.provider_capabilities import capabilities, safe_count, safe_model_version, thinking_off_parameters
 
 logger = logging.getLogger(__name__)
 
@@ -269,12 +269,54 @@ class LLMClient:
             omitted.append("top_k")
         return {key: value for key, value in params.items() if value is not None}, omitted
 
-    def transport_diagnostics(self, *, model: str | None = None, warning_count: int = 0) -> dict:
+    def thinking_parameters(self, *, model: str | None = None, wire_confirmed: bool = False) -> tuple[dict, dict]:
+        """Preserve explicit transport controls; auto-OFF is chat-only and exact-gated."""
+        gemini = self.provider() == "gemini"
+        explicit = {key: self.overrides[key] for key in ("reasoning_effort", "thinking_level", "thinking_budget")
+                    if self.overrides.get(key) is not None}
+        names = ({"thinking_level": "thinkingLevel", "thinking_budget": "thinkingBudget"}
+                 if gemini else {"reasoning_effort": "reasoning_effort"})
+        selected = {names[key]: value for key, value in explicit.items() if key in names}
+        params = {"thinkingConfig": selected} if gemini and selected else selected
+        on_wire = [("thinkingConfig." if gemini else "") + key for key in selected]
+        requested = self.settings.chat_thinking_policy
+        parameter = None
+        if requested == "provider_default":
+            reason = "provider_default"
+        elif self.profile != "chat" or self.purpose not in {
+            "chat_generation", "chat_generation_fallback", "chat_command_postprocess",
+        }:
+            reason = "nonchat_scope"
+        elif explicit:
+            # Non-native controls still block automatic changes, but do not
+            # pretend they were serialized by this transport.
+            reason = ("explicit_override_preserved" if explicit.keys() <= names.keys()
+                      else "explicit_override_not_serialized")
+        else:
+            params, reason = thinking_off_parameters(
+                model=model or self.model(),
+                endpoint="https://generativelanguage.googleapis.com/v1beta" if gemini else self.base_url(),
+                transport="generate_content" if gemini else "chat_completions",
+            )
+            parameter = next(iter(params), None)
+            if parameter and not wire_confirmed:
+                reason = "transport_unconfirmed"
+        return params, {
+            "requested": requested,
+            "applied_on_wire": bool(parameter and wire_confirmed),
+            "parameter": parameter,
+            "omission_reason": reason,
+            "explicit_parameters_on_wire": on_wire if wire_confirmed else [],
+        }
+
+    def transport_diagnostics(self, *, model: str | None = None, warning_count: int = 0,
+                              wire_confirmed: bool = False) -> dict:
         diagnostics = self.transport_capabilities(model=model).diagnostics()
         _, omitted = self.sampling_parameters(model=model)
         diagnostics["omitted_parameters"] = omitted
         diagnostics["warning_codes"] = ["sampling_omitted"] if omitted else []
         diagnostics["provider_warning_count"] = warning_count
+        _, diagnostics["thinking_policy"] = self.thinking_parameters(model=model, wire_confirmed=wire_confirmed)
         if warning_count:
             diagnostics["warning_codes"].append("provider_warning_present")
         return diagnostics
@@ -443,10 +485,8 @@ class LLMClient:
         }
         sampling, _ = self.sampling_parameters()
         payload.update(sampling)
-        # An explicit effort is never silently dropped or lowered, including on
-        # custom compatible endpoints. Unselected effort uses provider defaults.
-        if self.overrides.get("reasoning_effort") is not None:
-            payload["reasoning_effort"] = self.overrides["reasoning_effort"]
+        thinking, _ = self.thinking_parameters()
+        payload.update(thinking)
         max_output_tokens = self.max_output_tokens()
         if max_output_tokens:
             payload[policy.output_cap_parameter] = max_output_tokens
@@ -482,7 +522,7 @@ class LLMClient:
             reported_model_version=safe_model_version(data.get("model")),
             cached_tokens=safe_count(prompt_details.get("cached_tokens")) if isinstance(prompt_details, dict) else None,
             reasoning_tokens=safe_count(completion_details.get("reasoning_tokens")) if isinstance(completion_details, dict) else None,
-            transport_diagnostics=self.transport_diagnostics(warning_count=len(response.headers.get_list("warning"))),
+            transport_diagnostics=self.transport_diagnostics(warning_count=len(response.headers.get_list("warning")), wire_confirmed=True),
             prompt_tokens=safe_count(usage.get("prompt_tokens")),
             completion_tokens=safe_count(usage.get("completion_tokens")),
             total_tokens=safe_count(usage.get("total_tokens")),
@@ -624,14 +664,8 @@ class LLMClient:
         }
         sampling, _ = self.sampling_parameters(model=model)
         payload["generationConfig"].update(sampling)
-        # Explicit quality is preserved; omission retains provider defaults.
-        thinking_config = {}
-        if self.overrides.get("thinking_level") is not None:
-            thinking_config["thinkingLevel"] = self.overrides["thinking_level"]
-        if self.overrides.get("thinking_budget") is not None:
-            thinking_config["thinkingBudget"] = self.overrides["thinking_budget"]
-        if thinking_config:
-            payload["generationConfig"]["thinkingConfig"] = thinking_config
+        thinking, _ = self.thinking_parameters(model=model)
+        payload["generationConfig"].update(thinking)
         max_output_tokens = self.max_output_tokens()
         if max_output_tokens:
             payload["generationConfig"]["maxOutputTokens"] = max_output_tokens
@@ -658,7 +692,7 @@ class LLMClient:
             reported_model_version=safe_model_version(data.get("modelVersion")),
             cached_tokens=safe_count(usage.get("cachedContentTokenCount")),
             reasoning_tokens=safe_count(usage.get("thoughtsTokenCount")),
-            transport_diagnostics=self.transport_diagnostics(model=model, warning_count=len(response.headers.get_list("warning"))),
+            transport_diagnostics=self.transport_diagnostics(model=model, warning_count=len(response.headers.get_list("warning")), wire_confirmed=True),
             prompt_tokens=safe_count(usage.get("promptTokenCount")),
             completion_tokens=safe_count(usage.get("candidatesTokenCount")),
             total_tokens=safe_count(usage.get("totalTokenCount")),

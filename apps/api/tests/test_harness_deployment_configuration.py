@@ -68,3 +68,18 @@ def test_example_keeps_opt_in_comparisons_disabled():
     assert values["CHAT_HISTORY_SERIALIZATION"] == "transcript"
     assert values["CHAT_CONTEXT_POLICY"] == "compact"
     assert "CHAT_CONTEXT_INPUT_BUDGET_TOKENS" not in values
+
+
+@pytest.mark.parametrize("policy", ["provider_default", "off_when_supported"])
+def test_compose_forwards_chat_thinking_preference(tmp_path, compose_environment, policy):
+    dotenv = tmp_path / "thinking.env"
+    dotenv.write_text("" if policy == "provider_default" else f"CHAT_THINKING_POLICY={policy}\n")
+    result = subprocess.run(
+        ["docker", "compose", "--env-file", str(dotenv), "-f",
+         str(REPOSITORY / "docker-compose.yml"), "config", "--format", "json"],
+        env=compose_environment, capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    environment = json.loads(result.stdout)["services"]["api"]["environment"]
+    assert environment["CHAT_THINKING_POLICY"] == policy
+    assert Settings(_env_file=None, chat_thinking_policy=environment["CHAT_THINKING_POLICY"]).chat_thinking_policy == policy

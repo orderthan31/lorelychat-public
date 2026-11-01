@@ -97,7 +97,7 @@ async def test_runtime_prepared_contract_and_private_callback(mode, protocol, ca
 @pytest.mark.asyncio
 @pytest.mark.parametrize('protocol', ['tagged_text', 'free_body_json'])
 @pytest.mark.parametrize('failure', ['unknown', 'LENGTH', 'MAX_TOKENS', 'deep', 'repetition', 'control'])
-async def test_invalid_primary_never_persists(mode, protocol, failure):
+async def test_invalid_primary_never_persists_but_complete_json_at_limit_does(mode, protocol, failure):
     mode(protocol)
     plan = co.build_plan([command()])
     raw = encode(protocol, who='BAD' if failure == 'unknown' else 'C1')
@@ -109,6 +109,12 @@ async def test_invalid_primary_never_persists(mode, protocol, failure):
         raw = encode(protocol, body='<|system|>hidden')
     provider = Client([LLMResponse(content=raw, finish_reason=failure if failure in {'LENGTH', 'MAX_TOKENS'} else 'STOP')] * 2)
     seen, snapshots = [], []
+    if protocol == 'free_body_json' and failure in {'LENGTH', 'MAX_TOKENS'}:
+        await CharacterRuntime(provider).generate_replies(characters=[Character(id='a', name='Aria')], recent_messages=[], user_message='source',
+            command_overlay_plan=plan, persist_replies=seen.append, prompt_snapshot_callback=snapshots.append)
+        assert len(seen) == len(provider.calls) == 1
+        assert seen[0].command_panels and snapshots[0]['response_preview'] == raw
+        return
     with pytest.raises(CharacterRuntimeError):
         await CharacterRuntime(provider).generate_replies(characters=[Character(id='a', name='Aria')], recent_messages=[], user_message='source',
             command_overlay_plan=plan, persist_replies=seen.append, prompt_snapshot_callback=snapshots.append)

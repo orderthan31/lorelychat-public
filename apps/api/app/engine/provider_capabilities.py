@@ -25,6 +25,31 @@ def safe_count(value: object) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
+# Exact OFF records, not family/alias guesses. Reviewed 2026-11-01:
+# https://docs.x.ai/developers/models/grok-4.3
+# https://docs.x.ai/developers/rest-api-reference/inference/chat-completions.md
+# https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+# https://openrouter.ai/api/v1/models (Nemotron: reasoning mandatory=false).
+_THINKING_OFF = {
+    "grok-4.3": ("api.x.ai", "/v1", "reasoning_effort"),
+    "nvidia/nemotron-3-ultra-550b-a55b:free": ("openrouter.ai", "/api/v1", "reasoning"),
+}
+
+
+def thinking_off_parameters(*, model: str, endpoint: str, transport: str) -> tuple[dict, str | None]:
+    record = _THINKING_OFF.get(model)
+    if transport != "chat_completions" or record is None:
+        return {}, "unsupported_or_unknown_capability"
+    host, path, parameter = record
+    # Empty query/fragment delimiters still change the appended request path;
+    # empty userinfo is not a verified endpoint either. Keep legacy sampling
+    # verification untouched while making this opt-in gate strictly narrower.
+    if (not verified_endpoint(endpoint, host, (path,)) or "?" in endpoint or "#" in endpoint
+            or urlsplit(endpoint).username is not None):
+        return {}, "unverified_endpoint"
+    return {parameter: "none" if parameter == "reasoning_effort" else {"enabled": False}}, None
+
+
 def safe_model_version(value: object) -> str | None:
     # Identifiers only: never persist arbitrary response text as diagnostics.
     return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}", value) else None

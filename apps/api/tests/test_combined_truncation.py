@@ -1,4 +1,4 @@
-"""Provider LENGTH may belong to an auxiliary suffix, never a partial turn."""
+"""Auxiliary-cut proof stays strict; minimal JSON also admits reply prefixes."""
 import asyncio
 import json
 
@@ -72,7 +72,7 @@ async def test_panel_only_truncation_preserves_primary_and_bounded_fallback(sess
 @pytest.mark.asyncio
 @pytest.mark.parametrize('protocol', ['tagged_text', 'free_body_json'])
 @pytest.mark.parametrize('case', ['no_boundary', 'primary_cut', 'forged', 'literal', 'unknown', 'repeat', 'control', 'malformed', 'extra_primary', 'unclosed_extra', 'complete', 'no_plan'])
-async def test_unproved_primary_is_atomic_failure(mode, protocol, case):
+async def test_unproved_primary_fails_except_approved_minimal_json_prefix(mode, protocol, case):
     mode(protocol)
     raw = truncated(protocol)
     if case == 'no_boundary':
@@ -100,6 +100,16 @@ async def test_unproved_primary_is_atomic_failure(mode, protocol, case):
         raw = encode(protocol)
     provider = RecordingClient([LLMResponse(content=raw, finish_reason='LENGTH')] * 2)
     seen, snapshots = [], []
+    if protocol == 'free_body_json' and case in {'no_boundary', 'primary_cut', 'literal', 'complete'}:
+        await CharacterRuntime(provider).generate_replies(characters=[Character(id='a', name='Aria')],
+            recent_messages=[], user_message='source', command_overlay_plan=co.build_plan([command()]),
+            persist_replies=seen.append, prompt_snapshot_callback=snapshots.append)
+        assert len(seen) == len(provider.calls) == 1
+        assert snapshots[0]['response_preview'] == raw
+        assert snapshots[0]['metadata']['output_limit_recovery']['retained_count'] == 1
+        assert 'primary_integrity' not in seen[0].command_outcomes['cmd']
+        assert bool(seen[0].command_panels) == (case == 'complete')
+        return
     with pytest.raises(CharacterRuntimeError):
         await CharacterRuntime(provider).generate_replies(characters=[Character(id='a', name='Aria')],
             recent_messages=[], user_message='source', command_overlay_plan=co.build_plan([] if case == 'no_plan' else [command()]),

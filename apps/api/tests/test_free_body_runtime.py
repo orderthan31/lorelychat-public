@@ -88,10 +88,16 @@ async def test_fallback_sticky_and_protocol_stable(enable, protocol):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('protocol', ['tagged_text', 'free_body_json'])
 @pytest.mark.parametrize('finish', ['LENGTH', 'MAX_TOKENS'])
-async def test_complete_looking_truncation_rejected_without_persistence(enable, protocol, finish):
+async def test_complete_output_limit_accepts_only_minimal_json(enable, protocol, finish):
     enable(protocol)
     client = SequenceClient([LLMResponse(content=encode(protocol), finish_reason=finish) for _ in range(2)])
     persisted, snapshots = [], []
+    if protocol == 'free_body_json':
+        await CharacterRuntime(client).generate_replies(characters=characters(), recent_messages=[], user_message='next',
+            persist_replies=persisted.append, prompt_snapshot_callback=snapshots.append)
+        assert len(persisted) == len(client.calls) == 1
+        assert snapshots[0]['metadata']['output_limit_recovery']['discarded_tail_chars'] == 0
+        return
     with pytest.raises(CharacterRuntimeError):
         await CharacterRuntime(client).generate_replies(characters=characters(), recent_messages=[], user_message='next',
             persist_replies=persisted.append, prompt_snapshot_callback=snapshots.append)
