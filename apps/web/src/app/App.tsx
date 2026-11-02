@@ -1105,7 +1105,7 @@ export function App() {
     if (!messageId) return;
     setMessageSelectionMode(true);
     setSelectedMessageIds((current) => current.includes(messageId) ? current : [...current, messageId]);
-    setStatus(t('버블 선택모드 · 삭제할 버블을 선택하세요'));
+    setStatus(t('복사하거나 삭제할 버블을 선택하세요'));
   }
   function toggleMessageSelection(messageId) {
     if (!messageId) return;

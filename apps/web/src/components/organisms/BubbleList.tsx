@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type RefObject, type UIEvent, type MouseEvent } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type RefObject, type UIEvent, type MouseEvent, type PointerEvent } from 'react';
 import { useChatWindow } from '../../hooks/useChatWindow';
 import { Cloud } from 'lucide-react';
 import { assetUrlFor, avatarUrlFor } from '../../utils/assets';
@@ -8,6 +8,7 @@ import { BubbleRichText, ChatImageFrame, CommandBlockRenderer, type CommandBlock
 import { useI18n } from '../../i18n/I18nProvider';
 import type { MessageEditDraft } from '../../types/domain';
 import { formatProfileImageAlt } from '../../i18n/core';
+import { messageTextForCopy } from '../../utils/messageClipboard';
 
 type Character = { id?: string; name?: string; [key: string]: unknown };
 type Participant = { id?: string; type?: string; [key: string]: unknown };
@@ -79,18 +80,6 @@ function renderMessagePart(part: RenderPart, key: string | number, side: string,
   ><BubbleRichText text={text} literalHtml={literalHtml} /></div>;
 }
 
-function messageTextPartsForCopy(message: ChatMessage): string[] {
-  const renderParts = normalizedRenderPartsFor(message);
-  if (renderParts.length) {
-    const hasThoughtPart = renderParts.some((part) => part.type === 'thought');
-    return [
-      ...renderParts.map((part) => part.type === 'thought' ? `(${part.text})` : part.text || ''),
-      ...(!isFreeBody(message) && !hasThoughtPart && message.thought ? [`(${message.thought})`] : []),
-    ].filter(Boolean);
-  }
-  return [message.action, message.content, message.thought && `(${message.thought})`].filter(Boolean) as string[];
-}
-
 export type BubbleListProps = {
   messages: ChatMessage[];
   characters: Character[];
@@ -140,6 +129,8 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
   const [editingMessageId, setEditingMessageId] = useState('');
   const [editDraft, setEditDraft] = useState<MessageEditDraft>({ content: '', action: '', thought: '', emotion: '' });
   const longPressTimerRef = useRef<number | null>(null);
+  const longPressOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const suppressBubbleClickRef = useRef<string | undefined>(undefined);
   useEffect(() => () => { if (longPressTimerRef.current) window.clearTimeout(longPressTimerRef.current); }, []);
   const selectedIdSet = useMemo(() => new Set(selectedMessageIds), [selectedMessageIds]);
   const characterById = useMemo(() => new Map(characters.map((c) => [c.id, c])), [characters]);
@@ -163,12 +154,7 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
   };
   const characterForMessage = (message: ChatMessage) => characterById.get(message.speaker_id) || { id: message.speaker_id, name: displayName(message) };
   const copyMessage = async (message: ChatMessage) => {
-    const blockText = commandBlocksFor(message).map((block) => {
-      if (block.type === 'table') return [block.title, ...(block.rows || []).map((row) => row.join(' | '))].filter(Boolean).join('\n');
-      if (block.type === 'comments' || block.type === 'commentary') return [block.title || t('LIVE 댓글'), ...(block.comments || []).map((item) => `${item.author || t('시청자')}: ${item.text || ''}`)].join('\n');
-      return [block.title, block.text].filter(Boolean).join('\n');
-    }).filter(Boolean).join('\n\n');
-    const text = [...messageTextPartsForCopy(message), blockText].filter(Boolean).join('\n');
+    const text = messageTextForCopy(message, t);
     await navigator.clipboard?.writeText(text || '');
     setOpenMenuId('');
   };
@@ -208,16 +194,27 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
   const clearLongPressTimer = () => {
     if (longPressTimerRef.current) window.clearTimeout(longPressTimerRef.current);
     longPressTimerRef.current = null;
+    longPressOriginRef.current = null;
   };
-  const startLongPress = (message: ChatMessage) => {
-    if (!isSelectableMessage(message) || busy) return;
+  const startLongPress = (message: ChatMessage, event: PointerEvent<HTMLElement>) => {
+    suppressBubbleClickRef.current = undefined;
+    if (event.button !== 0 || (event.target instanceof Element && event.target.closest('button, a, input, textarea, select, audio, video')) || !isSelectableMessage(message) || busy || selectionMode) return;
     clearLongPressTimer();
+    longPressOriginRef.current = { x: event.clientX, y: event.clientY };
     longPressTimerRef.current = window.setTimeout(() => {
       setOpenMenuId('');
+      suppressBubbleClickRef.current = message.id;
+      longPressTimerRef.current = null;
       onEnterSelectionMode?.(message.id);
     }, 520);
   };
   const handleBubbleClick = (event: MouseEvent<HTMLElement>, message: ChatMessage) => {
+    if (suppressBubbleClickRef.current === message.id && message.id) {
+      suppressBubbleClickRef.current = undefined;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (!selectionMode || !isSelectableMessage(message)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -256,7 +253,7 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
       return <div data-chat-row={message.id || `row_${windowed.start + index}`} role="listitem" aria-posinset={windowed.start + index + 1} aria-setsize={messages.length} className={`flex w-full items-end gap-2 ${side === 'right' ? 'justify-end' : ''} ${side === 'center' ? 'justify-center' : ''} ${selectionMode ? 'cursor-pointer' : ''}`} key={message.id || index}>
         {selectionMode && isSelectableMessage(message) && <Button type="button" variant="ghost" size="icon" className={`message-select-toggle ${selected ? 'selected' : ''}`} aria-label={t(selected ? '버블 선택 해제' : '버블 선택')} onClick={(event) => { event.stopPropagation(); onToggleMessageSelection?.(message.id); }}>{selected ? '✓' : ''}</Button>}
         {showAvatar && side === 'left' && <Button type="button" variant="ghost" size="icon" className="size-11 min-h-11 shrink-0 rounded-full border-0 bg-transparent p-0 shadow-none hover:bg-transparent" onClick={() => onAvatarPreview?.({ character, emotion: message.emotion || t('아직 없음'), src: avatarUrlFor(character, theme) })}><img className="size-9 rounded-full border border-white/20 bg-white/10 object-cover shadow-[0_6px_16px_rgba(0,0,0,.22)]" src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(String(character.name || t('캐릭터')), locale)} /></Button>}
-        <article className={`bubble ${side} ${side === 'right' ? 'text-white' : ''} ${message.speaker_type === 'system' ? 'system' : ''} ${message.speaker_type === 'storytelling' ? 'storytelling' : ''} ${message.is_typing ? 'typing' : ''} ${selected ? 'selected' : ''}`} onPointerDown={() => startLongPress(message)} onPointerUp={clearLongPressTimer} onPointerCancel={clearLongPressTimer} onPointerLeave={clearLongPressTimer} onClick={(event) => handleBubbleClick(event, message)}>
+        <article className={`bubble ${side} ${side === 'right' ? 'text-white' : ''} ${message.speaker_type === 'system' ? 'system' : ''} ${message.speaker_type === 'storytelling' ? 'storytelling' : ''} ${message.is_typing ? 'typing' : ''} ${selected ? 'selected' : ''}`} onPointerDown={(event) => startLongPress(message, event)} onPointerMove={(event) => { const origin = longPressOriginRef.current; if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 10) clearLongPressTimer(); }} onPointerUp={clearLongPressTimer} onPointerCancel={clearLongPressTimer} onPointerLeave={clearLongPressTimer} onClick={(event) => handleBubbleClick(event, message)}>
           <div className={`bubble-name ${side === 'right' ? 'text-white/90' : ''}`}>{displayName(message)}</div>
           {message.is_typing ? <div className="inline-flex min-h-[22px] min-w-[52px] items-center gap-[5px]" aria-label={t('대화 생성 중')}><span className="size-[7px] animate-[typingPulse_1s_infinite_ease-in-out] rounded-full bg-current opacity-35"></span><span className="size-[7px] animate-[typingPulse_1s_infinite_ease-in-out] rounded-full bg-current opacity-35 [animation-delay:.14s]"></span><span className="size-[7px] animate-[typingPulse_1s_infinite_ease-in-out] rounded-full bg-current opacity-35 [animation-delay:.28s]"></span></div> : <>
             <div className="bubble-menu-wrap"><Button type="button" variant="ghost" size="icon" className="bubble-menu-button" aria-label={t('버블 액션 메뉴')} disabled={selectionMode} onClick={(event) => { event.stopPropagation(); setOpenMenuId(openMenuId === message.id ? '' : String(message.id || '')); }}>⋯</Button>{openMenuId === message.id && <div className="bubble-action-menu" role="menu"><Button type="button" variant="ghost" size="sm" onClick={() => copyMessage(message)}>{t('복사')}</Button><Button type="button" variant="ghost" size="sm" disabled={!canEdit || busy} onClick={() => startMessageEdit(message)}>{t('수정')}</Button>{canSpeak && <Button type="button" variant="ghost" size="sm" onClick={() => { setOpenMenuId(''); onGenerateTts?.(message); }}>{t('TTS')}</Button>}{message.failed && message.retryPayload && <Button type="button" variant="ghost" size="sm" onClick={() => { setOpenMenuId(''); onRetryMessage?.(message); }}>{t('재시도')}</Button>}<Button type="button" variant="ghost" size="sm" disabled={!canRegenerate || busy} title={t(canRegenerate ? '이 메시지 이후를 새로 생성' : '저장된 캐릭터 메시지만 가능')} onClick={() => { setOpenMenuId(''); onRegenerateMessage?.(message); }}>{t('이후 재생성')}</Button><Button type="button" variant="destructive" size="sm" className="danger-menu-item" disabled={!canDelete || busy} title={t('이 버블 삭제')} onClick={() => { setOpenMenuId(''); onDeleteMessage?.(message); }}>{t('삭제')}</Button><Button type="button" variant="ghost" size="sm" disabled={!canDelete || busy} onClick={() => { setOpenMenuId(''); onEnterSelectionMode?.(message.id); }}>{t('여러 개 선택')}</Button></div>}</div>

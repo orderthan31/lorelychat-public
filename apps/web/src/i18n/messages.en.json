@@ -993,5 +993,11 @@
   "체크리스트": "Checklist",
   "타임라인": "Timeline",
   "투표": "Vote",
-  "카드": "Cards"
+  "카드": "Cards",
+  "메시지 선택 동작": "Selected message actions",
+  "선택 복사": "Copy selected messages",
+  "선택 취소": "Cancel selection",
+  "복사 완료": "Copied",
+  "복사 실패": "Copy failed",
+  "복사하거나 삭제할 버블을 선택하세요": "Select messages to copy or delete."
 }
