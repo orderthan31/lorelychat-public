@@ -13,7 +13,8 @@ function handler(name, dependencies) {
   let found;
   function visit(node) { if (ts.isFunctionDeclaration(node) && node.name?.text === name) found = node.getText(ast); ts.forEachChild(node, visit); }
   visit(ast); assert.ok(found, `Production handler ${name} exists`);
-  return new Function(...Object.keys(dependencies), `${compile(found)}; return ${name};`)(...Object.values(dependencies));
+  const env = { ...dependencies, ownUI: () => dependencies, route: { page: dependencies.chatCommandDraft?.id ? 'chatCommandDetail' : 'chatCommandNew' }, routeId: dependencies.chatCommandDraft?.id, routeWork: { capture: () => ({ current: true }) } };
+  return new Function(...Object.keys(env), `${compile(found)}; return ${name};`)(...Object.values(env));
 }
 assert.match(source, /\[chatCommandDraft, setChatCommandDraft\] = useState<any>\(normalizeChatCommandDraft\(\)\)/);
 for (const selection of [undefined, [], ['note', 'table'], ['future_block', 'cards']]) {
@@ -101,7 +102,7 @@ for (const result of ['found', 'missing', 'reject']) {
 {
   const h = harness(); h.visit('A'); h.visit('B'); h.visit('A');
   h.pending[0].resolve([oldA]); h.pending[1].reject(new Error('stale B')); await settle();
-  assert.equal(h.draft, undefined); assert.equal(h.status, '');
+  assert.equal(h.draft, undefined); assert.equal(h.status, '불러오는 중…');
   h.pending[2].resolve([{ ...oldA, name: 'latest A', postprocess_block_types: ['future_block', 'vote'] }]); await settle();
   assert.equal(h.draft.name, 'latest A'); assert.deepEqual(h.draft.postprocess_block_types, ['future_block', 'vote']);
   console.log(`ok hook ${++hookPassed} - A/B/A only newest visit owns completion`);
@@ -114,7 +115,7 @@ for (const result of ['missing', 'reject']) {
 }
 {
   const h = harness(); h.visit('A'); h.unmount(); h.pending[0].resolve([oldA]); await settle();
-  assert.equal(h.draft, undefined); assert.equal(h.status, '');
+  assert.equal(h.draft, undefined); assert.equal(h.status, '불러오는 중…');
   console.log(`ok hook ${++hookPassed} - unmounted visit ignores completion`);
 }
 console.log(`${hookPassed} deferred production-hook regressions passed`);

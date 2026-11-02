@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
+from app.db.models import Character
+from app.ops.catalog_queries import catalog_page
 from app.db.session import get_session
 from app.schemas.characters import CharacterCreate, CharacterRead, CharacterUpdate, CharacterUsageRead
 from app.schemas.pagination import CharacterPageRead
@@ -21,24 +23,13 @@ def list_characters(
     paginated: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    q: str | None = Query(None),
+    q: str | None = Query(None, max_length=512),
     session: Session = Depends(get_session),
 ):
     if paginated:
-        all_items = character_service.list_characters(session)
-        search = (q or "").strip()
-        if search:
-            lowered = search.lower()
-            all_items = [
-                character for character in all_items
-                if lowered in f"{character.name or ''} {character.description or ''} {character.persona or ''}".lower()
-            ]
-        all_items.sort(key=lambda character: ((character.name or ""), character.id))
-        total = len(all_items)
-        pages = max(1, (total + page_size - 1) // page_size)
-        safe_page = min(page, pages)
-        start = (safe_page - 1) * page_size
-        return CharacterPageRead(items=[CharacterRead.model_validate(item.model_dump()) for item in all_items[start:start + page_size]], total=total, page=safe_page, page_size=page_size, pages=pages)
+        result = catalog_page(session, Character, fields=[Character.name, Character.description, Character.persona], order=[Character.name, Character.id], page=page, page_size=page_size, q=q, predicates=())
+        result["items"] = [CharacterRead.model_validate(character_service.ensure_trait_scores(item).model_dump()) for item in result["items"]]
+        return CharacterPageRead(**result)
     return character_service.list_characters(session)
 
 

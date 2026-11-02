@@ -1,7 +1,10 @@
-FROM node:22-alpine AS build
+# Browser tests need a glibc platform supported by the lockfile's Playwright.
+# No package version changes: install the browser revision from npm ci only.
+FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY apps/web/package.json apps/web/package-lock.json ./
 RUN npm ci
+RUN ./node_modules/.bin/playwright install --with-deps chromium
 COPY apps/web/ .
 RUN npm run typecheck && npm run test && npm run build
 

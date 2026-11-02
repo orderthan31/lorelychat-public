@@ -8,7 +8,7 @@ from sqlmodel import select
 from app.core.config import Settings
 from app.db.models import LLMUsageEvent
 from app.engine import llm_client as module
-from app.engine.llm_client import LLMClient, LLMUnavailableError
+from app.engine.llm_client import LLMClient, LLMUnavailableError, LLMRequestError
 
 
 def transport(monkeypatch, body, *, status=200, headers=None):
@@ -158,7 +158,7 @@ async def test_failed_transport_keeps_context_but_not_fabricated_usage(session, 
     requests = transport(monkeypatch, {"error": "PRIVATE BODY synthetic-key"}, status=400,
                          headers={"warning": "PRIVATE BODY synthetic-key"})
     llm = client("gpt-5", stage="repair")
-    with pytest.raises(LLMUnavailableError):
+    with pytest.raises(LLMRequestError):
         await llm.chat([], conversation_id="capability-failure")
     event = session.exec(select(LLMUsageEvent).where(LLMUsageEvent.conversation_id == "capability-failure")).one()
     assert event.purpose == "chat_generation" and event.metadata_["stage"] == "repair"

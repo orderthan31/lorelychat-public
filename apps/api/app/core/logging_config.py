@@ -27,12 +27,74 @@ def redact_sensitive_text(value: object) -> str:
     text = str(value)
     text = _QUERY_SECRET_PATTERN.sub(lambda match: f"{match.group(1)}{_REDACTED}", text)
     text = _JSON_SECRET_PATTERN.sub(lambda match: f"{match.group(1)}{_REDACTED}{match.group(2)}", text)
-    return _BEARER_PATTERN.sub(lambda match: f"{match.group(1)}{_REDACTED}", text)
+    text = _BEARER_PATTERN.sub(lambda match: f"{match.group(1)}{_REDACTED}", text)
+    return re.sub(r"(?<![\w:])/(?:root|home|private|data|secrets|uploads|tmp|var)/[^\s\"\']+", "[PRIVATE_PATH]", text)
+
+
+def safe_log_message(record):
+    import copy
+    if record.name == 'py.warnings':
+        return 'Python warning [diagnostic value omitted]'
+    safe = copy.copy(record)
+    def clean(value):
+        return type(value).__name__ + ': [diagnostic value omitted]' if isinstance(value, BaseException) else value
+    safe.msg = clean(record.msg)
+    if isinstance(record.args, dict):
+        safe.args = {key: clean(value) for key, value in record.args.items()}
+    elif record.args:
+        safe.args = tuple(clean(value) for value in record.args)
+    message = safe.getMessage()
+    exc = record.exc_info[1] if record.exc_info else None
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        try:
+            value = str(exc)
+            if value:
+                message = message.replace(value, '[diagnostic value omitted]')
+        except Exception:
+            message = '[unsafe diagnostic omitted]'
+        exc = exc.__cause__ or (exc.__context__ if not exc.__suppress_context__ else None)
+    return redact_sensitive_text(message)
+
+
+class SensitiveDataFormatter(logging.Formatter):
+    """Sanitize at the final formatter boundary, never serialize exception values.
+
+    Exception strings and source-code lines can contain arbitrary provider prose,
+    not only recognizable keys. Keep class and frame identity, omit both values.
+    Cached exc_text is deliberately ignored and never shared across handlers.
+    """
+    def formatException(self, ei):
+        import traceback
+        exc = ei[1]
+        seen = set()
+        lines = []
+        while exc is not None and id(exc) not in seen:
+            seen.add(id(exc))
+            lines.append(type(exc).__name__ + ': [diagnostic value omitted]')
+            for frame in traceback.extract_tb(exc.__traceback__):
+                lines.append(f'  {Path(frame.filename).name}:{frame.lineno} in {frame.name}')
+            exc = exc.__cause__ or (exc.__context__ if not exc.__suppress_context__ else None)
+        return '\n'.join(lines)
+
+    def format(self, record):
+        import copy
+        safe = copy.copy(record)
+        safe.msg = safe_log_message(record)
+        safe.args = ()
+        safe.exc_text = None
+        # Warning source paths/lines and warning text may contain sensitive data.
+        if record.name == 'py.warnings':
+            safe.msg = 'Python warning [diagnostic value omitted]'
+        if safe.stack_info:
+            safe.stack_info = '[stack diagnostic omitted]'
+        return redact_sensitive_text(super().format(safe))
 
 
 class SensitiveDataFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = redact_sensitive_text(record.getMessage())
+        record.msg = safe_log_message(record)
         record.args = ()
         return True
 
@@ -70,7 +132,12 @@ def configure_file_logging(log_dir: str | Path | None = None) -> None:
     resolved_log_dir = resolve_log_directory(log_dir)
     resolved_log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     secure_log_path(resolved_log_dir, directory=True)
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    formatter = SensitiveDataFormatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    logging.captureWarnings(True)
+    # Cover preconfigured root stream/stderr handlers as well as file handlers.
+    for existing in root.handlers:
+        previous = existing.formatter
+        existing.setFormatter(SensitiveDataFormatter(previous._fmt if previous else "%(levelname)s %(message)s", datefmt=previous.datefmt if previous else None))
     redaction_filter = SensitiveDataFilter()
 
     app_handler = RotatingFileHandler(

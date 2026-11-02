@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.core.config import Settings, get_settings
-from app.db.models import RuntimeSetting
+from app.db.models import ModelOption, ModelProviderAccount, RuntimeSetting
 from app.schemas.runtime_settings import CompressionIntervalOptionRead, ResponseLengthPresetRead, RuntimeModelOptionRead, RuntimeSettingRead, RuntimeSettingUpdate
 from app.services import model_provider_service, provider_secret_service
 
@@ -139,8 +139,20 @@ def _runtime_read_from_model_option(option) -> RuntimeModelOptionRead:
 
 
 def active_option_reads(session: Session, capability: str) -> list[RuntimeModelOptionRead]:
-    options = model_provider_service.active_options_for_runtime(session, capability)
-    return [_runtime_read_from_model_option(option) for option in options]
+    # Historical orphan/deleted accounts must not break unrelated valid choices.
+    options = session.exec(select(ModelOption).where(ModelOption.deleted_at.is_(None))).all()
+    return [_runtime_read_from_model_option(model_provider_service.serialize_option(
+        option, session.get(ModelProviderAccount, option.provider_account_id)))
+        for option in options if _option_available(session, option, capability)]
+
+
+def _option_available(session: Session, option: ModelOption | None, capability: str) -> bool:
+    if option is None or option.deleted_at is not None:
+        return False
+    account = session.get(ModelProviderAccount, option.provider_account_id)
+    if account is None or account.deleted_at is not None:
+        return False
+    return model_provider_service.option_is_active_for_capability(session, option, capability)
 
 
 def _field_was_set(payload: RuntimeSettingUpdate, field: str) -> bool:
@@ -216,8 +228,8 @@ def get_effective_setting(session: Session, conversation_id: str | None = None) 
 
 
 def serialize_setting(setting: RuntimeSetting, *, scope: str, options: bool = True, session: Session | None = None) -> RuntimeSettingRead:
-    chat_options = active_option_reads(session, "chat") if options and session else []
-    compression_options = active_option_reads(session, "compression") if options and session else []
+    chat_options = active_option_reads(session, "chat") if session else []
+    compression_options = active_option_reads(session, "compression") if session else []
     tts_options = active_option_reads(session, "tts") if options and session else []
     returned_chat_options = chat_options
     returned_compression_options = compression_options
@@ -232,10 +244,18 @@ def serialize_setting(setting: RuntimeSetting, *, scope: str, options: bool = Tr
         option for option in returned_compression_options
         if option.key == getattr(setting, "fallback_model_key", None)
     ), None)
-    effective_compression_fallback_option = dedicated_compression_fallback_option or inherited_compression_fallback_option
+    dedicated_key = getattr(setting, "compression_fallback_model_key", None)
+    chat_key = getattr(setting, "fallback_model_key", None)
+    effective_compression_fallback_option = (
+        dedicated_compression_fallback_option if dedicated_key else inherited_compression_fallback_option
+    )
+    if effective_compression_fallback_option and effective_compression_fallback_option.key == setting.compression_model_key:
+        effective_compression_fallback_option = None
+    if fallback_option and fallback_option.key == setting.model_key:
+        fallback_option = None
     compression_fallback_source = (
-        "dedicated" if dedicated_compression_fallback_option
-        else "chat_fallback" if inherited_compression_fallback_option
+        "dedicated" if dedicated_key
+        else "chat_fallback" if chat_key
         else "none"
     )
     preset = response_length_preset_by_key(getattr(setting, "response_length_preset", DEFAULT_RESPONSE_LENGTH_PRESET))
@@ -243,9 +263,11 @@ def serialize_setting(setting: RuntimeSetting, *, scope: str, options: bool = Tr
         scope=scope,
         conversation_id=setting.conversation_id,
         model_key=valid_option.key if valid_option else None,
-        fallback_model_key=fallback_option.key if fallback_option else None,
+        fallback_model_key=chat_key,
+        chat_fallback_status=("not_configured" if not chat_key else "available" if fallback_option else "unavailable"),
         compression_model_key=compression_option.key if compression_option else None,
-        compression_fallback_model_key=dedicated_compression_fallback_option.key if dedicated_compression_fallback_option else None,
+        compression_fallback_model_key=dedicated_key,
+        compression_fallback_status=("not_configured" if not (dedicated_key or chat_key) else "available" if effective_compression_fallback_option else "unavailable"),
         effective_compression_fallback_model_key=effective_compression_fallback_option.key if effective_compression_fallback_option else None,
         compression_fallback_source=compression_fallback_source,
         compression_strategy=(
@@ -360,7 +382,7 @@ def _dynamic_llm_overrides(session: Session, model_key: str | None, capability: 
     option = model_provider_service.option_by_key(session, model_key)
     if not option:
         return None
-    if not model_provider_service.option_is_active_for_capability(session, option, capability):
+    if not _option_available(session, option, capability):
         raise ValueError(f"Model option '{model_key}' is not active or does not support {capability}")
     account = model_provider_service.account_by_id(session, option.provider_account_id)
     api_key = provider_secret_service.get_secret(account.api_key_secret_ref)
@@ -370,6 +392,9 @@ def _dynamic_llm_overrides(session: Session, model_key: str | None, capability: 
         "provider_account_id": account.id,
         "model_option_key": option.key,
         "model": option.model,
+        "supports_json": option.supports_json,
+        "keyless_local": model_provider_service.keyless_local_allowed(account),
+        "provider_config_revision": account.updated_at.isoformat(),
     }
     if account.base_url:
         overrides["base_url"] = account.base_url
@@ -396,10 +421,11 @@ def fallback_llm_overrides_for_setting(setting: RuntimeSetting, session: Session
         return None
     if not session:
         raise ValueError("Fallback model option validation requires a database session")
-    dynamic_overrides = _dynamic_llm_overrides(session, model_key, "chat")
-    if dynamic_overrides:
-        return dynamic_overrides
-    raise ValueError("Selected fallback chat model is not active")
+    if model_key == setting.model_key or not _option_available(
+        session, model_provider_service.option_by_key(session, model_key), "chat"
+    ):
+        return None
+    return _dynamic_llm_overrides(session, model_key, "chat")
 
 
 def compression_fallback_llm_overrides_for_setting(
@@ -414,9 +440,7 @@ def compression_fallback_llm_overrides_for_setting(
     if not session:
         raise ValueError("Compression fallback model option validation requires a database session")
     option = model_provider_service.option_by_key(session, model_key)
-    if not option or not model_provider_service.option_is_active_for_capability(session, option, "compression"):
-        if dedicated_key:
-            raise ValueError("Selected compression fallback model is not active")
+    if not _option_available(session, option, "compression"):
         return None
     return _dynamic_llm_overrides(session, model_key, "compression")
 

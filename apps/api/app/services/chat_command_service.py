@@ -14,6 +14,9 @@ from sqlmodel import Session, select
 
 from app.db.models import ChatCommand, Character, CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, Message, SceneState, WorldSetting
 from app.engine import prompts
+from app.engine.text_scanner import require_unicode_scalars
+from sqlalchemy import inspect as sa_inspect
+
 from app.engine.harness_comparison import ComparisonOptions
 from app.services.context_management_service import (
     ContextCapacity, ContextMaintenanceRequired, enforce_rendered_context_capacity,
@@ -24,6 +27,44 @@ from app.services.chat_command_contract import command_response_format, parse_co
 from app.schemas.chat_commands import ChatCommandCreate, ChatCommandUpdate, DEFAULT_POSTPROCESS_CONTEXT_OPTIONS, normalize_command_name
 
 logger = logging.getLogger(__name__)
+
+
+class CommandUnicodeError(ValueError):
+    """Optional generated command content is not persistable Unicode."""
+
+
+def _parse_persistable_command(raw: str, count: int, **kwargs) -> list[dict] | None:
+    # Validate the entire decoded tree before schema normalization or any write.
+    # Invalid text in even an unused/unknown field must not be silently dropped.
+    if not isinstance(raw, str) or len(raw) > 100_000:
+        return None
+    try:
+        require_unicode_scalars(raw)
+        decoded = json.loads(raw)
+        require_unicode_scalars(decoded)
+    except ValueError as exc:
+        if "Unicode scalar" in str(exc):
+            raise CommandUnicodeError("command_invalid_unicode") from exc
+        return None
+    except (TypeError, RecursionError):
+        return None
+    return parse_command_payload(raw, count, **kwargs)
+
+
+def _release_auxiliary_reads(session: Session) -> None:
+    """Detach fully loaded snapshots, then end autobegin without flushing.
+
+    The generation finalizer owns all source/reply writes. Expunging before
+    rollback preserves their transient edits and every captured command/cast
+    field, including expired ORM objects used by later commands.
+    """
+    with session.no_autoflush:
+        for obj in list(session.identity_map.values()):
+            for column in sa_inspect(type(obj)).column_attrs:
+                getattr(obj, column.key)
+        session.expunge_all()
+        session.rollback()
+
 
 DEFAULT_CHAT_COMMANDS = [
     ChatCommandCreate(
@@ -163,6 +204,7 @@ def create_chat_command(session: Session, payload: ChatCommandCreate) -> ChatCom
         postprocess_probability=payload.postprocess_probability,
         postprocess_block_types=list(payload.postprocess_block_types),
         postprocess_context_options=list(payload.postprocess_context_options),
+        context_sources=None if payload.context_sources is None else list(payload.context_sources),
         enabled=payload.enabled,
         priority=payload.priority,
     )
@@ -185,6 +227,8 @@ def update_chat_command(session: Session, command: ChatCommand, payload: ChatCom
     for key in ("display_name", "description", "prompt", "generation_prompt", "postprocess_prompt", "postprocess_target", "postprocess_probability", "postprocess_context_options", "postprocess_block_types", "enabled", "priority"):
         if key in data and data[key] is not None:
             setattr(command, key, data[key])
+    if "context_sources" in data:
+        command.context_sources = data["context_sources"]
     if not command.prompt:
         command.prompt = command.postprocess_prompt or command.generation_prompt
     if not command.generation_prompt and command.prompt:
@@ -347,7 +391,7 @@ def extract_json_object(text: str) -> dict | None:
 
 
 def parse_command_postprocess_response(raw: str, expected_count: int) -> list[dict] | None:
-    return parse_command_payload(raw, expected_count)
+    return _parse_persistable_command(raw, expected_count)
 
 
 def command_response_instruction(target_count: int, *, overlay_mode: bool = False, block_types=None) -> str:
@@ -445,9 +489,13 @@ def command_probability_allows(command: ChatCommand, message: Message) -> bool:
 
 
 def _command_context_options(command: ChatCommand) -> set[str]:
-    raw = getattr(command, "postprocess_context_options", None)
-    if not raw:
-        raw = DEFAULT_POSTPROCESS_CONTEXT_OPTIONS
+    raw = getattr(command, "context_sources", None)
+    if raw is None:
+        # NULL/new-field absence preserves the historical falsey inheritance
+        # contract. Only the NEW explicit [] opts out of optional context.
+        raw = getattr(command, "postprocess_context_options", None)
+        if not raw or raw == "[]":
+            raw = DEFAULT_POSTPROCESS_CONTEXT_OPTIONS
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -746,7 +794,10 @@ async def apply_chat_command_postprocess(
     outcome = dict(execution_outcome or {"status": "standalone", "reason": "mode_separate"})
     combined_validated = None
     if overlay_mode and combined_messages is not None:
-        combined_validated = parse_command_payload(json.dumps({"messages": combined_messages}), 1, overlay=True, block_types=command.postprocess_block_types)
+        try:
+            combined_validated = _parse_persistable_command(json.dumps({"messages": combined_messages}), 1, overlay=True, block_types=command.postprocess_block_types)
+        except CommandUnicodeError:
+            combined_validated = None
         if combined_validated is None:
             outcome.update(status="fallback", reason="invalid_transport_panel")
         else:
@@ -754,7 +805,7 @@ async def apply_chat_command_postprocess(
     executions = dict((source_message.metadata_ or {}).get("command_postprocess_execution") or {})
     executions[command.id] = outcome
     source_message.metadata_ = {**(source_message.metadata_ or {}), "command_postprocess_execution": executions}
-    client = llm_client or (None if combined_validated is not None else LLMClient(profile="chat", purpose="chat_command_postprocess"))
+    client = llm_client
     original_block = "\n\n".join(
         prompts.format_full_public_message(message)
         for message in targets
@@ -768,10 +819,13 @@ async def apply_chat_command_postprocess(
     command_messages = combined_validated
     auxiliary_capacity = None
     try:
-        postprocess_context = "" if combined_validated is not None else build_command_postprocess_context(
-            session, command, conversation_id, source_message, generated_messages, {source_message.id, *(m.id for m in targets)},
-            comparison_options=comparison_options, source_messages=source_messages
-        )
+        if client is None and combined_validated is None:
+            client = LLMClient(profile="chat", purpose="chat_command_postprocess")
+        with session.no_autoflush:
+            postprocess_context = "" if combined_validated is not None else build_command_postprocess_context(
+                session, command, conversation_id, source_message, generated_messages, {source_message.id, *(m.id for m in targets)},
+                comparison_options=comparison_options, source_messages=source_messages
+            )
         settings = prompt_settings or {}
         system_prompt = "\n\n".join(
             part.strip()
@@ -802,7 +856,7 @@ async def apply_chat_command_postprocess(
             },
         ]
         comparison = comparison_options or ComparisonOptions()
-        if comparison.context_policy != "compact" and combined_validated is None:
+        if combined_validated is None:
             # Reserve the actual command client's unchanged output allowance.
             # A caller-supplied narrow/reachable capacity may only be lowered.
             output_reserve = max(2048, int(client.max_output_tokens() or 0)) if client is not None and callable(getattr(client, "max_output_tokens", None)) else 2048
@@ -814,6 +868,8 @@ async def apply_chat_command_postprocess(
             auxiliary_capacity = replace(auxiliary_capacity, completion_reserve_tokens=reserve,
                 available_input_tokens=available, working_input_tokens=min(auxiliary_capacity.working_input_tokens, available))
         response_format = command_response_format(expected_count, overlay=overlay_mode, block_types=command.postprocess_block_types)
+        if not commit:
+            _release_auxiliary_reads(session)
         for attempt in ([] if combined_validated is not None else range(1, 3)):
             if auxiliary_capacity is not None:
                 # Schema is also input on structured transports. This accounting
@@ -821,22 +877,30 @@ async def apply_chat_command_postprocess(
                 capacity_messages = [*messages, {"content": json.dumps(response_format, ensure_ascii=False)}]
                 enforce_rendered_context_capacity(capacity_messages, auxiliary_capacity,
                     history_serialization=comparison.history_serialization)
+            if not commit:
+                # A response recorder may itself have opened a read transaction.
+                _release_auxiliary_reads(session)
             response = await chat_with_optional_conversation_id(
                 messages=messages, client=client, conversation_id=conversation_id,
                 response_format=response_format,
             )
-            command_messages = parse_command_payload(response.content, expected_count, overlay=overlay_mode, block_types=command.postprocess_block_types)
+            invalid_unicode = False
+            try:
+                command_messages = _parse_persistable_command(response.content, expected_count, overlay=overlay_mode, block_types=command.postprocess_block_types)
+            except CommandUnicodeError:
+                command_messages = None
+                invalid_unicode = True
             finish = (response.finish_reason or "").upper()
             if finish not in {"", "STOP", "MAX_TOKENS", "LENGTH"}:
                 command_messages = None
-            code = "schema_ok" if command_messages is not None else (
+            code = "command_invalid_unicode" if invalid_unicode else "schema_ok" if command_messages is not None else (
                 "structured_output_truncated" if finish in {"MAX_TOKENS", "LENGTH"} else "command_schema_invalid"
             )
             diagnostic = {
                 "semantic_attempt": attempt, "code": code,
                 "finish_reason": finish if finish in {"", "STOP", "MAX_TOKENS", "LENGTH"} else "NON_SUCCESS",
                 "response_length": len(response.content),
-                "response_sha256": hashlib.sha256(response.content.encode()).hexdigest(),
+                "response_sha256": hashlib.sha256(response.content.encode(errors="surrogatepass")).hexdigest(),
                 "transport_attempts": response.generation_attempts,
                 "output_budget": response.budget_diagnostics,
                 **task_attempt_metadata(),
@@ -847,6 +911,8 @@ async def apply_chat_command_postprocess(
                 recorder(response, status="validated" if command_messages is not None else "parse_failed",
                          parse_code="json_ok" if command_messages is not None else code,
                          validation_code=code, metadata_updates=diagnostic)
+            if invalid_unicode:
+                raise CommandUnicodeError("command_invalid_unicode")
             if command_messages is not None:
                 break
             logger.warning("Command postprocess validation failed attempt=%s code=%s response_length=%s",
@@ -943,6 +1009,8 @@ async def apply_chat_command_postprocess(
             if diagnostics and isinstance(exc, ValueError) and diagnostics[-1]["code"] != "schema_ok"
             else "command_postprocess_failed"
         )
+        if isinstance(exc, CommandUnicodeError):
+            error_code = "command_invalid_unicode"
         if isinstance(exc, ContextMaintenanceRequired):
             error_code = exc.code
             diagnostics.append({"code": exc.code, "semantic_attempt": attempt,

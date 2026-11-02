@@ -1,4 +1,6 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
+import { Button } from '../atoms/button';
+import { useI18n } from '../../i18n/I18nProvider';
 import type { Plugin } from 'unified';
 import Markdown, { type Components } from 'react-markdown';
 
@@ -17,6 +19,9 @@ export function BubbleRichText(props: BubbleRichTextProps) {
 }
 
 const MemoBubbleRichText = memo(function RichText({ text, literalHtml = false }: BubbleRichTextProps) {
+  const [expanded, setExpanded] = useState(false);
+  const { t } = useI18n();
+  if (text.length > 24000 && !expanded) return <section data-large-prose><p className="text-xs">{t('큰 콘텐츠는 기본 텍스트로 표시됩니다.')}</p><pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words font-[inherit]">{text}</pre><Button type="button" className="min-h-11" onClick={() => setExpanded(true)}>{t('서식 펼치기')}</Button></section>;
   return <Markdown
     remarkPlugins={literalHtml ? [disableHtml] : []}
     allowedElements={BUBBLE_MARKDOWN_ELEMENTS}

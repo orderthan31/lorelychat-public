@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
+from app.db.models import ChatCommand
+from app.ops.catalog_queries import catalog_page
 
 from app.db.session import get_session
 from app.schemas.chat_commands import ChatCommandCreate, ChatCommandRead, ChatCommandUpdate
@@ -15,24 +17,14 @@ def list_chat_commands(
     paginated: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    q: str | None = Query(None),
+    q: str | None = Query(None, max_length=512),
     session: Session = Depends(get_session),
 ):
     chat_command_service.seed_default_chat_commands(session)
     if paginated:
-        all_items = chat_command_service.list_chat_commands(session, include_disabled=include_disabled)
-        search = (q or "").strip()
-        if search:
-            lowered = search.lower()
-            all_items = [
-                command for command in all_items
-                if lowered in f"{command.name or ''} {command.display_name or ''} {command.description or ''} {command.generation_prompt or ''} {command.postprocess_prompt or ''} {command.prompt or ''}".lower()
-            ]
-        total = len(all_items)
-        pages = max(1, (total + page_size - 1) // page_size)
-        safe_page = min(page, pages)
-        start = (safe_page - 1) * page_size
-        return ChatCommandPageRead(items=[ChatCommandRead.model_validate(item.model_dump()) for item in all_items[start:start + page_size]], total=total, page=safe_page, page_size=page_size, pages=pages)
+        result = catalog_page(session, ChatCommand, fields=[ChatCommand.name, ChatCommand.display_name, ChatCommand.description, ChatCommand.generation_prompt, ChatCommand.postprocess_prompt, ChatCommand.prompt], order=[ChatCommand.priority.desc(), ChatCommand.name], page=page, page_size=page_size, q=q, predicates=() if include_disabled else (ChatCommand.enabled == True,))
+        result["items"] = [ChatCommandRead.model_validate(item.model_dump()) for item in result["items"]]
+        return ChatCommandPageRead(**result)
     return chat_command_service.list_chat_commands(session, include_disabled=include_disabled)
 
 

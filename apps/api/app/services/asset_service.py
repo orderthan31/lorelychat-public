@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from sqlmodel import Session, select, delete
+from sqlalchemy import update
 
 from app.db.models import Character, CharacterAsset, Message, MessageAsset, SceneState
 from app.schemas.assets import CharacterAssetCreate, CharacterAssetUpdate, CharacterAssetRead, MessageAssetRead
@@ -94,12 +95,16 @@ def create_asset(session: Session, character_id: str, payload: CharacterAssetCre
         negative_prompt=payload.negative_prompt,
         metadata_=payload.metadata,
     )
+    if payload.is_default:
+        session.exec(update(CharacterAsset).where(CharacterAsset.character_id == character_id).values(is_default=False))
+        asset.is_default = True
+        character = session.get(Character, character_id)
+        character.avatar_url = asset.image_url
+        character.updated_at = datetime.now(timezone.utc)
+        session.add(character)
     session.add(asset)
     session.commit()
     session.refresh(asset)
-    if payload.is_default:
-        set_default_avatar(session, asset.id)
-        session.refresh(asset)
     return asset
 
 

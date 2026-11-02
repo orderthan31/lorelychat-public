@@ -106,9 +106,18 @@ def canonical_moods(values: list[str] | None) -> set[str]:
     return {MOOD_EQUIVALENTS.get(tag, tag) for tag in tagset(values)}
 
 
-def asset_selection_policy(asset: CharacterAsset) -> dict:
-    stored = (asset.metadata_ or {}).get(SELECTION_METADATA_KEY)
-    if isinstance(stored, dict) and stored.get("scope") in {"generic", "scene_preferred", "scene_required"}:
+def asset_selection_policy(asset: CharacterAsset) -> dict | None:
+    metadata = asset.metadata_
+    if not isinstance(metadata, dict):
+        return None
+    stored = metadata.get(SELECTION_METADATA_KEY)
+    if stored is not None:
+        if (not isinstance(stored, dict) or not isinstance(stored.get("scope"), str)
+                or stored["scope"] not in {"generic", "scene_preferred", "scene_required"}):
+            return None
+        tags = stored.get("required_scene_tags", [])
+        if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+            return None
         return stored
     return selection_policy(asset.scene_tags, asset.outfit_tags)
 
@@ -120,21 +129,20 @@ def recent_asset_ranks(
     *,
     limit: int = 8,
 ) -> dict[str, int]:
-    messages = list(session.exec(
-        select(Message)
-        .where(
-            Message.conversation_id == conversation_id,
-            Message.speaker_type == "character",
-            Message.speaker_id == character_id,
-        )
-        .order_by(Message.created_at.desc())
-        .limit(limit)
-    ).all())
+    # Rank only the bounded identity window, not complete historical prose.
+    recent = select(Message.id, Message.created_at).where(
+        Message.conversation_id == conversation_id, Message.speaker_type == "character",
+        Message.speaker_id == character_id,
+    ).order_by(Message.created_at.desc(), Message.id.desc()).limit(max(0, limit)).subquery()
+    rows = session.exec(select(recent.c.id, MessageAsset.asset_id)
+        .outerjoin(MessageAsset, MessageAsset.message_id == recent.c.id)
+        .order_by(recent.c.created_at.desc(), recent.c.id.desc())).all()
     ranks: dict[str, int] = {}
-    for rank, message in enumerate(messages, start=1):
-        links = session.exec(select(MessageAsset).where(MessageAsset.message_id == message.id)).all()
-        for link in links:
-            ranks.setdefault(link.asset_id, rank)
+    message_ranks: dict[str, int] = {}
+    for message_id, asset_id in rows:
+        rank = message_ranks.setdefault(message_id, len(message_ranks) + 1)
+        if asset_id is not None:
+            ranks.setdefault(asset_id, rank)
     return ranks
 
 
@@ -194,7 +202,14 @@ def select_asset_for_message(
     for asset in assets:
         if asset.id in excluded:
             continue
+        # Optional malformed assets are ineligible, not primary-turn failures.
+        if any(not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags)
+               for tags in (asset.mood_tags, asset.expression_tags, asset.scene_tags,
+                            asset.pose_tags, asset.outfit_tags)):
+            continue
         policy = asset_selection_policy(asset)
+        if policy is None:
+            continue
         required_scenes = tagset(policy.get("required_scene_tags") or [])
         if policy.get("scope") == "scene_required" and not (detected_scenes & required_scenes):
             continue

@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.engine.llm_client import LLMClient
+from app.engine.llm_client import LLMClient, LLMCapabilityError, bounded_llm_task, task_attempt_metadata
 
 
 XAI = ("xai", "grok-4.3", "https://api.x.ai/v1")
@@ -168,6 +168,16 @@ async def test_unverified_actual_endpoints_noop(wire, route, variant):
 @pytest.mark.parametrize("overrides", [{"reasoning_effort": "high"}, {"reasoning_effort": "none"}, {"reasoning_effort": 0},
     {"thinking_budget": 0}, {"thinking_level": "high"}, {"reasoning_effort": "high", "thinking_budget": 0}])
 async def test_explicit_controls_block_automatic_even_when_not_supported_by_transport(wire, route, overrides):
+    if "thinking_budget" in overrides or "thinking_level" in overrides:
+        # Explicit unsupported controls must fail before the first paid send.
+        @bounded_llm_task
+        async def reject():
+            with pytest.raises(LLMCapabilityError):
+                await send(client(route, **overrides), wire)
+            assert task_attempt_metadata()["network_attempts"] == 0
+        await reject()
+        assert wire == []
+        return
     await send(client(route, policy="provider_default", **overrides), wire)
     payload, response = await send(client(route, **overrides), wire)
     assert wire[0].content == wire[1].content
@@ -225,11 +235,15 @@ async def test_compression_preserves_explicit_controls(wire, purpose, route, ove
 @pytest.mark.asyncio
 async def test_custom_endpoint_preserves_existing_effort_without_guessing_fields(wire):
     route = ("openai_compatible", "custom-model", "https://custom.invalid/v1")
-    payload, response = await send(client(route, reasoning_effort="high", thinking_budget=0), wire)
+    with pytest.raises(LLMCapabilityError):
+        await send(client(route, reasoning_effort="high", thinking_budget=0), wire)
+    assert wire == []
+    # Supported effort remains a positive control on this same custom route.
+    payload, response = await send(client(route, reasoning_effort="high"), wire)
     assert payload["reasoning_effort"] == "high"
     assert "thinking_budget" not in payload and "reasoning" not in payload
     assert diagnostic(response)["explicit_parameters_on_wire"] == ["reasoning_effort"]
-    assert diagnostic(response)["omission_reason"] == "explicit_override_not_serialized"
+    assert diagnostic(response)["omission_reason"] == "explicit_override_preserved"
 
 
 @pytest.mark.parametrize("route", [XAI, ROUTER])

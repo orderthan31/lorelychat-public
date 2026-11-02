@@ -182,7 +182,7 @@ def _split_tagged(raw):
     # Only a top-level panels opening starts the auxiliary suffix. A literal
     # inside an m bubble cannot consume the rest of a primary turn.
     depth = 0
-    for token in re.finditer(r'<\s*(/?)\s*(m|panels)\b[^>]*(?:>|$)', masked, re.I):
+    for token in body.reserved_tags(masked, ('m', 'panels')):
         close, tag = token.group(1), token.group(2).lower()
         if tag == 'm':
             depth += -1 if close else 1
@@ -263,7 +263,7 @@ def split_response(raw, protocol, plan, *, truncated=False):
             masked_aux = body._masked(auxiliary)
             # Auxiliary corruption may fall back, but never hide primary output.
             # Scan before recovery, including inside panels and unclosed wrappers.
-            if re.search(r'<\s*/?\s*m\b', masked_aux, re.I):
+            if next(body.reserved_tags(masked_aux, ('m',)), None) is not None:
                 raise body.FreeBodyError('Primary bubble after auxiliary envelope')
             wrapper_ends = list(re.finditer(r'<\s*/\s*panels\s*>', masked_aux, re.I))
             if wrapper_ends and masked_aux[wrapper_ends[-1].end():].strip():
@@ -310,6 +310,10 @@ def split_response(raw, protocol, plan, *, truncated=False):
             if not isinstance(entries, list) or len(entries) > MAX_PANELS:
                 entries = []
     panels, seen, unknown = {}, set(), []
+    try:
+        body.require_unicode_scalars(entries)
+    except ValueError as exc:
+        raise body.FreeBodyError(str(exc)) from exc
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get('key'), str):
             continue

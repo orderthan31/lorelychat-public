@@ -3,7 +3,7 @@ import json
 import pytest
 import httpx
 from app.core.config import Settings
-from app.engine.llm_client import CircuitOpenError, LLMClient, LLMResponse, LLMUnavailableError
+from app.engine.llm_client import CircuitOpenError, LLMClient, LLMResponse, LLMUnavailableError, LLMRequestError, LLMPolicyBlockedError
 
 
 @pytest.mark.asyncio
@@ -214,6 +214,12 @@ async def test_gemini_empty_compression_diagnostics_are_content_free(monkeypatch
         return httpx.Response(200, json=body)
 
     monkeypatch.setattr(client, "_post_gemini_with_retries", fake_post)
+    if body.get("promptFeedback", {}).get("blockReason"):
+        with pytest.raises(LLMPolicyBlockedError) as exc:
+            await client._chat_gemini([{"role": "user", "content": "private prompt"}])
+        assert exc.value.transport_attempts == 1
+        assert "private" not in str(exc.value)
+        return
     response = await client._chat_gemini([{"role": "user", "content": "private prompt"}])
     assert response.content == ""
     assert response.provider_diagnostics is not None
@@ -489,7 +495,7 @@ async def test_openai_compatible_does_not_retry_non_retryable_400(monkeypatch):
         "retry_attempts": 3,
     })
 
-    with pytest.raises(LLMUnavailableError) as captured:
+    with pytest.raises(LLMRequestError) as captured:
         await client._chat_openai_compatible([{"role": "user", "content": "안녕"}])
 
     assert calls == 1

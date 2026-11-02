@@ -4,6 +4,7 @@ import withReactContent from 'sweetalert2-react-content';
 import 'sweetalert2/dist/sweetalert2.min.css';
 import { characterApi, conversationApi, settingsApi } from '../api/resources';
 import { GenerationLifecycleSubscriptionClosedError, subscribeGenerationJobLifecycle } from '../api/generationJobEvents';
+import { terminalJobsForRoom, rememberTerminalJob, forgetTerminalJob, unknownSubmissionsForRoom, rememberUnknownSubmission, forgetUnknownSubmission } from '../utils/generationRecovery';
 import { GenerationOwners, RoomVisit, RoomWork, RoomWorkCancelledError } from '../utils/roomWork';
 import { useAppDerivedData } from '../hooks/useAppDerivedData';
 import { useBootstrapResources } from '../hooks/useBootstrapResources';
@@ -48,7 +49,8 @@ import { assetUrlFor, avatarUrlFor } from '../utils/assets';
 import { normalizeCharacterForApi } from '../utils/character';
 import { genreModeLabel, normalizeGenreMode } from '../utils/genre';
 import { pageCount } from '../utils/pagination';
-import type { MessageEditDraft } from '../types/domain';
+import { useMessageActions } from '../views/ConversationDetail/hooks/useMessageActions';
+import type { ChatMessage } from '../components/organisms/BubbleList';
 import { normalizeRuntimeSetting, normalizeRuntimeSettingUpdatePayload } from '../utils/runtimeSettings';
 import { arrayToLines, compactText, linesToArray, parseInputMarkup, parseTagInput, safeJsonParse, tagText } from '../utils/text';
 import {
@@ -149,7 +151,7 @@ export function App() {
   const [selectedWorldSettingId, setSelectedWorldSettingId] = useState('');
   const [ttsVoices, setTtsVoices] = useState<any[]>(FALLBACK_TTS_VOICES);
   const [ttsModels, setTtsModels] = useState<any[]>(FALLBACK_TTS_MODELS);
-  const [presetDraft, setPresetDraft] = useState(EMPTY_PRESET);
+  const [presetDraft, setPresetDraft] = useState<typeof EMPTY_PRESET & { id?: string }>(EMPTY_PRESET);
   const [chatCommandDraft, setChatCommandDraft] = useState<any>(normalizeChatCommandDraft());
   const [presetQuery, setPresetQuery] = useState('');
   const [presetPage, setPresetPage] = useState(1);
@@ -160,8 +162,6 @@ export function App() {
   const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [olderPagingReady, setOlderPagingReady] = useState(false);
-  const [messageSelectionMode, setMessageSelectionMode] = useState(false);
-  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [draft, setDraft] = useState<any>(EMPTY_CHARACTER);
   const [characterAssets, setCharacterAssets] = useState<any[]>([]);
@@ -187,7 +187,33 @@ export function App() {
   const [userMemoryDraft, setUserMemoryDraft] = useState<any>({ character_id: '__room__', memory_type: 'user_note', content: '', importance: 5 });
   const [status, setStatus] = useState(() => t('준비됨'));
   const [busy, setBusy] = useState(false);
-  const { runtimeDefaultSetting, setRuntimeDefaultSetting, saveRuntimeDefaultSetting } = useRuntimeDefaultSetting({ settingsMutations: settingsMutations as any, setBusy, setStatus });
+  const [roomLoadError, setRoomLoadError] = useState('');
+  const [resourceReloadKey, setResourceReloadKey] = useState(0);
+  const routeWork = useRef(new RoomWork()).current;
+  const operationVersions = useRef(new Map<string, symbol>()).current;
+  const busyOwner = useRef<symbol | null>(null);
+  useLayoutEffect(() => {
+    const visit = routeWork.enter(`${route.page}:${'id' in route ? route.id : ''}`);
+    setBusy(false);
+    return () => visit.cancel();
+  }, [route.page, 'id' in route ? route.id : '']);
+  // Guard every completion, including setters passed an updater and late finally.
+  // Independent operations use independent epochs; only the busy owner clears busy.
+  function ownUI(operation: string) {
+    const visit = routeWork.capture();
+    const token = Symbol(operation); operationVersions.set(operation, token);
+    const current = () => visit.current && operationVersions.get(operation) === token;
+    const setters = { setBusy, setStatus, setConversation, setConversationRuntimeSetting, setChatSettingsOpen, setConversationContext, setUserMemoryDraft, setRoomEditDraft, setConversationThumbnailUrl, setWorldSettingDraft, setCharacterAssets, setCharacterAssetsLoading, setAssetDraft, setMessages, setPresetDraft, setChatCommandDraft, setConversationTitle, setSelectedWorldSettingId, setHasOlderMessages, setOlderPagingReady, setParticipants, navigate };
+    return Object.fromEntries(Object.entries(setters).map(([name, setter]) => [name, (...args: any[]) => {
+      if (!current()) return;
+      if (name === 'setBusy') {
+        if (args[0]) busyOwner.current = token;
+        else if (busyOwner.current !== token) return;
+      }
+      return (setter as Function)(...args);
+    }])) as unknown as typeof setters;
+  }
+  const { runtimeDefaultSetting, setRuntimeDefaultSetting, saveRuntimeDefaultSetting } = useRuntimeDefaultSetting({ settingsMutations: settingsMutations as any, setBusy, setStatus, ownUI });
   const chatEndRef = useRef<any>(null);
   const chatThreadRef = useRef<any>(null);
   const composerTextareaRef = useRef<any>(null);
@@ -197,9 +223,11 @@ export function App() {
   const generationOwners = useRef(new GenerationOwners<any>()).current;
   const roomWork = useRef(new RoomWork()).current;
   const readyVisitRef = useRef<RoomVisit | null>(null);
+  const deletedMessageIdsRef = useRef(new Map<string, Set<string>>());
   const activeGenerationSubscriptionRef = useRef<any>(null);
   const appRoute = route as typeof route & { id?: string };
   const routeId = appRoute.id || '';
+  const resourceRouteIdRef = useRef(routeId); resourceRouteIdRef.current = routeId;
   const selectedConversationId = route.page === 'conversationDetail' ? routeId : '';
   const selectedConversationIdRef = useRef('');
   selectedConversationIdRef.current = selectedConversationId;
@@ -271,7 +299,27 @@ export function App() {
     };
   }, [selectedConversationId]);
 
+  const { messageSelectionMode, selectedMessageIds,
+    enterMessageSelectionMode, toggleMessageSelection, clearMessageSelection,
+    deleteSelectedMessages, updateMessageBubble, deleteMessageBubble, regenerateFromMessage } = useMessageActions({
+    roomWork, readyVisitRef, selectedConversationId, busy, setBusy, setStatus, setMessages, nextScrollModeRef,
+    contextDrawerOpen, loadConversationContext, loadBattleState, confirmLocalizedDanger, locale, t,
+    onMessagesDeleted: (roomId, ids) => {
+      const deleted = deletedMessageIdsRef.current.get(roomId) || new Set<string>();
+      ids.forEach(id => deleted.add(id)); deletedMessageIdsRef.current.set(roomId, deleted);
+    },
+    updateMessage: conversationApi.updateMessage,
+    deleteMessage: conversationMutations.deleteMessage.mutateAsync,
+    bulkDeleteMessages: conversationMutations.bulkDeleteMessages.mutateAsync,
+    regeneration: {
+      regenerateMessage: async (input) => await conversationMutations.regenerateMessage.mutateAsync(input) as ChatMessage[],
+      revealServerMessages,
+      loadConversations,
+    },
+  });
+
   async function uploadConversationThumbnail(file) {
+    const { setBusy, setStatus, setConversationThumbnailUrl } = ownUI('uploadConversationThumbnail');
     if (!file) return;
     setBusy(true);
     try {
@@ -287,6 +335,7 @@ export function App() {
     }
   }
   async function uploadWorldThumbnail(file) {
+    const { setBusy, setStatus, setWorldSettingDraft } = ownUI('uploadWorldThumbnail');
     if (!file) return;
     setBusy(true);
     try {
@@ -315,7 +364,8 @@ export function App() {
     return setting;
   }
   async function saveConversationRuntimeSetting() {
-    if (!selectedConversationId) return;
+    const { setBusy, setStatus, setConversation, setConversationRuntimeSetting, setChatSettingsOpen } = ownUI('saveConversationRuntimeSetting');
+    if (!selectedConversationId || readyVisitRef.current !== roomWork.capture()) return;
     setBusy(true);
     try {
       const savedSetting = await (conversationMutations.saveRuntimeSetting.mutateAsync({
@@ -327,11 +377,12 @@ export function App() {
       setConversationRuntimeSetting(normalizeRuntimeSetting(savedSetting || conversationRuntimeSetting));
       setChatSettingsOpen(false);
       setStatus(t('이 방 채팅 설정 저장 완료'));
-    } finally { setBusy(false); }
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function loadConversationContext(conversationId = selectedConversationId) {
     if (!conversationId) return null;
     const visit = roomWork.capture();
+    if (!visit.current || visit.roomId !== conversationId) return null;
     setContextLoading(true);
     try {
       const context = await conversationApi.context(conversationId);
@@ -348,6 +399,7 @@ export function App() {
   }
   async function loadBattleState(conversationId = selectedConversationId, room = conversation, syncControl = false) {
     const visit = roomWork.capture();
+    if (!visit.current || visit.roomId !== conversationId) return null;
     if (!conversationId || room?.genre_mode !== 'battle') {
       setBattleState(null);
       if (syncControl) setBattleControlDraft({ ...EMPTY_BATTLE_CONTROL_DRAFT });
@@ -361,6 +413,8 @@ export function App() {
     return state;
   }
   async function clearActiveCommand(commandId = '') {
+    if (readyVisitRef.current !== roomWork.capture()) return;
+    const { setBusy, setStatus, setConversation } = ownUI('clearActiveCommand');
     if (!selectedConversationId) return;
     setBusy(true);
     try {
@@ -377,6 +431,8 @@ export function App() {
     await Promise.all([loadConversationContext(), loadBattleState()]);
   }
   async function compressConversationNow() {
+    if (readyVisitRef.current !== roomWork.capture()) return;
+    const { setBusy, setStatus, setChatSettingsOpen, setConversationContext } = ownUI('compressConversationNow');
     if (!selectedConversationId || busy) return;
     setBusy(true);
     try {
@@ -391,6 +447,8 @@ export function App() {
     } finally { setBusy(false); }
   }
   async function updateSceneSummary(summary, expectedRevision) {
+    if (readyVisitRef.current !== roomWork.capture()) return;
+    const { setBusy, setStatus, setConversationContext } = ownUI('updateSceneSummary');
     if (!selectedConversationId || busy) return null;
     setBusy(true);
     try {
@@ -408,6 +466,8 @@ export function App() {
     } finally { setBusy(false); }
   }
   async function createUserMemory(payload) {
+    if (readyVisitRef.current !== roomWork.capture()) return;
+    const { setBusy, setStatus, setUserMemoryDraft } = ownUI('createUserMemory');
     if (!selectedConversationId || !payload?.content?.trim()) return;
     setBusy(true);
     try {
@@ -420,6 +480,8 @@ export function App() {
     } finally { setBusy(false); }
   }
   async function updateConversationMemory(memory, payload) {
+    if (readyVisitRef.current !== roomWork.capture()) return;
+    const { setBusy, setStatus } = ownUI('updateConversationMemory');
     if (!selectedConversationId || !memory?.id || !payload?.content?.trim()) return;
     setBusy(true);
     try {
@@ -431,8 +493,12 @@ export function App() {
     } finally { setBusy(false); }
   }
   async function deleteConversationMemory(memory) {
+    const actionVisit = routeWork.capture();
+    if (readyVisitRef.current !== roomWork.capture()) return;
+    const { setBusy, setStatus } = ownUI('deleteConversationMemory');
     if (!selectedConversationId || !memory?.id) return;
     if (!(await confirmLocalizedDanger(formatDangerConfirmation('memory', locale)))) return;
+    if (!actionVisit.current) return;
     setBusy(true);
     try {
       await conversationApi.deleteMemory(selectedConversationId, memory.id);
@@ -447,42 +513,110 @@ export function App() {
     const visit = roomWork.capture();
     if (visit.roomId !== conversationId) return;
     readyVisitRef.current = null;
+    setRoomLoadError('');
+    setConversation(null); setMessages([]); setParticipants([]);
+    setConversationContext(null); setChatSettingsOpen(false); setContextDrawerOpen(false);
     setOlderPagingReady(false);
-    setMessageSelectionMode(false);
-    setSelectedMessageIds([]);
+    clearMessageSelection();
     setShowJumpToLatest(false);
     nextScrollModeRef.current = 'initial';
     lastMessageTailRef.current = { conversationId: '', tailId: '', length: 0 };
     try {
+      // Discover before the message snapshot: completion between these reads
+      // is either followed as a job or already included in the later snapshot.
+      const activeJobs = await visit.wait(conversationApi.activeGenerationJobs(conversationId));
       const [room, roomMessages, roomParticipants, runtimeSetting] = await visit.wait(Promise.all([
         conversationApi.get(conversationId),
         conversationApi.messages(conversationId),
         conversationApi.participants(conversationId),
         conversationApi.runtimeSetting(conversationId),
       ])) as [any, any[], any[], any];
+      if (!room || room.id !== conversationId || !Array.isArray(roomMessages) || !Array.isArray(roomParticipants)) throw new Error('Invalid room snapshot');
+      visit.assert();
+      // A process can die before learning its POST receipt. Persist only the
+      // request identity, never another copy of input prose. Do not open a new
+      // compose until that uncertain submission is authoritatively reconciled.
+      const unknownHints = unknownSubmissionsForRoom(conversationId);
+      for (const hint of unknownHints) {
+        const retainedKey = generationOwners.pending.get(conversationId)?.payload?.metadata?.client_request_id;
+        if (retainedKey === hint.requestId) continue; // Original body can replay safely in this instance.
+        let receipt: any;
+        try { receipt = await visit.wait(conversationApi.generationReceipt(conversationId, hint.requestId)); }
+        catch (error) {
+          if (error.status === 410) { visit.assert(); forgetUnknownSubmission(hint); continue; }
+          if (error.code === 'RECEIPT_LOOKUP_UNSUPPORTED') throw new Error('This server cannot look up request receipts. Reload after upgrading, or explicitly stop tracking; server work may continue.');
+          if (error.status === 404) throw new Error('Submission outcome is still unknown. A missing receipt does not prove the request was never accepted. Reload to reconcile or explicitly stop tracking; server work may continue.');
+          throw error;
+        }
+        visit.assert();
+        const receiptRows = receipt.job.status === 'completed'
+          ? await loadGeneratedJobMessages(conversationId, receipt.incoming_message, receipt.job, visit)
+          : [receipt.incoming_message];
+        for (const row of [...receiptRows].reverse()) if (row && !roomMessages.some(message => message.id === row.id)) roomMessages.unshift(row);
+        roomMessages.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')) || String(a.id).localeCompare(String(b.id)));
+        // Include terminal jobs too: their source/output may be outside the recent page.
+        if (!activeJobs.jobs.some(job => job.id === receipt.job.id)) activeJobs.jobs.push(receipt.job);
+        forgetUnknownSubmission(hint);
+      }
+      // Persisted terminal hints restore Retry after a refresh without storing
+      // input prose or replaying POST. Always re-read the known job first.
+      await Promise.all(terminalJobsForRoom(conversationId).map(async hint => {
+        const source = roomMessages.find(message => message.id === hint.incomingMessageId);
+        if (!source) { forgetTerminalJob(conversationId, hint.jobId); return; }
+        try {
+          const job: any = await visit.wait(conversationApi.generationJob(conversationId, hint.jobId));
+          visit.assert();
+          if (job.status === 'failed' || job.status === 'cancelled') {
+            Object.assign(source, { failed: true, error: job.error_message || 'Generation failed', retryPayload: {}, retryJob: { id: job.id, state_version: job.state_version } });
+          } else if (['queued', 'running', 'retrying'].includes(job.status) && !activeJobs.jobs.some(active => active.id === job.id)) activeJobs.jobs.push(job);
+          else if (job.status === 'completed' && !activeJobs.jobs.some(active => active.id === job.id)) activeJobs.jobs.push(job);
+        } catch (error) {
+          if (error.status === 404 || error.status === 410) forgetTerminalJob(conversationId, hint.jobId);
+          else if (visit.current) Object.assign(source, { failed: true, error: 'Previous generation status could not be verified. Reload to reconcile.' });
+        }
+      }));
+      visit.assert();
+      const discovered = activeJobs.jobs.map(job => ({ conversationId, jobId: job.id, incomingMessage: roomMessages.find(message => message.id === job.incoming_message_id), localMessageId: '', payload: {} }));
+      const retained = generationOwners.pending.get(conversationId);
+      if (retained && !retained.jobId) {
+        const key = retained.payload?.metadata?.client_request_id;
+        const matching = key && discovered.find(job => job.incomingMessage?.metadata?.client_request_id === key);
+        if (matching) Object.assign(retained, matching);
+      }
+      if (!retained && discovered.length) generationOwners.pending.set(conversationId, { ...discovered[0], nextJobs: discovered.slice(1) });
+      else if (retained) retained.nextJobs = discovered.filter(job => job.jobId !== retained.jobId);
       if (selectedConversationIdRef.current !== conversationId) return;
       if (!visit.current) return;
-      setConversation(room);
-      setMessages(roomMessages);
-      setHasOlderMessages(roomMessages.length > 0);
-      setParticipants(roomParticipants);
-      setConversationRuntimeSetting(normalizeRuntimeSetting(runtimeSetting || {}));
-      setConversationContext(null);
       if (room.genre_mode === 'battle') await loadBattleState(conversationId, room, true);
       else {
         setBattleState(null);
         setBattleControlDraft({ ...EMPTY_BATTLE_CONTROL_DRAFT });
       }
       if (!visit.current) return;
+      setConversation(room);
+      setMessages(roomMessages.filter(message => !deletedMessageIdsRef.current.get(conversationId)?.has(message.id)));
+      setHasOlderMessages(roomMessages.length > 0);
+      setParticipants(roomParticipants);
+      setConversationRuntimeSetting(normalizeRuntimeSetting(runtimeSetting || {}));
+      setConversationContext(null);
       readyVisitRef.current = visit;
       void resumeGeneration();
       setSpeakerId(USER_ID);
       await markConversationRead(conversationId);
       if (!visit.current) return;
-      setStatus(t('대화 표시 중'));
+      setStatus('supported' in activeJobs && activeJobs.supported === false ? '대화 표시 중 · 서버가 활성 job 검색을 지원하지 않습니다. 새로고침 후 진행 상태를 다시 확인하세요.' : t('대화 표시 중'));
     } catch (error) {
-      if (visit.current) setStatus(error.message);
+      if (visit.current) { setRoomLoadError(error.message); setStatus(error.message); }
     }
+  }
+  async function stopTrackingUnknownSubmission() {
+    const visit = roomWork.capture();
+    const hints = unknownSubmissionsForRoom(visit.roomId);
+    if (!hints.length || generationOwners.pending.has(visit.roomId)) return;
+    if (!(await confirmDanger('Stop tracking this unresolved submission? This does not cancel server work. It may still complete, and sending another input may create an additional turn.', { title: 'Stop tracking?', confirmText: 'Stop tracking', cancelText: t('취소') }))) return;
+    if (!visit.current) return;
+    for (const hint of hints) forgetUnknownSubmission(hint);
+    await fetchConversation(visit.roomId);
   }
   async function loadOlderMessages() {
     if (!selectedConversationId || loadingOlderMessages || !hasOlderMessages || messages.length === 0) return;
@@ -511,7 +645,7 @@ export function App() {
       setMessages((current) => {
         if (!visit.current) return current;
         const currentIds = new Set(current.map((message) => message.id));
-        return [...uniqueOlder.filter((message) => !currentIds.has(message.id)), ...current];
+        return [...uniqueOlder.filter((message) => !currentIds.has(message.id) && !deletedMessageIdsRef.current.get(visit.roomId)?.has(message.id)), ...current];
       });
       requestAnimationFrame(() => {
         if (!visit.current) return;
@@ -532,6 +666,8 @@ export function App() {
   }
 
   async function renameConversation(title) {
+    if (readyVisitRef.current !== roomWork.capture()) return;
+    const { setBusy, setStatus, setConversation } = ownUI('renameConversation');
     if (!selectedConversationId) return;
     setBusy(true);
     try {
@@ -539,18 +675,23 @@ export function App() {
       setConversation(updated);
       await loadConversations();
       setStatus(t('대화방 제목 변경 완료'));
-    } finally { setBusy(false); }
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function loadConversationEditDraft(conversationId = routeId) {
+    const { setBusy, setStatus, setRoomEditDraft } = ownUI('loadConversationEditDraft');
+    setRoomEditDraft({ title: '', world_setting_id: '', participants: [] });
     if (!conversationId) return;
     setBusy(true);
     try {
-      const [room, context, roomParticipants] = await Promise.all([conversationApi.get(conversationId), conversationApi.context(conversationId).catch(() => null), conversationApi.participants(conversationId).catch(() => [])]) as [any, any, any[]];
+      const [room, context, roomParticipants] = await Promise.all([conversationApi.get(conversationId), conversationApi.context(conversationId), conversationApi.participants(conversationId)]) as [any, any, any[]];
+      if (!room || room.id !== conversationId || !Array.isArray(roomParticipants)) throw new Error('Invalid room edit snapshot');
       setRoomEditDraft(sceneDraftFromContext(room, context, roomParticipants));
       setStatus(t('수정 준비 완료'));
-    } finally { setBusy(false); }
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function saveConversationRoomEdit() {
+    const { setBusy, setStatus, setConversation, navigate } = ownUI('saveConversationRoomEdit');
+    if (roomEditDraft.id !== routeId) { setStatus('Draft identity does not match save target. Reload this form before saving.'); return; }
     if (!routeId || !roomEditDraft.title.trim()) { setStatus(t('대화방 제목은 필수입니다.')); return; }
     if (!roomEditDraft.world_setting_id) { setStatus(t('세계관 선택은 필수입니다.')); return; }
     const draftParticipants = roomEditDraft.participants || [];
@@ -579,9 +720,11 @@ export function App() {
       await loadConversations();
       setStatus(t('대화방 수정 완료'));
       navigate('/conversations');
-    } finally { setBusy(false); }
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function inviteCharacterToConversation(characterId) {
+    if (readyVisitRef.current !== roomWork.capture()) return;
+    const { setBusy, setStatus } = ownUI('inviteCharacterToConversation');
     if (!selectedConversationId || !characterId) return;
     setBusy(true);
     try {
@@ -589,21 +732,27 @@ export function App() {
       await fetchConversation(selectedConversationId);
       await loadConversationContext(selectedConversationId);
       setStatus(t('캐릭터 초대 완료'));
-    } finally { setBusy(false); }
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function removeCharacterFromConversation(characterId) {
+    const actionVisit = routeWork.capture();
+    if (readyVisitRef.current !== roomWork.capture()) return;
+    const { setBusy, setStatus } = ownUI('removeCharacterFromConversation');
     if (!selectedConversationId || !characterId) return;
     const name = participantName(characterId);
     if (!(await confirmLocalizedDanger(formatDangerConfirmation('removeCharacter', locale, name)))) return;
+    if (!actionVisit.current) return;
     setBusy(true);
     try {
       await conversationApi.removeCharacterParticipant(selectedConversationId, characterId);
       await fetchConversation(selectedConversationId);
       await loadConversationContext(selectedConversationId);
       setStatus(t('캐릭터 내보내기 완료'));
-    } finally { setBusy(false); }
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function updateCharacterRoleInConversation(characterId, role) {
+    if (readyVisitRef.current !== roomWork.capture()) return;
+    const { setBusy, setStatus } = ownUI('updateCharacterRoleInConversation');
     if (!selectedConversationId || !characterId) return;
     setBusy(true);
     try {
@@ -611,24 +760,33 @@ export function App() {
       await fetchConversation(selectedConversationId);
       await loadConversationContext(selectedConversationId);
       setStatus(t('캐릭터 역할 수정 완료'));
-    } finally { setBusy(false); }
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function saveCharacter() {
+    const { setBusy, setStatus, navigate } = ownUI('saveCharacter');
+    if (route.page !== 'characterNew' && draft.id !== routeId) { setStatus('Draft identity does not match save target. Reload this form before saving.'); return; }
     if (!draft.name.trim() || !draft.persona.trim()) { setStatus(t('이름과 페르소나는 필수입니다.')); return; }
     setBusy(true);
     try {
       const isNew = route.page === 'characterNew';
       const saved = await characterMutations.saveCharacter.mutateAsync({ id: isNew ? null : routeId, payload: normalizeCharacterForApi(draft) }) as any;
-      await loadCharacters(); setStatus(t('캐릭터 저장 완료')); navigate(`/characters/${saved.id}`);
-    } finally { setBusy(false); }
+      await loadCharacters().catch(error => { throw new Error(`Save completed; refreshing the list failed: ${error.message}. Reload instead of submitting again.`); }); setStatus(t('캐릭터 저장 완료')); navigate(`/characters/${saved.id}`);
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function deleteCharacter() {
+    const actionVisit = routeWork.capture();
+    const { setStatus, navigate } = ownUI('deleteCharacter');
+    try {
     if (!routeId) return;
     if (!(await confirmLocalizedDanger(formatDangerConfirmation('character', locale, draft.name || routeId)))) return;
+    if (!actionVisit.current) return;
     await characterMutations.deleteCharacter.mutateAsync(routeId);
     await loadCharacters(); navigate('/characters');
+  } catch (error) { setStatus(`요청 실패 · ${error.message}`); }
   }
   async function playCharacterTtsSample(characterDraft = draft) {
+    const operationVisit = routeWork.capture();
+    const { setBusy, setStatus } = ownUI('playCharacterTtsSample');
     if (!routeId) return;
     const provider = characterDraft.tts_provider || 'supertonic';
     const providerModels = ttsModels.filter((item) => (item.provider || 'supertonic') === provider);
@@ -641,6 +799,7 @@ export function App() {
 
     try {
       const result = await characterMutations.playTtsSample.mutateAsync({ id: routeId, payload: { text: characterDraft.tts_sample_text || EMPTY_CHARACTER.tts_sample_text, tts_provider: provider, tts_model: model, voice_style: voiceStyle } }) as any;
+      if (!operationVisit.current) return;
       const audio = new Audio(assetUrlFor(result.audio_url));
       await audio.play();
       setStatus(t('TTS 샘플 재생'));
@@ -649,11 +808,15 @@ export function App() {
     } finally { setBusy(false); }
   }
   async function generateMessageTts(message) {
-    if (!message?.id || message.id.startsWith('local_') || message.is_typing) return;
+    const operationVisit = routeWork.capture();
+    if (readyVisitRef.current !== roomWork.capture()) return;
+    const { setBusy, setStatus, setMessages } = ownUI('generateMessageTts');
+    if (!message?.id || message.id.startsWith('local_') || message.is_typing || !messages.some(item => item.id === message.id)) return;
     setBusy(true);
     try {
       const result = await conversationMutations.generateMessageTts.mutateAsync(message.id) as any;
       setMessages((current) => current.map((item) => item.id === message.id ? { ...item, tts_audio_url: result.audio_url, tts_text: result.tts_text } : item));
+      if (!operationVisit.current) return;
       const audio = new Audio(assetUrlFor(result.audio_url));
       await audio.play().catch(() => {});
       setStatus(t('TTS 생성 완료'));
@@ -662,12 +825,15 @@ export function App() {
     } finally { setBusy(false); }
   }
   async function uploadAvatar(file, updateDraft) {
+    const operationVisit = routeWork.capture();
+    const { setBusy, setStatus } = ownUI('uploadAvatar');
     if (!file) return;
     setBusy(true);
     try {
       const formData = new FormData();
       formData.append('file', file);
       const uploaded = await characterMutations.uploadAvatar.mutateAsync(formData) as any;
+      if (!operationVisit.current) return;
       updateDraft('avatar_url', uploaded.avatar_url);
       setStatus(t('아바타 업로드 완료. 저장을 눌러 캐릭터에 반영하세요.'));
     } catch (error) {
@@ -677,7 +843,9 @@ export function App() {
     }
   }
   async function loadCharacterAssets(characterId = routeId) {
-    if (!characterId) return [];
+    const { setStatus, setCharacterAssets, setCharacterAssetsLoading } = ownUI('loadCharacterAssets');
+    if (!characterId || resourceRouteIdRef.current !== characterId) return [];
+    setCharacterAssets([]);
     setCharacterAssetsLoading(true);
     try {
       const list = await characterApi.assets(characterId) as any[];
@@ -707,16 +875,23 @@ export function App() {
     };
   }
   async function createCharacterAsset() {
+    if (draft.id !== routeId) return;
+    const operationVisit = routeWork.capture();
+    const { setBusy, setStatus, setAssetDraft } = ownUI('createCharacterAsset');
     if (!routeId || !assetDraft.label.trim() || !assetDraft.image_url.trim()) return;
     setBusy(true);
     try {
       await characterMutations.createAsset.mutateAsync({ id: routeId, payload: normalizeAssetDraft() });
       setAssetDraft({ label: '', description: '', image_url: '', tags: '', mood_tags: '', scene_tags: '', outfit_tags: '', pose_tags: '', expression_tags: '', priority: 50, enabled: true, is_default: false });
+      if (!operationVisit.current) return;
       await Promise.all([loadCharacterAssets(routeId), loadCharacters()]);
       setStatus(t('에셋 추가 완료'));
-    } finally { setBusy(false); }
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function uploadCharacterAsset(file) {
+    if (draft.id !== routeId) return;
+    const operationVisit = routeWork.capture();
+    const { setBusy, setStatus } = ownUI('uploadCharacterAsset');
     if (!file || !routeId) return;
     setBusy(true);
     try {
@@ -734,47 +909,71 @@ export function App() {
       formData.append('enabled', String(assetDraft.enabled !== false));
       formData.append('is_default', String(!!assetDraft.is_default));
       await characterMutations.uploadAsset.mutateAsync({ id: routeId, formData });
+      if (!operationVisit.current) return;
       await Promise.all([loadCharacterAssets(routeId), loadCharacters()]);
       setStatus(t('에셋 업로드 완료'));
-    } finally { setBusy(false); }
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function patchCharacterAsset(assetId, patch) {
+    if (draft.id !== routeId || !characterAssets.some(asset => asset.id === assetId)) return;
+    const operationVisit = routeWork.capture();
+    const { setBusy, setStatus } = ownUI('patchCharacterAsset');
     setBusy(true);
     try {
       await characterMutations.patchAsset.mutateAsync({ assetId, patch });
+      if (!operationVisit.current) return;
       await Promise.all([loadCharacterAssets(routeId), loadCharacters()]);
-    } finally { setBusy(false); }
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function deleteCharacterAsset(assetId) {
+    if (draft.id !== routeId || !characterAssets.some(asset => asset.id === assetId)) return;
+    const operationVisit = routeWork.capture();
+    const actionVisit = routeWork.capture();
+    const { setBusy, setStatus } = ownUI('deleteCharacterAsset');
     if (!(await confirmLocalizedDanger(formatDangerConfirmation('asset', locale)))) return;
+    if (!actionVisit.current) return;
     setBusy(true);
     try {
       await characterMutations.deleteAsset.mutateAsync(assetId);
+      if (!operationVisit.current) return;
       await loadCharacterAssets(routeId);
       setStatus(t('에셋 삭제 완료'));
-    } finally { setBusy(false); }
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function setDefaultCharacterAsset(assetId) {
+    if (draft.id !== routeId || !characterAssets.some(asset => asset.id === assetId)) return;
+    const operationVisit = routeWork.capture();
+    const { setBusy, setStatus } = ownUI('setDefaultCharacterAsset');
     setBusy(true);
     try {
       await characterMutations.setDefaultAsset.mutateAsync(assetId);
+      if (!operationVisit.current) return;
       await Promise.all([loadCharacterAssets(routeId), loadCharacters()]);
       setStatus(t('기본 프사 변경 완료'));
-    } finally { setBusy(false); }
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
 
   async function savePreset() {
+    const { setBusy, setStatus, navigate } = ownUI('savePreset');
+    if (route.page !== 'presetNew' && presetDraft.id !== routeId) { setStatus('Draft identity does not match save target. Reload this form before saving.'); return; }
     if (!presetDraft.title.trim() || !presetDraft.content.trim()) { setStatus(t('프리셋 제목과 내용은 필수입니다.')); return; }
     setBusy(true);
     try {
       const isNew = route.page === 'presetNew';
       const body = { preset_type: presetDraft.preset_type || 'room_seed', title: presetDraft.title.trim(), content: presetDraft.content.trim(), description: presetDraft.description?.trim() || null, enabled: presetDraft.enabled !== false };
       const saved = await settingsMutations.savePreset.mutateAsync({ id: isNew ? null : routeId, payload: body }) as any;
-      await loadPresets(); setStatus(t('프리셋 저장 완료')); navigate(`/presets/${saved.id}`);
-    } finally { setBusy(false); }
+      await loadPresets().catch(error => { throw new Error(`Save completed; refreshing the list failed: ${error.message}. Reload instead of submitting again.`); }); setStatus(t('프리셋 저장 완료')); navigate(`/presets/${saved.id}`);
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
-  async function deletePreset(id = routeId) { if (!(await confirmLocalizedDanger(formatDangerConfirmation('preset', locale)))) return; await settingsMutations.deletePreset.mutateAsync(id); await loadPresets(); navigate('/presets'); }
+  async function deletePreset(id = routeId) {
+    const actionVisit = routeWork.capture();
+    const { setStatus, navigate } = ownUI('deletePreset');
+    try { if (!(await confirmLocalizedDanger(formatDangerConfirmation('preset', locale)))) return;
+    if (!actionVisit.current) return; await settingsMutations.deletePreset.mutateAsync(id); await loadPresets(); navigate('/presets'); } catch (error) { setStatus(`요청 실패 · ${error.message}`); }
+  }
   async function saveChatCommand() {
+    const { setBusy, setStatus, setChatCommandDraft, navigate } = ownUI('saveChatCommand');
+    if (route.page !== 'chatCommandNew' && chatCommandDraft.id !== routeId) { setStatus('Draft identity does not match save target. Reload this form before saving.'); return; }
     const generationPrompt = chatCommandDraft.generation_prompt || '';
     const postprocessPrompt = chatCommandDraft.postprocess_prompt || chatCommandDraft.prompt || '';
     if (!chatCommandDraft.name?.trim() || !(generationPrompt.trim() || postprocessPrompt.trim())) { setStatus(t('커맨드명과 생성/후처리 프롬프트 중 하나는 필수입니다.')); return; }
@@ -782,29 +981,41 @@ export function App() {
     try {
       const body = chatCommandSavePayload(chatCommandDraft);
       const saved = await settingsMutations.saveChatCommand.mutateAsync({ id: chatCommandDraft.id || null, payload: body }) as any;
-      await loadChatCommands(); setChatCommandDraft(normalizeChatCommandDraft(saved)); setStatus(t('커맨드 저장 완료')); navigate(`/chat-commands/${saved.id}`);
-    } finally { setBusy(false); }
+      await loadChatCommands().catch(error => { throw new Error(`Save completed; list refresh failed: ${error.message}. Reload instead of submitting again.`); }); setChatCommandDraft(normalizeChatCommandDraft(saved)); setStatus(t('커맨드 저장 완료')); navigate(`/chat-commands/${saved.id}`);
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function deleteChatCommand(command) {
+    const actionVisit = routeWork.capture();
+    const { setStatus, setChatCommandDraft, navigate } = ownUI('deleteChatCommand');
+    try {
     if (!command?.id) return;
     if (!(await confirmLocalizedDanger(formatDangerConfirmation('command', locale, command.display_name || command.name)))) return;
+    if (!actionVisit.current) return;
     await settingsMutations.deleteChatCommand.mutateAsync(command.id);
     await loadChatCommands(); setChatCommandDraft(normalizeChatCommandDraft()); setStatus(t('커맨드 삭제 완료')); navigate('/chat-commands');
+  } catch (error) { setStatus(`요청 실패 · ${error.message}`); }
   }
   async function saveWorldSetting() {
+    const { setBusy, setStatus, setWorldSettingDraft, navigate } = ownUI('saveWorldSetting');
+    if (route.page !== 'worldSettingNew' && worldSettingDraft.id !== routeId) { setStatus('Draft identity does not match save target. Reload this form before saving.'); return; }
     if (!worldSettingDraft.title?.trim() || !worldSettingDraft.world_seed?.trim()) { setStatus(t('세계관 이름과 세계관/규칙은 필수입니다.')); return; }
     setBusy(true);
     try {
       const payload = { ...worldSettingDraft, title: worldSettingDraft.title.trim(), thumbnail_url: worldSettingDraft.thumbnail_url || null, description: worldSettingDraft.description || null, genre_mode: normalizeGenreMode(worldSettingDraft.genre_mode), tags: Array.isArray(worldSettingDraft.tags) ? worldSettingDraft.tags : [], enabled: worldSettingDraft.enabled !== false };
       const saved = await settingsMutations.saveWorldSetting.mutateAsync({ id: worldSettingDraft.id || null, payload }) as any;
-      await loadWorldSettings(); setWorldSettingDraft(saved); setStatus(t('세계관 저장 완료'));
-    } finally { setBusy(false); }
+      await loadWorldSettings().catch(error => { throw new Error(`Save completed; list refresh failed: ${error.message}. Reload instead of submitting again.`); }); setWorldSettingDraft(saved); setStatus(t('세계관 저장 완료')); navigate(`/world-settings/${saved.id}`);
+    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function deleteWorldSetting(world) {
+    const actionVisit = routeWork.capture();
+    const { setStatus, setWorldSettingDraft } = ownUI('deleteWorldSetting');
+    try {
     if (!world?.id) return;
     if (!(await confirmLocalizedDanger(formatDangerConfirmation('world', locale, world.title || t('세계관'))))) return;
+    if (!actionVisit.current) return;
     await settingsMutations.deleteWorldSetting.mutateAsync(world.id);
     await loadWorldSettings(); setWorldSettingDraft({ title: '', thumbnail_url: '', description: '', genre_mode: DEFAULT_GENRE_MODE, location: '', mood: '', world_seed: '', opening_scene: '', opening_line: '', tone_preset: '', relationship_archetype: '', compression_focus: '', tags: [], enabled: true }); setStatus(t('세계관 삭제 완료'));
+  } catch (error) { setStatus(`요청 실패 · ${error.message}`); }
   }
   function applyPreset(target, content) {
     if (target === 'room_seed') setScene((current) => ({ ...current, seed: content }));
@@ -829,6 +1040,7 @@ export function App() {
   function sceneDraftFromContext(room, context, roomParticipants = []) {
     const sceneState = context?.scene || {};
     return {
+      id: room?.id,
       title: room?.title || '',
       thumbnail_url: room?.thumbnail_url || '',
       genre_mode: normalizeGenreMode(room?.genre_mode),
@@ -849,10 +1061,13 @@ export function App() {
     setMultiCharacterRoles((current) => current.length <= 1 ? current : current.filter((_, slotIndex) => slotIndex !== index));
   }
   async function deleteConversation(conversationId, event) {
+    const actionVisit = routeWork.capture();
+    const { setBusy, setStatus, navigate } = ownUI('deleteConversation');
     event?.stopPropagation();
     if (!conversationId || busy) return;
     const room = conversations.find((item) => item.id === conversationId);
     if (!(await confirmLocalizedDanger(formatDangerConfirmation('conversation', locale, room?.title || conversationId)))) return;
+    if (!actionVisit.current) return;
     setBusy(true);
     try {
       await conversationMutations.deleteConversation.mutateAsync(conversationId);
@@ -873,7 +1088,8 @@ export function App() {
   async function revealServerMessages(serverMessages, localMessageId, visit = roomWork.capture()) {
     visit.assert();
     async function delay(ms) { await visit.sleep(ms); }
-    const incoming = serverMessages[0];
+    const deleted = () => deletedMessageIdsRef.current.get(visit.roomId);
+    const incoming = deleted()?.has(serverMessages[0]?.id) ? null : serverMessages[0];
     const generated = serverMessages.slice(1);
     nextScrollModeRef.current = 'append';
     setMessages((current) => {
@@ -884,6 +1100,7 @@ export function App() {
     });
     for (const message of generated) {
       visit.assert();
+      if (!message || deleted()?.has(message.id)) continue;
       const typingId = `typing_${message.id}`;
       setStatus(t('대화 표시 중'));
       nextScrollModeRef.current = 'append';
@@ -894,6 +1111,7 @@ export function App() {
       });
       await delay(BUBBLE_REVEAL_DELAY_MS);
       visit.assert();
+      if (deleted()?.has(message.id)) { setMessages(current => current.filter(item => item.id !== typingId)); continue; }
       nextScrollModeRef.current = 'append';
       setMessages((current) => !visit.current ? current : current.some((item) => item.id === message.id)
         ? current.filter((item) => item.id !== typingId)
@@ -901,6 +1119,7 @@ export function App() {
     }
   }
   async function startConversationRoom() {
+    const { setBusy, setStatus, setConversation, setConversationThumbnailUrl, setMessages, setConversationTitle, setSelectedWorldSettingId, setHasOlderMessages, setOlderPagingReady, setParticipants, navigate } = ownUI('startConversationRoom');
     setBusy(true);
     try {
       const selectedCharacters = multiCharacterIds
@@ -939,6 +1158,7 @@ export function App() {
         job = await visit.wait(conversationApi.generationJob(conversationId, jobId), Math.min(10000, deadline - Date.now()));
       } catch (error) {
         visit.assert();
+        if (error.status === 404 || error.status === 410) throw error;
         if (attempt === JOB_POLL_MAX_ATTEMPTS - 1) throw new Error(JOB_PENDING_TIMEOUT_MESSAGE);
         await visit.sleep(JOB_POLL_INTERVAL_MS);
         continue;
@@ -985,26 +1205,48 @@ export function App() {
   }
 
   async function loadGeneratedJobMessages(conversationId, incomingMessage, job, visit = roomWork.capture()) {
-    const latestMessages = await visit.wait(conversationApi.messages(conversationId)) as any[];
-    visit.assert();
-    const generatedIds = new Set(job.generated_message_ids || []);
-    const incoming = latestMessages.find((message) => message.id === incomingMessage?.id) || incomingMessage;
-    const generated = latestMessages.filter((message) => generatedIds.has(message.id));
-    return [incoming, ...generated].filter(Boolean);
+    const generatedIds: string[] = job.generated_message_ids || [];
+    const found = new Map<string, any>();
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    // Fetch complete committed output or retain an explicit reconciliation error.
+    for (let page = 0; page < 100; page++) {
+      const rows = await visit.wait(conversationApi.messages(conversationId, cursor)) as any[];
+      visit.assert();
+      if (!Array.isArray(rows)) throw new Error('Invalid message page');
+      rows.forEach(message => found.set(message.id, message));
+      if (generatedIds.every(id => found.has(id))) break;
+      const next = rows[0]?.id;
+      if (!next || cursors.has(next)) break;
+      cursors.add(next); cursor = next;
+    }
+    const missing = generatedIds.filter(id => !found.has(id));
+    if (missing.length) throw new Error(`Generated output missing ${missing.length} message(s). Reload or reconcile; deleted output is not recreated.`);
+    // A deleted source must not be resurrected from a stale POST receipt.
+    const incoming = found.get(incomingMessage?.id);
+    return [incoming, ...generatedIds.map(id => found.get(id))];
   }
 
   async function resumeGeneration() {
     const visit = roomWork.capture();
     const activeJob = generationOwners.pending.get(visit.roomId);
-    if (!visit.current || readyVisitRef.current !== visit || !activeJob?.jobId) return;
+    if (!visit.current || readyVisitRef.current !== visit || !activeJob || (activeJob.submitting && !activeJob.jobId)) return;
     return generationOwners.run(activeJob, visit, async () => {
       try {
+        // Unknown POST outcome replays only the original idempotency key.
+        if (!activeJob.jobId) {
+          const created: any = await visit.wait(conversationApi.createMessageJob(activeJob.conversationId, activeJob.payload));
+          if (!created?.job?.id || !created?.incoming_message?.id) throw new Error('Invalid generation job receipt');
+          Object.assign(activeJob, { jobId: created.job.id, incomingMessage: created.incoming_message });
+          forgetUnknownSubmission({ conversationId: activeJob.conversationId, requestId: activeJob.payload?.metadata?.client_request_id });
+        }
         // Entry/visibility reconciliation reads durable state before subscribing.
         let job: any;
         try {
           job = await visit.wait(conversationApi.generationJob(activeJob.conversationId, activeJob.jobId));
         } catch (error) {
           visit.assert();
+          if (error.status === 404 || error.status === 410) throw error;
           job = await pollGenerationJob(activeJob.conversationId, activeJob.jobId);
         }
         visit.assert();
@@ -1014,9 +1256,12 @@ export function App() {
         visit.assert();
         if (job.status === 'failed' || job.status === 'cancelled') {
           generationOwners.finish(activeJob);
+          if (activeJob.nextJobs?.length) { const [next, ...rest] = activeJob.nextJobs; generationOwners.pending.set(activeJob.conversationId, { ...next, nextJobs: rest }); }
+          rememberTerminalJob({ conversationId: activeJob.conversationId, jobId: activeJob.jobId, incomingMessageId: activeJob.incomingMessage?.id, stateVersion: job.state_version });
           const errorMessage = job.error_message || t(job.status === 'cancelled' ? '응답 생성 job 취소됨' : '응답 생성 job 실패');
-          setMessages((current) => !visit.current ? current : current.map((item) => item.id === activeJob.localMessageId || item.id === activeJob.incomingMessage?.id ? { ...item, failed: true, error: errorMessage, retryPayload: activeJob.payload } : item).filter((item) => !item.is_typing));
+          setMessages((current) => !visit.current ? current : current.map((item) => item.id === activeJob.localMessageId || item.id === activeJob.incomingMessage?.id ? { ...item, failed: true, error: errorMessage, retryPayload: activeJob.payload, retryJob: { id: activeJob.jobId, state_version: job.state_version } } : item).filter((item) => !item.is_typing));
           setStatus(`${t('전송 실패 ·')} ${errorMessage}`);
+          if (generationOwners.pending.has(activeJob.conversationId)) await resumeGeneration();
           return;
         }
         if (job.status !== 'completed') throw new Error(JOB_PENDING_TIMEOUT_MESSAGE);
@@ -1024,17 +1269,28 @@ export function App() {
         await revealServerMessages(serverMessages, activeJob.localMessageId, visit);
         visit.assert();
         generationOwners.finish(activeJob);
+        forgetTerminalJob(activeJob.conversationId, activeJob.jobId);
+        if (activeJob.nextJobs?.length) { const [next, ...rest] = activeJob.nextJobs; generationOwners.pending.set(activeJob.conversationId, { ...next, nextJobs: rest }); }
         setStatus(`${t('대화 생성 완료 ·')} ${formatUiCount(Math.max(0, serverMessages.length - 1), 'messages', locale)}`);
         await markConversationRead(activeJob.conversationId);
         if (!visit.current) return;
         if (activeJob.payload?.battle_control) await loadBattleState(activeJob.conversationId, { genre_mode: 'battle' }, true);
         if (!visit.current) return;
         await loadConversations();
+        if (visit.current && generationOwners.pending.has(activeJob.conversationId)) await resumeGeneration();
       } catch (error) {
         if (!visit.current || error instanceof RoomWorkCancelledError || error instanceof GenerationLifecycleSubscriptionClosedError) return;
+        if (error.status === 404 || error.status === 410) {
+          generationOwners.finish(activeJob);
+          setStatus('Generation job no longer exists. Reload room to reconcile.');
+          readyVisitRef.current = null;
+          setRoomLoadError('Generation job no longer exists. Reload room to reconcile.');
+          setConversation(null);
+          return;
+        }
         // Keep ownership on network failures. Re-entry, visibility and send
         // attempts retry reconciliation rather than creating duplicate jobs.
-        setStatus(`${t('대화 생성 중…')} ${t(JOB_PENDING_TIMEOUT_MESSAGE)}`);
+        setStatus(`${t('대화 생성 중…')} ${error.message || t(JOB_PENDING_TIMEOUT_MESSAGE)}`);
       }
     }).catch((error) => { if (visit.current && !(error instanceof RoomWorkCancelledError)) setStatus(error.message); });
   }
@@ -1045,7 +1301,7 @@ export function App() {
     if (!conversationId || !visit.current || readyVisitRef.current !== visit) return;
     if (generationOwners.pending.has(conversationId)) { await resumeGeneration(); return; }
     // Reserve synchronously, including the interval before POST returns.
-    const activeJob: any = { conversationId, localMessageId, payload, jobId: null };
+    const activeJob: any = { conversationId, localMessageId, payload, jobId: null, submitting: true };
     generationOwners.pending.set(conversationId, activeJob);
     const clientRequestId = payload?.metadata?.client_request_id || newClientRequestId();
     const payloadWithRequestId = {
@@ -1053,6 +1309,7 @@ export function App() {
       metadata: { ...(payload?.metadata || {}), client_request_id: clientRequestId },
     };
     activeJob.payload = payloadWithRequestId;
+    rememberUnknownSubmission({ conversationId, requestId: clientRequestId });
     const optimisticMessage = { id: localMessageId, conversation_id: conversationId, ...payloadWithRequestId, retryPayload: payloadWithRequestId };
     nextScrollModeRef.current = 'append';
     setMessages((current) => {
@@ -1069,107 +1326,23 @@ export function App() {
       const jobId = created?.job?.id;
       const incomingMessage = created?.incoming_message;
       if (!jobId || !incomingMessage) throw new Error(t('응답 생성 job 정보를 받지 못했습니다.'));
-      Object.assign(activeJob, { jobId, incomingMessage });
+      Object.assign(activeJob, { jobId, incomingMessage, submitting: false });
+      forgetUnknownSubmission({ conversationId, requestId: clientRequestId });
       if (visit.current) {
         if (payload.battle_control) await loadBattleState(selectedConversationId, conversation, true).catch(() => null);
       }
       // A POST can finish after A→B→A; use the current visit's single runner.
       if (roomWork.capture().roomId === conversationId) await resumeGeneration();
     } catch (error) {
-      generationOwners.finish(activeJob);
+      activeJob.submitting = false;
+      // A lost response is not proof the POST failed. Retain the request key.
+      if (error.status && error.status < 500 && error.code !== 'PROTOCOL_ERROR') { generationOwners.finish(activeJob); forgetUnknownSubmission({ conversationId, requestId: clientRequestId }); }
       if (!visit.current) return;
       setStatus(`${t('전송 실패 ·')} ${error.message}`);
       setMessages((current) => !visit.current ? current : current.map((item) => item.id === localMessageId ? { ...item, failed: true, error: error.message, retryPayload: payloadWithRequestId } : item).filter((item) => !item.is_typing));
     }
   }
 
-  async function regenerateFromMessage(message) {
-    if (!selectedConversationId || !message?.id || String(message.id).startsWith('local_') || busy) return;
-    const visit = roomWork.capture();
-    setBusy(true);
-    try {
-      setStatus(t('재생성 중…'));
-      const serverMessages = await conversationMutations.regenerateMessage.mutateAsync({ conversationId: selectedConversationId, messageId: message.id }) as any[];
-      visit.assert();
-      await revealServerMessages([null, ...(serverMessages || [])], `regen_${message.id}`, visit);
-      setStatus(t('재생성 완료'));
-      await loadConversations();
-      if (!visit.current) return;
-      if (contextDrawerOpen) await Promise.all([loadConversationContext(), loadBattleState()]);
-    } catch (error) {
-      if (!visit.current) return;
-      setStatus(`${t('재생성 실패 ·')} ${error.message}`);
-    } finally { setBusy(false); }
-  }
-  function enterMessageSelectionMode(messageId) {
-    if (!messageId) return;
-    setMessageSelectionMode(true);
-    setSelectedMessageIds((current) => current.includes(messageId) ? current : [...current, messageId]);
-    setStatus(t('복사하거나 삭제할 버블을 선택하세요'));
-  }
-  function toggleMessageSelection(messageId) {
-    if (!messageId) return;
-    setSelectedMessageIds((current) => current.includes(messageId) ? current.filter((id) => id !== messageId) : [...current, messageId]);
-  }
-  function clearMessageSelection() {
-    setMessageSelectionMode(false);
-    setSelectedMessageIds([]);
-  }
-  async function deleteSelectedMessages() {
-    if (!selectedMessageIds.length || busy) return;
-    const ids = [...selectedMessageIds];
-    if (!(await confirmLocalizedDanger(formatDangerConfirmation('messages', locale, ids.length)))) return;
-    const localIds = ids.filter((id) => String(id).startsWith('local_'));
-    const serverIds = ids.filter((id) => !String(id).startsWith('local_'));
-    setBusy(true);
-    try {
-      if (serverIds.length) {
-        await conversationMutations.bulkDeleteMessages.mutateAsync({ conversationId: selectedConversationId, messageIds: serverIds });
-      }
-      nextScrollModeRef.current = 'preserve';
-      setMessages((current) => current.filter((item) => !ids.includes(item.id)));
-      clearMessageSelection();
-      if (contextDrawerOpen) await Promise.all([loadConversationContext(), loadBattleState()]);
-      setStatus(t('선택한 메시지 삭제 완료'));
-    } catch (error) {
-      setStatus(`${t('선택 버블 삭제 실패 ·')} ${error.message}`);
-    } finally { setBusy(false); }
-  }
-  async function updateMessageBubble(message, draft: MessageEditDraft) {
-    if (!message?.id || !selectedConversationId || busy) return null;
-    setBusy(true);
-    try {
-      const updated = await conversationApi.updateMessage(selectedConversationId, message.id, draft) as any;
-      nextScrollModeRef.current = 'preserve';
-      setMessages((current) => current.map((item) => item.id === updated.id ? { ...item, ...updated } : item));
-      setStatus(t('버블 수정 완료'));
-      return updated;
-    } catch (error) {
-      setStatus(`${t('버블 수정 실패 ·')} ${error.message}`);
-      throw error;
-    } finally { setBusy(false); }
-  }
-  async function deleteMessageBubble(message) {
-    if (!message?.id || busy) return;
-    if (String(message.id).startsWith('local_') || message.failed) {
-      nextScrollModeRef.current = 'preserve';
-      setMessages((current) => current.filter((item) => item.id !== message.id));
-      setStatus(t('임시 실패 버블 삭제 완료'));
-      return;
-    }
-    if (!selectedConversationId) return;
-    if (!(await confirmLocalizedDanger(formatDangerConfirmation('message', locale)))) return;
-    setBusy(true);
-    try {
-      await conversationMutations.deleteMessage.mutateAsync({ conversationId: selectedConversationId, messageId: message.id });
-      nextScrollModeRef.current = 'preserve';
-      setMessages((current) => current.filter((item) => item.id !== message.id));
-      if (contextDrawerOpen) await Promise.all([loadConversationContext(), loadBattleState()]);
-      setStatus(t('버블 삭제 완료'));
-    } catch (error) {
-      setStatus(`${t('버블 삭제 실패 ·')} ${error.message}`);
-    } finally { setBusy(false); }
-  }
   function scrollToLatest() {
     const node = chatThreadRef.current;
     if (node) node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' });
@@ -1177,8 +1350,21 @@ export function App() {
     setShowJumpToLatest(false);
   }
   async function retryMessage(message) {
-    if (!message?.retryPayload || !selectedConversationId || busy) return;
-    await submitConversationPayload(message.retryPayload, message.id);
+    if (!message?.retryPayload || !selectedConversationId || busy || (message.conversation_id && message.conversation_id !== selectedConversationId)) return;
+    const visit = roomWork.capture();
+    if (readyVisitRef.current !== visit) return;
+    if (generationOwners.pending.has(selectedConversationId)) { await resumeGeneration(); return; }
+    if (!message.retryJob) { await submitConversationPayload(message.retryPayload, message.id); return; }
+    // Explicit terminal retry is CAS; it never creates another source/input.
+    const activeJob: any = { conversationId: selectedConversationId, jobId: message.retryJob.id, localMessageId: message.id, incomingMessage: message, payload: message.retryPayload };
+    generationOwners.pending.set(selectedConversationId, activeJob);
+    try {
+      await conversationApi.retryGenerationJob(selectedConversationId, message.retryJob.id, message.retryJob.state_version);
+      if (visit.current) await resumeGeneration();
+    } catch (error) {
+      // A retry response can be lost after CAS; reconcile this known job only.
+      if (visit.current) { setStatus(`재시도 확인 필요 · ${error.message}`); await resumeGeneration(); }
+    }
   }
 
   async function sendConversationMessage() {
@@ -1264,6 +1450,7 @@ export function App() {
   });
   useRouteResourceSync({
     route,
+    reloadKey: resourceReloadKey,
     characters,
     presets,
     chatCommands,
@@ -1304,6 +1491,7 @@ export function App() {
     presetPage,
   });
 
+  const resourceDraftMismatch = ((route.page === 'characterDetail' || route.page === 'characterAssets') && draft.id !== routeId) || (route.page === 'presetDetail' && presetDraft.id !== routeId) || (route.page === 'chatCommandDetail' && chatCommandDraft.id !== routeId) || (route.page === 'conversationEdit' && roomEditDraft.id !== routeId);
   const appOverlays = <>
     <ConversationInfoDrawer open={contextDrawerOpen} onClose={() => setContextDrawerOpen(false)} context={conversationContext} loading={contextLoading} conversation={conversation} participants={participants} characters={characters} participantName={participantName} onRenameConversation={renameConversation} onInviteCharacter={inviteCharacterToConversation} onRemoveCharacter={removeCharacterFromConversation} onUpdateCharacterRole={updateCharacterRoleInConversation} battleState={battleState} onUpdateSceneSummary={updateSceneSummary} userMemoryDraft={userMemoryDraft} onUserMemoryDraftChange={setUserMemoryDraft} onCreateUserMemory={createUserMemory} onUpdateMemory={updateConversationMemory} onDeleteMemory={deleteConversationMemory} busy={busy} />
     <AvatarPreviewModal preview={avatarPreview as any} onClose={() => setAvatarPreview(null)} />
@@ -1330,27 +1518,30 @@ export function App() {
   })();
 
   return <AppShell route={route} backendOnline={backendOnline} drawerOpen={drawerOpen} setDrawerOpen={setDrawerOpen} navigate={navigate} overlays={appOverlays} headerActions={headerActions}>
+    {resourceDraftMismatch && <section role="status"><p>{status}</p><Button onClick={() => setResourceReloadKey(key => key + 1)}>{t('재시도')}</Button><Button onClick={() => navigate('/' + (route.page.startsWith('character') ? 'characters' : route.page.startsWith('preset') ? 'presets' : 'conversations'))}>{t('목록으로')}</Button></section>}
+    {route.page !== 'conversationDetail' && <p role="status" aria-live="polite" className="form-operation-status">{status}</p>}
     {route.page === 'home' && <ResourceListBoundary variant="home"><HomeView conversations={conversations} characters={characterUsageRanking.length ? characterUsageRanking : characters} allCharacters={characters} worldSettings={worldSettings} navigate={navigate} openConversation={openConversation} /></ResourceListBoundary>}
     {route.page === 'conversationNew' && <ConversationCreateView busy={busy} navigate={navigate} status={status} startConversationRoom={startConversationRoom} conversationTitle={conversationTitle} setConversationTitle={setConversationTitle} selectedWorldSettingId={selectedWorldSettingId} setSelectedWorldSettingId={setSelectedWorldSettingId} worldSettings={worldSettings} scene={scene} setScene={setScene} userDescription={userDescription} setUserDescription={setUserDescription} applyPreset={applyPreset} multiCharacterIds={multiCharacterIds} multiCharacterRoles={multiCharacterRoles} updateMultiCharacterSlot={updateMultiCharacterSlot} updateMultiCharacterRole={updateMultiCharacterRole} removeMultiCharacterSlot={removeMultiCharacterSlot} addMultiCharacterSlot={addMultiCharacterSlot} selectOptions={selectOptions} />}
 
     {route.page === 'characters' && <ResourceListBoundary><CharactersListView characters={characters} navigate={navigate} /></ResourceListBoundary>}
-    {(route.page === 'characterDetail' || route.page === 'characterNew') && <CharacterDetailView route={route} draft={draft} setDraft={setDraft} ttsVoices={ttsVoices} ttsModels={ttsModels} busy={busy} navigate={navigate} setCardPreview={setCardPreview} saveCharacter={saveCharacter} deleteCharacter={deleteCharacter} uploadAvatar={uploadAvatar} playCharacterTtsSample={playCharacterTtsSample} speechPresets={speechPresets} applyPreset={applyPreset} characterAssets={characterAssets} characterAssetsLoading={characterAssetsLoading} assetDraft={assetDraft} setAssetDraft={setAssetDraft} createCharacterAsset={createCharacterAsset} uploadCharacterAsset={uploadCharacterAsset} patchCharacterAsset={patchCharacterAsset} deleteCharacterAsset={deleteCharacterAsset} setDefaultCharacterAsset={setDefaultCharacterAsset} />}
-    {route.page === 'characterAssets' && <CharacterAssetsView route={route} draft={draft} characterAssets={characterAssets} characterAssetsLoading={characterAssetsLoading} busy={busy} assetDraft={assetDraft} setAssetDraft={setAssetDraft} navigate={navigate} createCharacterAsset={createCharacterAsset} uploadCharacterAsset={uploadCharacterAsset} patchCharacterAsset={patchCharacterAsset} deleteCharacterAsset={deleteCharacterAsset} setDefaultCharacterAsset={setDefaultCharacterAsset} assetUrlFor={assetUrlFor} />}
+    {(route.page === 'characterDetail' || route.page === 'characterNew') && !resourceDraftMismatch && <CharacterDetailView route={route} draft={draft} setDraft={setDraft} ttsVoices={ttsVoices} ttsModels={ttsModels} busy={busy} navigate={navigate} setCardPreview={setCardPreview} saveCharacter={saveCharacter} deleteCharacter={deleteCharacter} uploadAvatar={uploadAvatar} playCharacterTtsSample={playCharacterTtsSample} speechPresets={speechPresets} applyPreset={applyPreset} characterAssets={characterAssets} characterAssetsLoading={characterAssetsLoading} assetDraft={assetDraft} setAssetDraft={setAssetDraft} createCharacterAsset={createCharacterAsset} uploadCharacterAsset={uploadCharacterAsset} patchCharacterAsset={patchCharacterAsset} deleteCharacterAsset={deleteCharacterAsset} setDefaultCharacterAsset={setDefaultCharacterAsset} />}
+    {route.page === 'characterAssets' && !resourceDraftMismatch && <CharacterAssetsView route={route} draft={draft} characterAssets={characterAssets} characterAssetsLoading={characterAssetsLoading} busy={busy} assetDraft={assetDraft} setAssetDraft={setAssetDraft} navigate={navigate} createCharacterAsset={createCharacterAsset} uploadCharacterAsset={uploadCharacterAsset} patchCharacterAsset={patchCharacterAsset} deleteCharacterAsset={deleteCharacterAsset} setDefaultCharacterAsset={setDefaultCharacterAsset} assetUrlFor={assetUrlFor} />}
 
     {route.page === 'presets' && <ResourceListBoundary><PresetsView navigate={navigate} presetQuery={presetQuery} setPresetQuery={setPresetQuery} setPresetPage={setPresetPage} loadPresets={loadPresets} visiblePresets={visiblePresets} presetPage={presetPage} pageCount={pageCount} filteredPresets={filteredPresets} /></ResourceListBoundary>}
-    {(route.page === 'presetNew' || route.page === 'presetDetail') && <PresetDetailView route={route} presetDraft={presetDraft} setPresetDraft={setPresetDraft} characters={characters} savePreset={savePreset} deletePreset={deletePreset} busy={busy} navigate={navigate} />}
+    {(route.page === 'presetNew' || route.page === 'presetDetail') && !resourceDraftMismatch && <PresetDetailView route={route} presetDraft={presetDraft} setPresetDraft={setPresetDraft} characters={characters} savePreset={savePreset} deletePreset={deletePreset} busy={busy} navigate={navigate} />}
 
     {route.page === 'chatCommands' && <ResourceListBoundary><ChatCommandsView route={route} navigate={navigate} chatCommands={chatCommands} chatCommandDraft={chatCommandDraft} setChatCommandDraft={setChatCommandDraft} saveChatCommand={saveChatCommand} deleteChatCommand={deleteChatCommand} loadChatCommands={loadChatCommands} busy={busy} /></ResourceListBoundary>}
-    {(route.page === 'chatCommandNew' || route.page === 'chatCommandDetail') && <ChatCommandsView route={route} navigate={navigate} chatCommands={chatCommands} chatCommandDraft={chatCommandDraft} setChatCommandDraft={setChatCommandDraft} saveChatCommand={saveChatCommand} deleteChatCommand={deleteChatCommand} loadChatCommands={loadChatCommands} busy={busy} />}
+    {(route.page === 'chatCommandNew' || route.page === 'chatCommandDetail') && !resourceDraftMismatch && <ChatCommandsView route={route} navigate={navigate} chatCommands={chatCommands} chatCommandDraft={chatCommandDraft} setChatCommandDraft={setChatCommandDraft} saveChatCommand={saveChatCommand} deleteChatCommand={deleteChatCommand} loadChatCommands={loadChatCommands} busy={busy} />}
     {route.page === 'worldSettings' && <ResourceListBoundary><WorldSettingsListView worldSettings={worldSettings} navigate={navigate} loadWorldSettings={loadWorldSettings} /></ResourceListBoundary>}
-    {(route.page === 'worldSettingNew' || route.page === 'worldSettingDetail') && <WorldSettingsDetailView route={route} worldSettings={worldSettings} worldSettingDraft={worldSettingDraft} setWorldSettingDraft={setWorldSettingDraft} saveWorldSetting={saveWorldSetting} deleteWorldSetting={deleteWorldSetting} uploadWorldThumbnail={uploadWorldThumbnail} busy={busy} navigate={navigate} />}
+    {(route.page === 'worldSettingNew' || route.page === 'worldSettingDetail') && <WorldSettingsDetailView route={route} worldSettings={worldSettings} loading={bootstrap.worldSettings.isPending} loadError={bootstrap.worldSettings.error?.message} onRetry={() => { void loadWorldSettings().catch(error => setStatus(error.message)); }} worldSettingDraft={worldSettingDraft} setWorldSettingDraft={setWorldSettingDraft} saveWorldSetting={saveWorldSetting} deleteWorldSetting={deleteWorldSetting} uploadWorldThumbnail={uploadWorldThumbnail} busy={busy} navigate={navigate} />}
 
     {route.page === 'settings' && <SettingsView navigate={navigate} />}
     {route.page === 'modelSettings' && <ModelSettingsView runtimeDefaultSetting={runtimeDefaultSetting} setRuntimeDefaultSetting={setRuntimeDefaultSetting} saveRuntimeDefaultSetting={saveRuntimeDefaultSetting} refetchRuntimeDefaultSetting={refetchRuntimeDefaultSetting} busy={busy} />}
     {route.page === 'statistics' && <StatisticsView conversations={conversations} />}
 
     {route.page === 'conversations' && <ResourceListBoundary variant="media"><ConversationsListView conversations={conversations} busy={busy} navigate={navigate} openConversation={openConversation} deleteConversation={deleteConversation} loadConversations={loadConversations} allCharacters={characters} worldSettings={worldSettings} /></ResourceListBoundary>}
-    {route.page === 'conversationEdit' && <ConversationEditView busy={busy} navigate={navigate} saveConversationRoomEdit={saveConversationRoomEdit} roomEditDraft={roomEditDraft} setRoomEditDraft={setRoomEditDraft} applyRoomEditPreset={applyRoomEditPreset} worldSettings={worldSettings} characters={characters} />}
-    {route.page === 'conversationDetail' && <ConversationDetailView conversation={conversation} selectedConversationId={selectedConversationId} status={status} navigate={navigate} openConversationContextDrawer={openConversationContextDrawer} messageSelectionMode={messageSelectionMode} selectedMessageIds={selectedMessageIds} clearMessageSelection={clearMessageSelection} busy={busy} deleteSelectedMessages={deleteSelectedMessages} messages={messages} characters={characters} participants={participants} setAvatarPreview={setAvatarPreview} chatEndRef={chatEndRef} chatThreadRef={chatThreadRef} loadOlderMessages={loadOlderMessages} hasOlderMessages={hasOlderMessages} loadingOlderMessages={loadingOlderMessages} olderPagingReady={olderPagingReady} retryMessage={retryMessage} renderChatImages={renderChatImages} generateMessageTts={generateMessageTts} regenerateFromMessage={regenerateFromMessage} deleteMessageBubble={deleteMessageBubble} updateMessageBubble={updateMessageBubble} enterMessageSelectionMode={enterMessageSelectionMode} toggleMessageSelection={toggleMessageSelection} setShowJumpToLatest={setShowJumpToLatest} showJumpToLatest={showJumpToLatest} scrollToLatest={scrollToLatest} sendConversationMessage={sendConversationMessage} speakerId={speakerId} setSpeakerId={setSpeakerId} speakerOptions={speakerOptions} participantName={participantName} setChatSettingsOpen={setChatSettingsOpen} chatSettingsOpen={chatSettingsOpen} conversationRuntimeSetting={conversationRuntimeSetting} setConversationRuntimeSetting={setConversationRuntimeSetting} saveConversationRuntimeSetting={saveConversationRuntimeSetting} setRenderChatImages={setRenderChatImages} setConversation={setConversation} compressConversationNow={compressConversationNow} composerTextareaRef={composerTextareaRef} compose={compose} setCompose={setCompose} resizeComposerTextarea={resizeComposerTextarea} handleComposerKeyDown={handleComposerKeyDown} composeExpanded={composeExpanded} setComposeExpanded={setComposeExpanded} battleState={battleState} battleControlDraft={battleControlDraft} setBattleControlDraft={setBattleControlDraft} chatCommands={chatCommands} clearActiveCommand={clearActiveCommand} />}
+    {route.page === 'conversationEdit' && !resourceDraftMismatch && <ConversationEditView busy={busy} navigate={navigate} saveConversationRoomEdit={saveConversationRoomEdit} roomEditDraft={roomEditDraft} setRoomEditDraft={setRoomEditDraft} applyRoomEditPreset={applyRoomEditPreset} worldSettings={worldSettings} characters={characters} />}
+    {route.page === 'conversationDetail' && (!conversation || conversation.id !== selectedConversationId) && <section role={roomLoadError ? 'alert' : 'status'} aria-busy={!roomLoadError}><p>{roomLoadError || t('불러오는 중…')}</p>{roomLoadError && <><Button onClick={() => void fetchConversation(selectedConversationId)}>{t('재시도')}</Button>{unknownSubmissionsForRoom(selectedConversationId).length > 0 && !generationOwners.pending.has(selectedConversationId) && <Button onClick={() => void stopTrackingUnknownSubmission()}>Stop tracking unresolved submission</Button>}</>}</section>}
+    {route.page === 'conversationDetail' && conversation?.id === selectedConversationId && <ConversationDetailView conversation={conversation} selectedConversationId={selectedConversationId} status={status} navigate={navigate} openConversationContextDrawer={openConversationContextDrawer} messageSelectionMode={messageSelectionMode} selectedMessageIds={selectedMessageIds} clearMessageSelection={clearMessageSelection} busy={busy} deleteSelectedMessages={deleteSelectedMessages} messages={messages} characters={characters} participants={participants} setAvatarPreview={setAvatarPreview} chatEndRef={chatEndRef} chatThreadRef={chatThreadRef} loadOlderMessages={loadOlderMessages} hasOlderMessages={hasOlderMessages} loadingOlderMessages={loadingOlderMessages} olderPagingReady={olderPagingReady} retryMessage={retryMessage} renderChatImages={renderChatImages} generateMessageTts={generateMessageTts} regenerateFromMessage={regenerateFromMessage} deleteMessageBubble={deleteMessageBubble} updateMessageBubble={updateMessageBubble} enterMessageSelectionMode={enterMessageSelectionMode} toggleMessageSelection={toggleMessageSelection} setShowJumpToLatest={setShowJumpToLatest} showJumpToLatest={showJumpToLatest} scrollToLatest={scrollToLatest} sendConversationMessage={sendConversationMessage} speakerId={speakerId} setSpeakerId={setSpeakerId} speakerOptions={speakerOptions} participantName={participantName} setChatSettingsOpen={setChatSettingsOpen} chatSettingsOpen={chatSettingsOpen} conversationRuntimeSetting={conversationRuntimeSetting} setConversationRuntimeSetting={setConversationRuntimeSetting} saveConversationRuntimeSetting={saveConversationRuntimeSetting} setRenderChatImages={setRenderChatImages} setConversation={setConversation} compressConversationNow={compressConversationNow} composerTextareaRef={composerTextareaRef} compose={compose} setCompose={setCompose} resizeComposerTextarea={resizeComposerTextarea} handleComposerKeyDown={handleComposerKeyDown} composeExpanded={composeExpanded} setComposeExpanded={setComposeExpanded} battleState={battleState} battleControlDraft={battleControlDraft} setBattleControlDraft={setBattleControlDraft} chatCommands={chatCommands} clearActiveCommand={clearActiveCommand} />}
   </AppShell>;
 }

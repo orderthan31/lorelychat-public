@@ -12,6 +12,7 @@ export type ChatCommandItem = {
   postprocess_target?: 'first_bubble' | 'last_bubble' | 'all_bubbles';
   postprocess_probability?: number;
   postprocess_context_options?: PostprocessContextOption[];
+  context_sources?: PostprocessContextOption[] | null;
   postprocess_block_types?: PostprocessBlockType[];
   enabled?: boolean;
   priority?: number;
@@ -49,7 +50,7 @@ export function chatCommandSavePayload(draft: ChatCommandItem): ChatCommandItem 
     postprocess_prompt: postprocessPrompt,
     postprocess_target: draft.postprocess_target || 'last_bubble',
     postprocess_probability: Math.max(0, Math.min(100, Number(draft.postprocess_probability ?? 100))),
-    postprocess_context_options: Array.isArray(draft.postprocess_context_options) ? draft.postprocess_context_options : DEFAULT_POSTPROCESS_CONTEXT_OPTIONS,
+
     postprocess_block_types: [...(draft.postprocess_block_types ?? [])],
     priority: Number(draft.priority || 0),
     enabled: draft.enabled !== false,

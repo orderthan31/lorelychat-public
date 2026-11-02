@@ -473,7 +473,9 @@ def test_provider_account_api_key_update_replaces_secret_without_raw_response(cl
     assert "gkey-new-secret-9999" not in str(updated)
     session.expire_all()
     stored = model_provider_service.account_by_id(session, account["id"])
-    assert stored.api_key_secret_ref == original_ref
+    # Rotation is copy-on-write: retire the old ref only after SQL commit.
+    assert stored.api_key_secret_ref != original_ref
+    assert provider_secret_service.get_secret(original_ref) is None
     assert provider_secret_service.get_secret(stored.api_key_secret_ref) == "gkey-new-secret-9999"
 
 

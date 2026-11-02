@@ -11,13 +11,15 @@ import { Switch } from '../atoms';
 import { cn } from '../../lib/utils';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { Translator } from '../../i18n/core';
-import type { CompressionStrategy } from '../../types/domain';
+import type { CompressionStrategy, FallbackStatus } from '../../types/domain';
 import { normalizeCompressionStrategy } from '../../utils/runtimeSettings';
 
 type RuntimeOption = { key?: string; label?: string; provider_account_id?: string | null; provider_account_alias?: string | null; provider?: string; model?: string };
 export type RuntimeSettingValue = {
   model_key?: string | null;
   fallback_model_key?: string | null;
+  chat_fallback_status?: FallbackStatus;
+  compression_fallback_status?: FallbackStatus;
   compression_model_key?: string | null;
   compression_fallback_model_key?: string | null;
   effective_compression_fallback_model_key?: string | null;
@@ -90,6 +92,8 @@ function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compa
   const normalizedCompressionStrategy = normalizeCompressionStrategy(value.compression_strategy);
   const update = (patch: Partial<RuntimeSettingValue>) => onChange?.({ ...DEFAULT_RUNTIME_SETTING, ...(value || {}), ...patch });
   return <div className={cn('grid grid-cols-1 gap-2.5 min-[720px]:grid-cols-[minmax(0,1.25fr)_minmax(160px,.75fr)]', compact && 'gap-2')}>
+    {value.chat_fallback_status === 'unavailable' && <p role="status" data-fallback-unavailable="chat">Chat fallback unavailable · {value.fallback_model_key || 'requested model'}. Selection preserved; no replacement selected.</p>}
+    {value.compression_fallback_status === 'unavailable' && <p role="status" data-fallback-unavailable="compression">Compression fallback unavailable · {value.compression_fallback_model_key || value.fallback_model_key || 'requested model'}. Selection preserved; no replacement selected.</p>}
     <Field label={t('채팅 Provider')}><Select value={selectedChatAccountId} disabled={!chatAccounts.length} onChange={(e) => {
       const accountOptions = options.filter((option) => option.provider_account_id === e.target.value);
       const modelKey = accountOptions[0]?.key || null;
@@ -103,7 +107,7 @@ function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compa
       const accountOptions = fallbackOptions.filter((option) => option.provider_account_id === e.target.value);
       update({ fallback_model_key: accountOptions[0]?.key || null });
     }}><option value="">{t('사용 안 함')}</option>{fallbackAccounts.map(([id, option]) => <option key={id} value={id}>{option.provider_account_alias || option.provider || id}</option>)}</Select></Field>
-    <Field label={t('장애 시 보조 모델')}><Select value={String(value.fallback_model_key || '')} disabled={!selectedFallbackAccountId} onChange={(e) => update({ fallback_model_key: e.target.value || null })}><option value="">{t('사용 안 함')}</option>{fallbackOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
+    <Field label={t('장애 시 보조 모델')}><Select value={String(value.fallback_model_key || '')} disabled={!selectedFallbackAccountId} onChange={(e) => update({ fallback_model_key: e.target.value || null })}><option value="">{t('사용 안 함')}</option>{value.fallback_model_key && !fallbackOptionsForAccount.some(option => option.key === value.fallback_model_key) && <option value={value.fallback_model_key}>{value.fallback_model_key} · unavailable</option>}{fallbackOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
     <Field label={t('압축 Provider')}><Select value={selectedCompressionAccountId} disabled={!compressionAccounts.length} onChange={(e) => {
       const accountOptions = compressionOptions.filter((option) => option.provider_account_id === e.target.value);
       const modelKey = accountOptions[0]?.key || null;
@@ -115,6 +119,7 @@ function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compa
     }}><option value="">{compressionOptionsForAccount.length ? t('압축 모델 선택') : t('선택 가능한 모델 없음')}</option>{compressionOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
     <Field label={t('압축 폴백 모델')}><Select value={String(value.compression_fallback_model_key || '')} onChange={(e) => update({ compression_fallback_model_key: e.target.value || null })}>
       <option value="">{t('채팅 폴백 상속')}{inheritedCompressionFallback ? ` · ${inheritedCompressionFallback.label || inheritedCompressionFallback.key}` : ` · ${t('설정 없음')}`}</option>
+      {value.compression_fallback_model_key && !compressionFallbackOptions.some(option => option.key === value.compression_fallback_model_key) && <option value={value.compression_fallback_model_key}>{value.compression_fallback_model_key} · unavailable</option>}
       {compressionFallbackOptions.map((option) => <option key={option.key} value={option.key}>{option.provider_account_alias ? `${option.provider_account_alias} · ` : ''}{option.label || option.key}</option>)}
     </Select><p className="context-muted">{t('전용 모델이 없으면 채팅 폴백을 재사용합니다. 파싱·검증·빈 요약도 실패로 보고 이 모델로 다시 압축합니다.')}</p></Field>
     <fieldset className="grid min-w-0 gap-2 min-[720px]:col-span-2" aria-label={t('압축 방식')}>

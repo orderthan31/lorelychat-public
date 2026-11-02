@@ -1,6 +1,21 @@
 *
 !apps/
+# Re-open only the web child, not every sibling under the apps parent.
+apps/*
 !apps/web/
 !apps/web/**
+# This is the actual repository-root web build context. The nested ignore file
+# does not apply here; exclude host artifacts AFTER the source re-include.
+apps/web/**/node_modules
+apps/web/**/dist
+apps/web/**/.env*
+apps/web/**/.cache
+apps/web/**/.vite
+apps/web/**/coverage
+apps/web/**/test-results
+apps/web/**/playwright-report
+apps/web/**/.runtime
+apps/web/**/secrets
+apps/web/**/*.log
 !deploy/
 !deploy/nginx.conf

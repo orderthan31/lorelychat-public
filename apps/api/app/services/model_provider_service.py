@@ -377,13 +377,20 @@ def fetch_provider_models(account: ModelProviderAccount) -> list[ProviderModel]:
     raise ValueError("Unsupported provider type")
 
 
+def keyless_local_allowed(account: ModelProviderAccount) -> bool:
+    from app.engine.provider_capabilities import is_local_endpoint
+    return (account.provider_type == 'openai_compatible' and
+            account.preset in {'local_gemma', 'ollama', 'lm_studio', 'vllm', 'custom'} and
+            is_local_endpoint(account.base_url or ''))
+
+
 def _configured(account: ModelProviderAccount, *, has_api_key: bool | None = None) -> bool:
     if not account.enabled:
         return False
     if has_api_key is None:
         has_api_key = bool(provider_secret_service.get_secret(account.api_key_secret_ref))
     if account.provider_type == "openai_compatible":
-        return bool(account.base_url) and (has_api_key or account.preset in {"local_gemma", "ollama", "lm_studio", "vllm", "custom"})
+        return bool(account.base_url) and (has_api_key or keyless_local_allowed(account))
     if account.provider_type == "xai":
         return bool(account.base_url) and has_api_key
     return has_api_key
@@ -427,9 +434,15 @@ def create_account(session: Session, payload: ProviderAccountCreate) -> ModelPro
     )
     if payload.api_key:
         account.api_key_secret_ref, account.api_key_hint = provider_secret_service.save_secret(payload.api_key)
-    account.configured = _configured(account)
-    session.add(account)
-    session.commit()
+    created_secret_ref = account.api_key_secret_ref
+    try:
+        account.configured = _configured(account)
+        session.add(account)
+        session.commit()
+    except Exception:
+        session.rollback()
+        provider_secret_service.delete_secret(created_secret_ref)
+        raise
     session.refresh(account)
     should_auto_sync = account.configured and (account.provider_type != "openai_compatible" or bool(payload.api_key))
     if should_auto_sync:
@@ -440,6 +453,8 @@ def create_account(session: Session, payload: ProviderAccountCreate) -> ModelPro
 
 def update_account(session: Session, account_id: str, payload: ProviderAccountUpdate) -> ModelProviderAccount:
     account = _account_by_id(session, account_id)
+    old_secret_ref = account.api_key_secret_ref
+    new_secret_ref = None
     if payload.clear_api_key and payload.api_key:
         raise ValueError("api_key and clear_api_key cannot be used together")
     if payload.alias is not None:
@@ -451,7 +466,6 @@ def update_account(session: Session, account_id: str, payload: ProviderAccountUp
     if payload.preset is not None:
         account.preset = payload.preset
     if payload.clear_api_key:
-        provider_secret_service.delete_secret(account.api_key_secret_ref)
         account.api_key_secret_ref = None
         account.api_key_hint = None
         disabled_at = _now()
@@ -466,11 +480,21 @@ def update_account(session: Session, account_id: str, payload: ProviderAccountUp
             option.updated_at = disabled_at
             session.add(option)
     elif payload.api_key:
-        account.api_key_secret_ref, account.api_key_hint = provider_secret_service.update_secret(account.api_key_secret_ref, payload.api_key)
-    account.configured = False if payload.clear_api_key else _configured(account)
+        # Copy-on-write: an SQL failure must not change the credential still
+        # referenced by the committed row. Retire the old ref only after commit.
+        account.api_key_secret_ref, account.api_key_hint = provider_secret_service.save_secret(payload.api_key)
+        new_secret_ref = account.api_key_secret_ref
     account.updated_at = _now()
-    session.add(account)
-    session.commit()
+    try:
+        account.configured = False if payload.clear_api_key else _configured(account)
+        session.add(account)
+        session.commit()
+    except Exception:
+        session.rollback()
+        provider_secret_service.delete_secret(new_secret_ref)
+        raise
+    if payload.clear_api_key or new_secret_ref:
+        provider_secret_service.delete_secret(old_secret_ref)
     session.refresh(account)
     return account
 

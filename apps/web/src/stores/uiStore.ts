@@ -6,12 +6,11 @@ export type AppTheme = 'light' | 'dark';
 const THEME_STORAGE_KEY = 'lorely-chat-theme';
 
 function storedTheme(): AppTheme {
-  if (typeof localStorage === 'undefined') return 'light';
-  return localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light';
+  try { return localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light'; } catch { return 'light'; }
 }
 
 function persistTheme(theme: AppTheme) {
-  if (typeof localStorage !== 'undefined') localStorage.setItem(THEME_STORAGE_KEY, theme);
+  try { localStorage.setItem(THEME_STORAGE_KEY, theme); } catch { /* Persistence is best effort. */ }
 }
 
 export type UiStoreState = {
@@ -49,6 +48,11 @@ export const useUiStore = create<UiStoreState>()(persist<UiStoreState, [], [], P
   closeDrawers: () => set({ drawerOpen: false, contextDrawerOpen: false }),
 }), {
   name: 'character-runtime-ui',
-  storage: createJSONStorage(() => localStorage),
+  storage: createJSONStorage(() => ({
+    getItem: (key) => { try { return localStorage.getItem(key); } catch { return null; } },
+    setItem: (key, value) => { try { localStorage.setItem(key, value); } catch { /* In-memory state remains usable. */ } },
+    removeItem: (key) => { try { localStorage.removeItem(key); } catch { /* Best effort. */ } },
+  })),
+  merge: (persisted, current) => ({ ...current, renderChatImages: typeof (persisted as any)?.renderChatImages === 'boolean' ? (persisted as any).renderChatImages : true }),
   partialize: (state) => ({ renderChatImages: state.renderChatImages }),
 }));

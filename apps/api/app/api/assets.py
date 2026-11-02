@@ -3,11 +3,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlmodel import Session
+from sqlmodel import Session, select
+from pydantic import ValidationError
+from app.db.models import Character, CharacterAsset
+from app.core.upload_files import read_verified_image, ensure_private_upload_directory
 
 from app.core.config import get_settings
 from app.db.session import get_session
-from app.schemas.assets import CharacterAssetCreate, CharacterAssetRead, CharacterAssetUpdate
+from app.schemas.assets import CharacterAssetCreate, CharacterAssetRead, CharacterAssetUpdate, clean_tags
 from app.services import asset_service
 
 UPLOAD_ROOT = Path(get_settings().upload_root).expanduser().resolve()
@@ -21,13 +24,15 @@ router = APIRouter(tags=["character-assets"])
 def parse_tags(value: str | None) -> list[str]:
     if not value:
         return []
+    if len(value) > 262144:
+        raise ValueError("Tags exceed form input budget")
     try:
         data = json.loads(value)
         if isinstance(data, list):
-            return [str(item).strip() for item in data if str(item).strip()]
+            return clean_tags(data)
     except json.JSONDecodeError:
         pass
-    return [item.strip() for item in value.replace("\n", ",").split(",") if item.strip()]
+    return clean_tags(value)
 
 
 @router.get("/characters/{character_id}/assets", response_model=list[CharacterAssetRead])
@@ -60,38 +65,46 @@ async def upload_character_asset(
     is_default: bool = Form(False),
     session: Session = Depends(get_session),
 ):
-    extension = ALLOWED_TYPES.get(file.content_type or "")
-    if not extension:
-        raise HTTPException(status_code=415, detail="Only jpeg, png, webp, and gif images are allowed")
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="Asset file is empty")
-    if len(data) > MAX_ASSET_BYTES:
-        raise HTTPException(status_code=413, detail="Asset image must be 8MB or smaller")
-    ASSET_DIR.mkdir(parents=True, exist_ok=True)
-    filename = f"asset_{uuid4().hex[:16]}{extension}"
-    path = ASSET_DIR / filename
-    path.write_bytes(data)
-    payload = CharacterAssetCreate(
-        label=label,
-        description=description,
-        image_url=f"/uploads/character-assets/{filename}",
-        tags=parse_tags(tags),
-        mood_tags=parse_tags(mood_tags),
-        scene_tags=parse_tags(scene_tags),
-        outfit_tags=parse_tags(outfit_tags),
-        pose_tags=parse_tags(pose_tags),
-        expression_tags=parse_tags(expression_tags),
-        priority=priority,
-        enabled=enabled,
-        is_default=is_default,
-        source="upload",
-        metadata={"content_type": file.content_type, "size": len(data), "filename": filename},
-    )
+    if not session.get(Character, character_id):
+        raise HTTPException(status_code=404, detail="Character not found")
+    # Validate form metadata before reading bytes or publishing a file.
     try:
+        payload = CharacterAssetCreate(
+            label=label, description=description, image_url="/uploads/pending",
+            tags=parse_tags(tags), mood_tags=parse_tags(mood_tags),
+            scene_tags=parse_tags(scene_tags), outfit_tags=parse_tags(outfit_tags),
+            pose_tags=parse_tags(pose_tags), expression_tags=parse_tags(expression_tags),
+            priority=priority, enabled=enabled, is_default=is_default,
+        )
+    except (ValidationError, ValueError):
+        raise HTTPException(status_code=422, detail="Invalid asset metadata") from None
+    data, extension = await read_verified_image(file, MAX_ASSET_BYTES)
+    directory = ensure_private_upload_directory(ASSET_DIR, UPLOAD_ROOT, get_settings().shared_upload_root)
+    filename = f"asset_{uuid4().hex}{extension}"
+    path = directory / filename
+    payload.image_url = f"/uploads/character-assets/{filename}"
+    payload.source = "upload"
+    payload.metadata = {"content_type": file.content_type, "size": len(data), "filename": filename}
+    created = False
+    try:
+        # Exclusive UUID path: cleanup owns only this request's newly created file.
+        with path.open("xb") as handle:
+            created = True
+            handle.write(data)
         return asset_service.to_asset_read(asset_service.create_asset(session, character_id, payload))
-    except ValueError as error:
-        raise HTTPException(status_code=404, detail=str(error))
+    except BaseException as error:
+        session.rollback()
+        # A refresh/serialization exception after commit must not remove durable bytes.
+        # If reference verification itself fails, retain the file for a dry-run audit.
+        try:
+            registered = session.exec(select(CharacterAsset.id).where(CharacterAsset.image_url == payload.image_url).limit(1)).first()
+        except Exception:
+            registered = True
+        if created and not registered:
+            path.unlink(missing_ok=True)
+        if isinstance(error, ValueError):
+            raise HTTPException(status_code=404, detail="Character not found") from None
+        raise
 
 
 @router.get("/character-assets/{asset_id}", response_model=CharacterAssetRead)

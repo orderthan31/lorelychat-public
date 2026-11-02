@@ -20,11 +20,15 @@ import httpx
 from app.engine.provider_capabilities import safe_count, safe_model_version
 
 
-class TransportConfigurationError(ValueError):
+from app.engine.llm_error_types import LLMConfigurationError, LLMResponseEvidenceError, LLMPolicyError
+from app.engine.llm_transport_deadline import bounded_close, remaining_seconds
+
+
+class TransportConfigurationError(LLMConfigurationError):
     """Pre-dispatch configuration failure; never an availability/fallback signal."""
 
 
-class ResponseEvidenceError(ValueError):
+class ResponseEvidenceError(LLMResponseEvidenceError):
     """A response is not a supported, bounded native text reply."""
 
 
@@ -87,8 +91,12 @@ def resolve_route(client) -> Route:
             key = client.api_key()
         except RuntimeError:
             key = None
-    # Keyless operation is only the explicitly configured legacy compatible path.
-    if not key and not dynamic and provider == 'openai_compatible':
+    # Dynamic keyless routing requires both an explicit capability and a local
+    # endpoint. Never inherit ambient cloud credentials or use a remote placeholder.
+    from app.engine.provider_capabilities import is_local_endpoint
+    if not key and provider == 'openai_compatible' and is_local_endpoint(base) and (
+        not dynamic or client.overrides.get('keyless_local') is True
+    ):
         key = 'not-needed-for-local'
     if not isinstance(key, str) or not key.strip():
         raise TransportConfigurationError('Selected account credential is required')
@@ -130,13 +138,7 @@ def new_http_transport() -> httpx.AsyncBaseTransport:
 
 
 async def close_owned(close):
-    """Finish closure even when the requesting task is cancelled."""
-    task = asyncio.create_task(close())
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await task
-        raise
+    await bounded_close(close)
 
 
 class SingleSendTransport(httpx.AsyncBaseTransport):
@@ -156,7 +158,11 @@ class SingleSendTransport(httpx.AsyncBaseTransport):
         if self.sent:
             self.denied = True
             raise AdditionalSendDenied('Additional SDK send denied')
-        self.reserve()
+        try:
+            self.reserve()
+        except Exception as exc:
+            self.error = exc
+            raise
         self.sent = True  # Reserve before the first await, including concurrent sends.
         # Only allowlisted scalar controls survive; never messages/schema/keys.
         try:
@@ -169,7 +175,7 @@ class SingleSendTransport(httpx.AsyncBaseTransport):
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
                     if len(body) + len(chunk) > self.max_response_bytes:
-                        raise ResponseEvidenceError('Provider response exceeds capture limit')
+                        raise ResponseEvidenceError('Provider response exceeds capture limit', http_status=response.status_code)
                     body.extend(chunk)
                 self.response = httpx.Response(
                     response.status_code, content=bytes(body), request=request,
@@ -271,6 +277,28 @@ def native_observation(response, route):
                           parse_constant=_reject_non_json_constant)
         if not isinstance(data, dict) or 'error' in data:
             raise ValueError
+        # Only explicit native safety/refusal evidence, never prose heuristics.
+        if route.sdk_provider == 'gemini':
+            feedback = metadata_object(data.get('promptFeedback'))
+            candidates_for_policy = data.get('candidates')
+            if 'candidates' in data and not isinstance(candidates_for_policy, list):
+                raise ValueError
+            blocked = (isinstance(feedback.get('blockReason'), str) and bool(feedback['blockReason'])) or (
+                isinstance(candidates_for_policy, list) and any(
+                    isinstance(c, dict) and c.get('finishReason') in {
+                        'SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT',
+                        'SPII', 'MODEL_ARMOR', 'IMAGE_SAFETY'} for c in candidates_for_policy))
+        elif route.sdk_provider == 'anthropic':
+            blocked = data.get('stop_reason') == 'refusal'
+        else:
+            choices_for_policy = data.get('choices')
+            blocked = isinstance(choices_for_policy, list) and any(
+                isinstance(c, dict) and (c.get('finish_reason') == 'content_filter' or
+                    (isinstance(metadata_object(c.get('message')).get('refusal'), str) and
+                     bool(metadata_object(c.get('message'))['refusal'])))
+                for c in choices_for_policy)
+        if blocked:
+            raise LLMPolicyError()
         if route.sdk_provider == 'gemini':
             candidates = data.get('candidates')
             if 'candidates' not in data:
@@ -386,7 +414,11 @@ async def completion(route, *, messages, parameters, timeout, reserve):
         guard.response.raise_for_status()
         # Prove original native grammar/text/finish independently of the SDK
         # normalization outcome. Application parsing/quality still follows.
-        native_observation(guard.response, route)
+        try:
+            native_observation(guard.response, route)
+        except (LLMResponseEvidenceError, LLMPolicyError) as exc:
+            exc.http_status = guard.response.status_code
+            raise
         guard.response.extensions['lorechat_wire_controls'] = guard.wire_controls
         guard.response.extensions['lorechat_sdk_response_status'] = (
             'native_validated_after_sdk_error' if error is not None else 'native_validated')

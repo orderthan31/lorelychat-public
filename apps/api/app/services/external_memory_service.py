@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import logging
+import json
+import math
+import multiprocessing
+import os
+from pathlib import Path
+import signal
+import tempfile
+import time
 import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import Any, Protocol
 
 from sqlmodel import Session, select
 
@@ -86,22 +94,89 @@ class NoopExternalMemoryProvider:
         return []
 
 
+EXTERNAL_OPERATION_TIMEOUT_SECONDS = 60.0
+_MAX_EXTERNAL_RESULT_BYTES = 1_048_576
+
+
+class ExternalMemoryOperationError(RuntimeError):
+    """Content-free optional-provider failure; acceptance may be ambiguous."""
+
+
+def _bounded_external_call(operation, *, timeout: float):
+    """Bound SDK initialization, request, result encoding and worker lifetime.
+
+    This Linux/POSIX service uses a disposable fork worker, not a thread that
+    can keep writing after timeout. The child never touches the caller's DB.
+    A private result file avoids pipe backpressure and partial-read deadlocks.
+    """
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ExternalMemoryOperationError("external_memory_invalid_deadline")
+    context = multiprocessing.get_context("fork")
+    with tempfile.TemporaryDirectory(prefix="lorechat-external-") as directory:
+        result_path = Path(directory) / "result.json"
+        def run():
+            os.setsid()
+            # Optional SDK diagnostics can contain provider/user content.
+            with open(os.devnull, "w") as sink:
+                os.dup2(sink.fileno(), 1)
+                os.dup2(sink.fileno(), 2)
+            try:
+                encoded = json.dumps(operation(), ensure_ascii=True).encode("ascii")
+                if len(encoded) > _MAX_EXTERNAL_RESULT_BYTES:
+                    return
+                with result_path.open("xb") as output:
+                    output.write(encoded)
+            except BaseException:
+                return
+        worker = context.Process(target=run, daemon=False)
+        worker.start()
+        worker_pid = worker.pid
+        assert worker_pid is not None
+        try:
+            worker.join(timeout)
+            if worker.is_alive():
+                raise ExternalMemoryOperationError("external_memory_deadline_exceeded")
+            if worker.exitcode != 0 or not result_path.is_file():
+                raise ExternalMemoryOperationError("external_memory_operation_failed")
+            return json.loads(result_path.read_bytes())
+        finally:
+            # Reap descendants even when their parent completed successfully.
+            try:
+                os.killpg(worker_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            if worker.is_alive():
+                worker.kill()
+            worker.join()
+            worker.close()
+
+
 class Mem0ExternalMemoryProvider:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.base_url = (settings.mem0_base_url or "").rstrip("/")
-        if not self.base_url:
-            try:
-                from mem0 import MemoryClient  # type: ignore
-            except Exception as exc:  # pragma: no cover - depends on optional package
-                raise RuntimeError("mem0ai package is not installed") from exc
+        # SDK construction may perform IO; it belongs inside the bounded child.
+        self.client: Any = None
+        self.operation_deadline: float | None = None
 
-            kwargs = {}
-            if settings.mem0_api_key:
-                kwargs["api_key"] = settings.mem0_api_key
-            self.client = MemoryClient(**kwargs)
-        else:
-            self.client = None
+    def _sdk_client(self):
+        if self.client is not None:
+            return self.client
+        from mem0 import MemoryClient  # type: ignore
+        kwargs = {"api_key": self.settings.mem0_api_key} if self.settings.mem0_api_key else {}
+        return MemoryClient(**kwargs)
+
+    def _operation_timeout(self) -> float:
+        configured = getattr(self.settings, "llm_task_deadline_seconds", None)
+        remaining = getattr(self, "operation_deadline", None)
+        budget = min(EXTERNAL_OPERATION_TIMEOUT_SECONDS, float(configured)) if configured is not None else EXTERNAL_OPERATION_TIMEOUT_SECONDS
+        return min(budget, max(0.001, remaining - time.monotonic())) if remaining is not None else budget
+
+    def _invoke(self, operation):
+        deadline = getattr(self, "operation_deadline", None)
+        if deadline is not None and deadline <= time.monotonic():
+            raise ExternalMemoryOperationError("external_memory_deadline_exceeded")
+        return _bounded_external_call(operation, timeout=self._operation_timeout())
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -110,7 +185,7 @@ class Mem0ExternalMemoryProvider:
         return headers
 
     def add_memory(self, content: str, *, metadata: dict) -> str | None:
-        try:
+        def operation():
             if self.base_url:
                 import httpx
 
@@ -120,48 +195,59 @@ class Mem0ExternalMemoryProvider:
                     "metadata": metadata,
                     "infer": False,
                 }
-                response = httpx.post(f"{self.base_url}/memories", json=payload, headers=self._headers(), timeout=60)
+                response = httpx.post(f"{self.base_url}/memories", json=payload, headers=self._headers(), timeout=self._operation_timeout())
                 response.raise_for_status()
                 result = response.json()
             else:
-                assert self.client is not None
-                result = self.client.add(
+                result = self._sdk_client().add(
                     content,
                     user_id=metadata.get("user_id") or self.settings.mem0_user_id,
                     metadata=metadata,
                 )
+            return result
+        try:
+            result = self._invoke(operation)
+            # Only an actual nonblank provider identifier is an identity.
+            candidates = [result] if isinstance(result, dict) else result if isinstance(result, list) else []
             if isinstance(result, dict):
-                if result.get("id") or result.get("memory_id"):
-                    return result.get("id") or result.get("memory_id")
                 nested = result.get("results") or result.get("memories")
-                if isinstance(nested, list) and nested and isinstance(nested[0], dict):
-                    return nested[0].get("id") or nested[0].get("memory_id") or "mem0:selfhost:accepted"
-                return "mem0:selfhost:accepted"
-            if isinstance(result, list) and result and isinstance(result[0], dict):
-                return result[0].get("id") or result[0].get("memory_id") or "mem0:selfhost:accepted"
+                if isinstance(nested, list):
+                    candidates = [result, *nested]
+            identities = set()
+            for item in candidates:
+                if not isinstance(item, dict):
+                    continue
+                for key in ("id", "memory_id"):
+                    identity = item.get(key)
+                    if isinstance(identity, str) and identity.strip():
+                        identities.add(identity)
+            # Multiple distinct IDs are also ambiguous: never choose the first.
+            return next(iter(identities)) if len(identities) == 1 else None
         except Exception:
-            logger.exception("Non-critical mem0 add failed")
+            logger.warning("Non-critical mem0 add failed code=external_memory_unacknowledged")
         return None
 
     def search(self, query: str, *, filters: dict, limit: int) -> list[ExternalMemoryItem]:
-        try:
+        def operation():
             if self.base_url:
                 import httpx
 
                 payload = {"query": query, "filters": filters, "top_k": limit}
-                response = httpx.post(f"{self.base_url}/search", json=payload, headers=self._headers(), timeout=60)
+                response = httpx.post(f"{self.base_url}/search", json=payload, headers=self._headers(), timeout=self._operation_timeout())
                 response.raise_for_status()
                 result = response.json()
             else:
-                assert self.client is not None
-                result = self.client.search(
+                result = self._sdk_client().search(
                     query,
                     user_id=filters.get("user_id") or self.settings.mem0_user_id,
                     filters=filters,
                     limit=limit,
                 )
+            return result
+        try:
+            result = self._invoke(operation)
         except Exception:
-            logger.exception("Non-critical mem0 search failed")
+            logger.warning("Non-critical mem0 search failed code=external_memory_unavailable")
             return []
         return normalize_mem0_search_result(result)
 
@@ -356,6 +442,9 @@ def sync_message_window_to_external(
     content, metadata = card
     try:
         memory_id = get_provider(settings).add_memory(content, metadata=metadata)
+        if not isinstance(memory_id, str) or not memory_id.strip():
+            # Transport acceptance without a real identity is NOT ingestion.
+            return None
         _set_message_metadata(end_message, MESSAGE_WINDOW_INGEST_KEY, {
             "source": MESSAGE_WINDOW_SOURCE,
             "memory_id": memory_id,
@@ -619,6 +708,8 @@ def search_external_continuity(
     if not (settings.mem0_enabled and settings.mem0_read_enabled and settings.memory_provider == "mem0"):
         return []
     provider = get_provider(settings)
+    if isinstance(provider, Mem0ExternalMemoryProvider):
+        provider.operation_deadline = time.monotonic() + provider._operation_timeout()
     filters = build_search_filters(
         conversation_id=conversation_id,
         character_id=character_id,

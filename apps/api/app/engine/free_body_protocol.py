@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from app.engine.text_scanner import reserved_tags, require_unicode_scalars
 from app.core.config import get_settings
 from app.schemas.dialogue import CharacterReply
 
@@ -99,14 +100,18 @@ def _masked(text):
 def parse_body(body: str) -> list[dict[str, str]]:
     if not isinstance(body, str) or len(body) > MAX_RESPONSE_CHARS:
         raise FreeBodyError('Body must be bounded text')
+    try:
+        require_unicode_scalars(body)
+    except ValueError as exc:
+        raise FreeBodyError(str(exc)) from exc
     masked = _masked(body)
     parts = []
     cursor = 0
     active = None
     start = 0
-    for token in re.finditer(r'<\s*(/?)\s*(m|a|t)\b[^>]*(?:>|$)', masked, re.I):
+    for token in reserved_tags(masked, ('m', 'a', 't')):
         closing, tag = token.group(1), token.group(2).lower()
-        if tag == 'm' or not re.fullmatch(r'<\s*/?\s*[at]\s*>', token.group(), re.I):
+        if tag == 'm' or not re.fullmatch(r'<\s*+(?:/\s*+)?[at]\s*+>', token.group(), re.I):
             raise FreeBodyError('Unexpected or malformed body delimiter')
         if not closing:
             if active:
@@ -139,8 +144,13 @@ def aggregates(parts):
 def metadata_for_reply(reply):
     if reply.response_protocol not in PROTOCOLS:
         return {}
+    parts = parse_body(reply.raw_body)
+    values = aggregates(parts)
+    if (parts != reply.render_parts or values != {
+            'dialogue': reply.text, 'action': reply.action or '', 'thought': reply.thought or ''}):
+        raise FreeBodyError('Render metadata does not match validated body')
     return {'response_protocol': reply.response_protocol, 'raw_body': reply.raw_body,
-            'render_parts': reply.render_parts}
+            'render_parts': parts}
 
 
 def _unique_object(pairs):
@@ -155,7 +165,7 @@ def _unique_object(pairs):
 
 def _tagged_items(text):
     masked = _masked(text)
-    tokens = list(re.finditer(r'<\s*(/?)\s*m\b[^>]*(?:>|$)', masked, re.I))
+    tokens = list(reserved_tags(masked, ('m',)))
     if not tokens:
         return None
     items, opening, cursor = [], None, 0
@@ -165,9 +175,13 @@ def _tagged_items(text):
                 raise FreeBodyError('Nested or ambiguous speaker boundary')
             attrs_text = re.sub(r'^<\s*m\b|>\s*$', '', text[token.start():token.end()], flags=re.I)
             attrs, end = {}, 0
-            for attr in re.finditer(r'''\s+([a-z]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|“([^”]*)”|‘([^’]*)’)''', attrs_text, re.I):
+            attribute = re.compile(r'''\s++([a-z]+)\s*+=\s*+(?:"([^"]*)"|'([^']*)'|“([^”]*)”|‘([^’]*)’)''', re.I)
+            while end < len(attrs_text):
+                attr = attribute.match(attrs_text, end)
+                if attr is None:
+                    break
                 key = attr.group(1).lower()
-                if attrs_text[end:attr.start()].strip() or key not in {'c', 'e'} or key in attrs:
+                if key not in {'c', 'e'} or key in attrs:
                     raise FreeBodyError('Ambiguous speaker attributes')
                 attrs[key] = next(value for value in attr.groups()[1:] if value is not None)
                 end = attr.end()
@@ -224,7 +238,11 @@ def parse_response(content: str, *, protocol: str, aliases: dict[str, str | None
         emotion = item.get('emotion', 'neutral')
         if not isinstance(emotion, str) or len(emotion) > 120:
             raise FreeBodyError('Invalid emotion')
-        replies.append(CharacterReply(character_id=cid, reply_type='character' if cid else 'storytelling',
+        try:
+            require_unicode_scalars(emotion)
+        except ValueError as exc:
+            raise FreeBodyError(str(exc)) from exc
+        replies.append(CharacterReply.from_decoded_body(character_id=cid, reply_type='character' if cid else 'storytelling',
             text=values['dialogue'], action=values['action'] or None, thought=values['thought'] or None,
             emotion=emotion or 'neutral', response_protocol=protocol, raw_body=item['text'], render_parts=parts))
     if not any(reply.reply_type == 'character' for reply in replies):

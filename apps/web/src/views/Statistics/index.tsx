@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { Button } from '../../components/atoms';
 import { conversationApi } from '../../api/resources';
 import { Badge } from '../../components/atoms';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/atoms';
@@ -88,8 +90,7 @@ export function StatisticsView({ conversations = [] }: StatisticsViewProps) {
   const [startDate, setStartDate] = useState(defaultStart(30));
   const [endDate, setEndDate] = useState(toLocalDateInput(new Date()));
   const [selectedConversationId, setSelectedConversationId] = useState('');
-  const [globalUsage, setGlobalUsage] = useState<UsageSummary | null>(null);
-  const [conversationUsage, setConversationUsage] = useState<UsageSummary | null>(null);
+
   const selectedConversation = conversations.find((conversation) => conversation.id === selectedConversationId);
   const query = useMemo(() => preset === 'all' ? {} : { start_at: startOfDayIso(startDate), end_at: endOfDayIso(endDate) }, [preset, startDate, endDate]);
 
@@ -99,18 +100,19 @@ export function StatisticsView({ conversations = [] }: StatisticsViewProps) {
     if (preset === '90d') { setStartDate(defaultStart(90)); setEndDate(toLocalDateInput(new Date())); }
   }, [preset]);
 
-  async function loadStats(conversationId = selectedConversationId) {
-    const [all, room] = await Promise.all([
-      conversationApi.usageSummary(query),
-      conversationId ? conversationApi.usage(conversationId, query) : Promise.resolve(null),
-    ]);
-    setGlobalUsage(all as UsageSummary);
-    setConversationUsage(room as UsageSummary | null);
-  }
-
-  useEffect(() => { loadStats(); }, [query, selectedConversationId]);
+  const stats = useQuery({
+    queryKey: ['usage-statistics', selectedConversationId, query],
+    queryFn: async () => {
+      const [all, room] = await Promise.all([conversationApi.usageSummary(query), selectedConversationId ? conversationApi.usage(selectedConversationId, query) : Promise.resolve(null)]);
+      return { all: all as UsageSummary, room: room as UsageSummary | null };
+    },
+  });
+  const globalUsage = stats.data?.all;
+  const conversationUsage = stats.data?.room;
 
   return <section className="panel page grid gap-3 [&_[data-slot=card-description]]:text-foreground/80 [&_[data-slot=card-title]]:text-primary" data-modernized="통계 페이지 design-system primitive marker">
+    {stats.isPending && <p role="status" aria-busy="true">{t('불러오는 중…')}</p>}
+    {stats.isError && <div role="alert">{stats.error.message}<Button onClick={() => void stats.refetch()}>{t('재시도')}</Button></div>}
     <Card>
       <CardHeader>
         <CardTitle>{t('통계')}</CardTitle>
@@ -124,12 +126,12 @@ export function StatisticsView({ conversations = [] }: StatisticsViewProps) {
 
     <Card>
       <CardHeader><CardTitle>{t('전체 통계')}</CardTitle></CardHeader>
-      <CardContent className="grid gap-3"><StatCards usage={globalUsage} /><UsageBuckets usage={globalUsage} /></CardContent>
+      <CardContent className="grid gap-3">{stats.data && <><StatCards usage={globalUsage} /><UsageBuckets usage={globalUsage} /></>}</CardContent>
     </Card>
 
     <Card>
       <CardHeader><CardTitle>{t('대화방별 통계')}</CardTitle></CardHeader>
-      <CardContent className="grid gap-3"><label className="grid max-w-[520px] gap-1.5 text-sm font-black text-foreground">{t('대화방')}<Select value={selectedConversationId} onChange={(event) => setSelectedConversationId(event.target.value)}><option value="">{t('대화방 선택')}</option>{conversations.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title || conversation.id}</option>)}</Select></label>{selectedConversationId ? <><StatCards usage={conversationUsage} /><UsageBuckets usage={conversationUsage} /></> : null}</CardContent>
+      <CardContent className="grid gap-3"><label className="grid max-w-[520px] gap-1.5 text-sm font-black text-foreground">{t('대화방')}<Select value={selectedConversationId} onChange={(event) => setSelectedConversationId(event.target.value)}><option value="">{t('대화방 선택')}</option>{conversations.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title || conversation.id}</option>)}</Select></label>{selectedConversationId && stats.data ? <><StatCards usage={conversationUsage} /><UsageBuckets usage={conversationUsage} /></> : null}</CardContent>
     </Card>
   </section>;
 }

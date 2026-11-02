@@ -1,5 +1,6 @@
 from uuid import uuid4
 from sqlmodel import Session, select
+from sqlalchemy import func
 from app.db.models import Character, ConversationParticipant, Message, utc_now
 from app.schemas.characters import CharacterCreate, CharacterUpdate, DEFAULT_FORBIDDEN_RULES, DEFAULT_TRAIT_SCORES
 
@@ -29,12 +30,8 @@ def list_characters(session: Session) -> list[Character]:
 
 def list_characters_by_usage(session: Session) -> list[dict]:
     characters = list_characters(session)
-    message_counts: dict[str, int] = {}
-    room_counts: dict[str, int] = {}
-    for character_id in session.exec(select(Message.speaker_id).where(Message.speaker_type == "character")).all():
-        message_counts[character_id] = message_counts.get(character_id, 0) + 1
-    for participant_id in session.exec(select(ConversationParticipant.participant_id).where(ConversationParticipant.participant_type == "character")).all():
-        room_counts[participant_id] = room_counts.get(participant_id, 0) + 1
+    message_counts = dict(session.exec(select(Message.speaker_id, func.count()).where(Message.speaker_type == "character").group_by(Message.speaker_id)).all())
+    room_counts = dict(session.exec(select(ConversationParticipant.participant_id, func.count()).where(ConversationParticipant.participant_type == "character").group_by(ConversationParticipant.participant_id)).all())
 
     ranked = []
     for character in characters:

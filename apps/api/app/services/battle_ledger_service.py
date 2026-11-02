@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from sqlalchemy import Integer, case, cast, func
 from sqlmodel import Session, select
 
 from app.db.models import BattleMatchRecord, BattleStanding, Character, Conversation, ConversationParticipant
@@ -44,30 +45,33 @@ def _standing(session: Session, conversation_id: str, character_id: str) -> Batt
 
 
 def _rebuild_standings(session: Session, conversation_id: str) -> None:
-    records = list(session.exec(
-        select(BattleMatchRecord).where(
-            BattleMatchRecord.conversation_id == conversation_id,
-            BattleMatchRecord.genre_mode == BATTLE_GENRE_MODE,
-            BattleMatchRecord.result_status == "completed",
-        )
-    ).all())
-    character_ids: set[str] = set()
-    for record in records:
-        character_ids.update([record.participant_a_id, record.participant_b_id])
-    for character_id in character_ids:
-        standing = _standing(session, conversation_id, character_id)
-        standing.wins = sum(1 for record in records if record.winner_id == character_id)
-        standing.losses = sum(1 for record in records if record.loser_id == character_id)
+    # Transfer aggregate counters, never every historical match object. Include
+    # both participants even at zero and reset previously counted corrections.
+    filters = (BattleMatchRecord.conversation_id == conversation_id,
+               BattleMatchRecord.genre_mode == BATTLE_GENRE_MODE,
+               BattleMatchRecord.result_status == "completed")
+    counts: dict[str, list[int]] = {}
+    for participant in (BattleMatchRecord.participant_a_id, BattleMatchRecord.participant_b_id):
+        rows = session.exec(select(participant,
+            func.sum(case((BattleMatchRecord.winner_id == participant, 1), else_=0)),
+            func.sum(case((BattleMatchRecord.loser_id == participant, 1), else_=0)),
+        ).where(*filters).group_by(participant)).all()
+        for character_id, wins, losses in rows:
+            total = counts.setdefault(character_id, [0, 0])
+            total[0] += int(wins or 0)
+            total[1] += int(losses or 0)
+    existing = {row.character_id: row for row in session.exec(
+        select(BattleStanding).where(BattleStanding.conversation_id == conversation_id)).all()}
+    now = datetime.now(timezone.utc)
+    for character_id in counts.keys() | existing.keys():
+        standing = existing.get(character_id) or _standing(session, conversation_id, character_id)
+        standing.wins, standing.losses = counts.get(character_id, [0, 0])
         standing.points = standing.wins * DEFAULT_WIN_POINTS
-        standing.updated_at = datetime.now(timezone.utc)
-        session.add(standing)
-    ordered = list(session.exec(
-        select(BattleStanding).where(BattleStanding.conversation_id == conversation_id)
-    ).all())
-    ordered.sort(key=lambda item: (-item.points, -item.wins, item.losses, item.character_id))
+        standing.updated_at = now
+        existing[character_id] = standing
+    ordered = sorted(existing.values(), key=lambda item: (-item.points, -item.wins, item.losses, item.character_id))
     for index, standing in enumerate(ordered, start=1):
         standing.rank = index
-        standing.updated_at = datetime.now(timezone.utc)
         session.add(standing)
 
 
@@ -244,15 +248,23 @@ def _battle_character_participant_ids(session: Session, conversation_id: str) ->
 
 
 def _active_match(session: Session, conversation_id: str) -> BattleMatchRecord | None:
-    active = [record for record in list_match_records(session, conversation_id) if record.result_status == "in_progress"]
-    active.sort(key=lambda record: (_record_match_order(record), record.created_at, record.id), reverse=True)
-    return active[0] if active else None
+    return session.exec(select(BattleMatchRecord).where(
+        BattleMatchRecord.conversation_id == conversation_id,
+        BattleMatchRecord.genre_mode == BATTLE_GENRE_MODE,
+        BattleMatchRecord.result_status == "in_progress",
+    ).order_by(BattleMatchRecord.created_at.desc(), BattleMatchRecord.id.desc()).limit(1)).first()
 
 
 def _next_match_order(session: Session, conversation_id: str) -> int:
-    orders = [_record_match_order(record) for record in list_match_records(session, conversation_id)]
-    concrete_orders = [order for order in orders if order != 9999]
-    return (max(concrete_orders) if concrete_orders else 0) + 1
+    order = cast(BattleMatchRecord.metadata_["match_order"].as_integer(), Integer)
+    value = session.exec(select(func.max(case((order != 9999, order), else_=None))).where(
+        BattleMatchRecord.conversation_id == conversation_id,
+        BattleMatchRecord.genre_mode == BATTLE_GENRE_MODE,
+    )).one()
+    try:
+        return max(0, int(value or 0)) + 1
+    except (TypeError, ValueError):
+        return 1
 
 
 def _control_value(control: object, key: str, default=None):
@@ -430,7 +442,13 @@ def format_official_battle_state(session: Session, conversation: Conversation | 
         return ""
     assert conversation is not None
     conversation_id = conversation.id
-    records = list_match_records(session, conversation_id)[:limit]
+    # Keep active state even when its start predates the recent result window.
+    records = list(session.exec(select(BattleMatchRecord).where(
+        BattleMatchRecord.conversation_id == conversation_id,
+        BattleMatchRecord.genre_mode == BATTLE_GENRE_MODE,
+    ).order_by(case((BattleMatchRecord.result_status == "in_progress", 0), else_=1),
+               BattleMatchRecord.created_at.desc(), BattleMatchRecord.id.desc())
+      .limit(max(0, limit))).all())
     # Standings are compact and must not be truncated before all participants are shown;
     # otherwise tied league rooms look like players disappeared from long-term state.
     standings = list_standings(session, conversation_id)
@@ -449,8 +467,23 @@ def format_official_battle_state(session: Session, conversation: Conversation | 
     if records:
         lines.append("Match records:")
         for record in records:
-            winner = _character_name(session, record.winner_id)
-            loser = _character_name(session, record.loser_id)
             summary = _compact(record.process_summary, 140)
-            lines.append(f"- {record.matchup_key}: {winner} 승 vs {loser} 패" + (f" | {summary}" if summary else ""))
+            participant_a = _character_name(session, record.participant_a_id)
+            participant_b = _character_name(session, record.participant_b_id)
+            status = record.result_status
+            if status == "completed" and record.winner_id and record.loser_id:
+                winner = _character_name(session, record.winner_id)
+                loser = _character_name(session, record.loser_id)
+                fact = f"completed | {winner} 승 vs {loser} 패"
+            else:
+                # Lifecycle facts are official; narrative claims remain free.
+                fact = f"{status} | {participant_a} vs {participant_b} | no official result"
+                if status == "in_progress":
+                    metadata = record.metadata_ if isinstance(record.metadata_, dict) else {}
+                    if metadata.get("current_phase"):
+                        fact += f" | phase={metadata['current_phase']}"
+                    advantage = metadata.get("advantage")
+                    if isinstance(advantage, dict):
+                        fact += f" | advantage={advantage.get('favored_character_id')}:{advantage.get('value')}"
+            lines.append(f"- {record.matchup_key}: {fact}" + (f" | {summary}" if summary else ""))
     return "\n".join(lines)

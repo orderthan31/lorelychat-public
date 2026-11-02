@@ -13,6 +13,7 @@ dependencies = [
     "json-repair>=0.60.0",
     "langgraph>=1.2.0",
     "litellm-core==1.106.6",
+    "Pillow==13.0.0",
 ]
 
 [project.optional-dependencies]

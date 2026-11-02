@@ -23,4 +23,4 @@ RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh \
 USER 10001:10001
 EXPOSE 8123
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8123", "--no-access-log"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8123", "--no-access-log", "--timeout-graceful-shutdown", "35"]

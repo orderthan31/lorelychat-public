@@ -8,7 +8,28 @@ from app.core.config import Settings
 from app.db.models import Character, LLMUsageEvent
 from app.engine.character_runtime import CharacterRuntime
 from app.engine import llm_client as llm_client_module
-from app.engine.llm_client import LLMClient, LLMResponse, LLMUnavailableError
+from app.engine.llm_client import LLMClient, LLMResponse, LLMUnavailableError, LLMPolicyBlockedError
+
+
+ROUTE_KEYS = {"provider_account_id", "model_option_key", "route_revision", "requested_route",
+              "effective_route", "attempt_trace"}
+
+
+def assert_observed_route(metadata, client, *, inside_task):
+    # Additive content-free transport observations are now part of the ledger.
+    revision = metadata["route_revision"]
+    assert len(revision) == 64 and all(c in "0123456789abcdef" for c in revision)
+    route = {"provider": client.provider(), "model": client.model(),
+             "provider_account_id": None, "model_option_key": None, "route_revision": revision}
+    assert metadata["provider_account_id"] is metadata["model_option_key"] is None
+    assert metadata["effective_route"] == route
+    assert metadata["requested_route"] == (route if inside_task else None)
+    assert metadata["attempt_trace"] == []
+    if inside_task:
+        # This test injects a typed failure above the actual-send boundary.
+        assert metadata["network_attempts"] == 0
+        assert metadata["network_attempt_limit"] == 3
+        assert "fallback_used" not in metadata
 
 
 def test_record_usage_persists_finish_reason_and_response_attempt_metadata(session, monkeypatch):
@@ -45,7 +66,8 @@ def test_record_usage_persists_finish_reason_and_response_attempt_metadata(sessi
         select(LLMUsageEvent).where(LLMUsageEvent.conversation_id == "conv_usage_observability")
     ).one()
     assert response.usage_event_id == event.id
-    assert event.metadata_ == {
+    assert_observed_route(event.metadata_, client, inside_task=False)
+    assert {k: v for k, v in event.metadata_.items() if k not in ROUTE_KEYS} == {
         "status": "validated",
         "stage": "chat_generation",
         "requested_model": "gemini-test",
@@ -78,20 +100,21 @@ async def test_empty_compression_response_logs_and_persists_safe_diagnostics(ses
         })
 
     monkeypatch.setattr(client, "_post_gemini_with_retries", fake_post)
-    response = await client.chat(
-        [{"role": "user", "content": "sensitive private text"}],
-        conversation_id="conv_empty_compression_diagnostics",
-    )
-    client.record_response_outcome(
-        response, status="validation_failed", parse_code="json_invalid", validation_code="extraction_invalid",
-    )
+    # Provider safety blocks terminate before semantic parse/repair.
+    with pytest.raises(LLMPolicyBlockedError) as exc:
+        await client.chat(
+            [{"role": "user", "content": "sensitive private text"}],
+            conversation_id="conv_empty_compression_diagnostics",
+        )
+    assert exc.value.transport_attempts == 1
     event = session.exec(select(LLMUsageEvent).where(
         LLMUsageEvent.conversation_id == "conv_empty_compression_diagnostics"
     )).one()
-    assert event.metadata_["status"] == "validation_failed"
-    assert event.metadata_["gemini_empty_response"]["prompt_block_reason"] == "SAFETY"
-    assert event.metadata_["gemini_empty_response"]["candidate_count"] == 0
-    assert "usage_event=" + event.id in caplog.text
+    assert event.metadata_["status"] == "transport_failed"
+    assert event.metadata_["error_type"] == "provider_policy_block"
+    assert event.metadata_["transport_attempts"] == 1
+    assert event.prompt_tokens is event.completion_tokens is event.total_tokens is None
+    assert event.metadata_["parse_code"] is event.metadata_["validation_code"] is None
     assert "sensitive private text" not in caplog.text + str(event.metadata_)
     assert "test-only-secret" not in caplog.text + str(event.metadata_)
 
@@ -131,7 +154,8 @@ async def test_terminal_transport_failure_persists_sanitized_attempt_metadata(se
     assert event.provider == "openai_compatible"
     assert event.model == "provider-test"
     assert event.prompt_tokens is None
-    assert event.metadata_ == {
+    assert_observed_route(event.metadata_, client, inside_task=True)
+    assert {k: v for k, v in event.metadata_.items() if k not in ROUTE_KEYS | {"network_attempts", "network_attempt_limit"}} == {
         "status": "transport_failed",
         "stage": "chat_generation",
         "requested_model": "provider-test",

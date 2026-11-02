@@ -1,6 +1,13 @@
-import { api } from './http';
+import { api, ApiError } from './http';
 import { FALLBACK_TTS_MODELS, FALLBACK_TTS_VOICES, MESSAGE_PAGE_TURNS } from '../constants/domain';
 import type { MessageEditDraft, RuntimeSetting, RuntimeSettingUpdatePayload } from '../types/domain';
+
+export type MessageGenerationJobRead = { id: string; conversation_id: string; incoming_message_id: string; status: 'queued' | 'running' | 'retrying' | 'completed' | 'failed' | 'cancelled'; state_version: number; generated_message_ids?: string[]; error_message?: string | null };
+function readGenerationJob(value: unknown, conversationId: string, jobId?: string): MessageGenerationJobRead {
+  const job = value as MessageGenerationJobRead;
+  if (!job || typeof job.id !== 'string' || (jobId && job.id !== jobId) || job.conversation_id !== conversationId || typeof job.incoming_message_id !== 'string' || !['queued', 'running', 'retrying', 'completed', 'failed', 'cancelled'].includes(job.status) || !Number.isInteger(job.state_version) || job.state_version < 0 || (job.generated_message_ids !== undefined && (!Array.isArray(job.generated_message_ids) || job.generated_message_ids.some(id => typeof id !== 'string')))) throw new ApiError(200, 'Invalid generation job envelope', 'PROTOCOL_ERROR');
+  return job;
+}
 
 type Id = string;
 type Payload = unknown;
@@ -100,8 +107,38 @@ export const conversationApi = {
   generateMessageTts: (messageId: Id) => api(`/messages/${messageId}/tts`, { method: 'POST', body: JSON.stringify({}) }),
   markRead: (id: Id) => api(`/conversations/${id}/read`, { method: 'POST', body: JSON.stringify({}) }),
   sendMessage: (id: Id, payload: Payload) => api(`/conversations/${id}/messages`, { method: 'POST', body: JSON.stringify(payload) }),
-  createMessageJob: (id: Id, payload: Payload) => api(`/conversations/${id}/messages/jobs`, { method: 'POST', body: JSON.stringify(payload) }),
-  generationJob: (id: Id, jobId: Id) => api(`/conversations/${id}/generation-jobs/${jobId}`),
+  createMessageJob: async (id: Id, payload: Payload) => {
+    const result = await api<any>(`/conversations/${id}/messages/jobs`, { method: 'POST', body: JSON.stringify(payload) });
+    const job = readGenerationJob(result?.job, id);
+    if (result?.incoming_message?.id !== job.incoming_message_id) throw new ApiError(200, 'Invalid job source receipt', 'PROTOCOL_ERROR');
+    return { job, incoming_message: result.incoming_message };
+  },
+  generationJob: async (id: Id, jobId: Id) => readGenerationJob(await api(`/conversations/${id}/generation-jobs/${jobId}`), id, jobId),
+  generationReceipt: async (id: Id, requestId: string) => {
+    try {
+      const result = await api<any>(`/conversations/${id}/generation-jobs/by-request/${encodeURIComponent(requestId)}`);
+      const job = readGenerationJob(result?.job, id);
+      if (result?.incoming_message?.id !== job.incoming_message_id || result.incoming_message.conversation_id !== id || result.incoming_message.metadata?.client_request_id !== requestId) throw new ApiError(200, 'Invalid generation request receipt', 'PROTOCOL_ERROR');
+      return { job, incoming_message: result.incoming_message };
+    } catch (error) {
+      // A generic router 404 is old-server capability absence, not a receipt.
+      if (error.status === 405 || (error.status === 404 && error.detail === 'Not Found')) throw new ApiError(error.status, 'Server does not support request receipt lookup', 'RECEIPT_LOOKUP_UNSUPPORTED', error);
+      throw error;
+    }
+  },
+  activeGenerationJobs: (id: Id) => api<{ jobs: any[] }>(`/conversations/${id}/generation-jobs/active`).then(result => {
+    if (!result || !Array.isArray(result.jobs) || result.jobs.some(job => !job?.id || !['queued', 'running', 'retrying'].includes(job.status))) throw new Error('Invalid active generation jobs envelope');
+    result.jobs.forEach(job => readGenerationJob(job, id));
+    return result;
+  }).catch(error => {
+    // Old backend capability absence is not a missing *known* job.
+    if (error.status === 404 || error.status === 405) return { jobs: [], supported: false };
+    throw error;
+  }),
+  retryGenerationJob: async (id: Id, jobId: Id, expectedStateVersion: number) => {
+    if (!Number.isInteger(expectedStateVersion) || expectedStateVersion < 0) throw new Error('Invalid expected state version');
+    return readGenerationJob(await api(`/conversations/${id}/generation-jobs/${jobId}/retry`, { method: 'POST', body: JSON.stringify({ expected_state_version: expectedStateVersion }) }), id, jobId);
+  },
   regenerateMessage: (id: Id, messageId: Id, payload: RegeneratePayload = { replace_existing: false }) => api(`/conversations/${id}/messages/${messageId}/regenerate`, { method: 'POST', body: JSON.stringify(payload) }),
   updateMessage: (id: Id, messageId: Id, payload: MessageEditDraft) => api(`/conversations/${id}/messages/${messageId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteMessage: (id: Id, messageId: Id) => api(`/conversations/${id}/messages/${messageId}`, { method: 'DELETE' }),

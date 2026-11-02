@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import fcntl
 import hashlib
 import json
@@ -64,7 +65,7 @@ def check_database(
         raise FileNotFoundError(db_path)
     query = "PRAGMA integrity_check" if full else "PRAGMA quick_check"
     uri = f"file:{db_path}?mode=ro"
-    with sqlite3.connect(uri, uri=True, timeout=10.0) as connection:
+    with closing(sqlite3.connect(uri, uri=True, timeout=10.0)) as connection:
         integrity_rows = [str(row[0]) for row in connection.execute(query).fetchall()]
         integrity = "ok" if integrity_rows == ["ok"] else "; ".join(integrity_rows[:10])
         foreign_key_violations = len(connection.execute("PRAGMA foreign_key_check").fetchall())
@@ -99,7 +100,7 @@ def online_backup(
 ) -> BackupResult:
     source_path = Path(source).resolve()
     destination_dir = Path(output_dir).resolve()
-    destination_dir.mkdir(parents=True, exist_ok=True)
+    destination_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     destination = destination_dir / f"lorechat-{timestamp}.db"
     partial = destination.with_suffix(".db.partial")
@@ -108,8 +109,9 @@ def online_backup(
 
     source_uri = f"file:{source_path}?mode=ro"
     try:
-        with sqlite3.connect(source_uri, uri=True, timeout=30.0) as source_connection:
-            with sqlite3.connect(partial) as destination_connection:
+        with closing(sqlite3.connect(source_uri, uri=True, timeout=30.0)) as source_connection:
+            with closing(sqlite3.connect(partial)) as destination_connection:
+                partial.chmod(0o600)
                 source_connection.backup(destination_connection, pages=1000, sleep=0.05)
                 destination_connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         check = check_database(partial, full=full_check)
@@ -137,19 +139,32 @@ def online_backup(
     )
     manifest_path = Path(result.manifest)
     manifest_path.write_text(json.dumps(asdict(result), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    manifest_path.chmod(0o600)
     _prune_backups(destination_dir, keep=max(1, keep))
     return result
 
 
 def verify_restore(backup: str | Path) -> DatabaseCheck:
     backup_path = Path(backup).resolve()
+    manifest_path = backup_path.with_suffix('.json')
+    if not manifest_path.is_file():
+        raise ValueError('Backup checksum manifest is required')
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    expected_hash = manifest.get('sha256')
+    if not isinstance(expected_hash, str) or file_sha256(backup_path) != expected_hash:
+        raise ValueError('Backup checksum does not match manifest')
     with tempfile.TemporaryDirectory(prefix="lorechat-restore-") as temp_dir:
         restored = Path(temp_dir) / "restored.db"
         shutil.copy2(backup_path, restored)
-        with sqlite3.connect(restored, timeout=10.0) as connection:
+        with closing(sqlite3.connect(restored, timeout=10.0)) as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.rollback()
-        return check_database(restored, full=True)
+        if file_sha256(restored) != expected_hash:
+            raise ValueError('Restore copy checksum mismatch')
+        check = check_database(restored, full=True)
+        if check.sha256 != expected_hash:
+            raise ValueError('Writable restore changed backup bytes')
+        return check
 
 
 def _prune_backups(directory: Path, *, keep: int) -> None:

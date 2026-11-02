@@ -1,18 +1,19 @@
 from datetime import datetime
 from typing import Literal
 
+from app.schemas.input_policy import RequestModel
 from pydantic import BaseModel, Field
 from app.schemas.assets import MessageAssetRead
 
 
-class ParticipantCreate(BaseModel):
+class ParticipantCreate(RequestModel):
     type: str
     id: str
     role: str | None = None
     order_index: int | None = None
 
 
-class SceneCreate(BaseModel):
+class SceneCreate(RequestModel):
     location: str | None = None
     time_label: str | None = None
     mood: str | None = None
@@ -26,7 +27,7 @@ class SceneCreate(BaseModel):
     user_description: str | None = None
 
 
-class ConversationCreate(BaseModel):
+class ConversationCreate(RequestModel):
     mode: str
     genre_mode: str = "battle"
     world_setting_id: str | None = None
@@ -38,7 +39,9 @@ class ConversationCreate(BaseModel):
     tts_enabled: bool = False
 
 
-class ConversationUpdate(BaseModel):
+class ConversationUpdate(RequestModel):
+    nonnull_fields = frozenset(['genre_mode', 'tts_enabled'])
+    nonblank_fields = frozenset(['genre_mode'])
     title: str | None = Field(default=None, min_length=1, max_length=200)
     thumbnail_url: str | None = None
     genre_mode: str | None = None
@@ -82,11 +85,11 @@ class ParticipantRead(BaseModel):
     order_index: int | None = None
 
 
-class ParticipantUpdate(BaseModel):
+class ParticipantUpdate(RequestModel):
     role: str | None = None
 
 
-class BattleControl(BaseModel):
+class BattleControl(RequestModel):
     action: Literal["start", "progress", "end", "cancel"]
     match_id: str | None = None
     participant_a_id: str | None = None
@@ -99,7 +102,7 @@ class BattleControl(BaseModel):
     decisive_moment: str | None = None
 
 
-class MessageCreate(BaseModel):
+class MessageCreate(RequestModel):
     speaker_type: str
     speaker_id: str
     content: str = ""
@@ -109,7 +112,7 @@ class MessageCreate(BaseModel):
     battle_control: BattleControl | None = None
 
 
-class MessageUpdate(BaseModel):
+class MessageUpdate(RequestModel):
     raw_body: str | None = Field(default=None, max_length=100000)
     content: str | None = Field(default=None, max_length=8000)
     emotion: str | None = Field(default=None, max_length=120)
@@ -155,7 +158,7 @@ class MessageGenerationJobCreateRead(BaseModel):
     incoming_message: MessageRead
 
 
-class MessageBulkDeleteRequest(BaseModel):
+class MessageBulkDeleteRequest(RequestModel):
     message_ids: list[str] = Field(min_length=1, max_length=100)
 
 
@@ -187,19 +190,21 @@ class SceneStateRead(BaseModel):
     compression_revision: int = 0
 
 
-class SceneSummaryUpdate(BaseModel):
+class SceneSummaryUpdate(RequestModel):
     summary: str = Field(min_length=1, max_length=2200)
     expected_revision: int = Field(ge=0)
 
 
-class CharacterMemoryCreate(BaseModel):
+class CharacterMemoryCreate(RequestModel):
     character_id: str = "__room__"
     memory_type: str = "user_note"
     content: str = Field(min_length=1, max_length=500)
     importance: int = Field(default=5, ge=1, le=5)
 
 
-class CharacterMemoryUpdate(BaseModel):
+class CharacterMemoryUpdate(RequestModel):
+    nonnull_fields = frozenset(['character_id', 'memory_type', 'content', 'importance'])
+    nonblank_fields = frozenset(['character_id', 'memory_type', 'content'])
     character_id: str | None = None
     memory_type: str | None = None
     content: str | None = Field(default=None, min_length=1, max_length=500)

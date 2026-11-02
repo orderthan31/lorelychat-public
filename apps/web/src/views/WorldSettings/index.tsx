@@ -104,6 +104,9 @@ export function WorldSettingsListView({ worldSettings = [], navigate, loadWorldS
 export type WorldSettingsDetailViewProps = {
   route: { page: string; id?: string };
   worldSettings?: WorldSettingItem[];
+  loading?: boolean;
+  loadError?: string;
+  onRetry?: () => void;
   worldSettingDraft: WorldSettingItem;
   setWorldSettingDraft: (value: WorldSettingItem | ((current: WorldSettingItem) => WorldSettingItem)) => void;
   saveWorldSetting: () => void;
@@ -113,7 +116,7 @@ export type WorldSettingsDetailViewProps = {
   navigate: (path: string) => void;
 };
 
-export function WorldSettingsDetailView({ route, worldSettings = [], worldSettingDraft, setWorldSettingDraft, saveWorldSetting, deleteWorldSetting, uploadWorldThumbnail, busy = false, navigate }: WorldSettingsDetailViewProps) {
+export function WorldSettingsDetailView({ route, worldSettings = [], loading = false, loadError = '', onRetry, worldSettingDraft, setWorldSettingDraft, saveWorldSetting, deleteWorldSetting, uploadWorldThumbnail, busy = false, navigate }: WorldSettingsDetailViewProps) {
   const theme = useUiStore((state) => state.theme);
   const { locale, t } = useI18n();
   const draft = normalizeWorld(worldSettingDraft);
@@ -123,12 +126,13 @@ export function WorldSettingsDetailView({ route, worldSettings = [], worldSettin
   const current = !isNew && route.id ? worldSettings.find((world) => world.id === route.id) : null;
   useEffect(() => {
     if (isNew) {
-      if (draft.id) setWorldSettingDraft({ ...emptyWorld });
+      setWorldSettingDraft({ ...emptyWorld });
       return;
     }
     if (route.id && current && current.id !== draft.id) setWorldSettingDraft(normalizeWorld(current));
   }, [isNew, route.id, current?.id, draft.id, setWorldSettingDraft]);
 
+  if (!isNew && (!current || draft.id !== route.id)) return <section role={loadError || (!loading && !current) ? 'alert' : 'status'}><p>{loadError || (loading || current ? t('불러오는 중…') : t('세계관을 찾을 수 없습니다.'))}</p><Button onClick={onRetry}>{t('재시도')}</Button><Button onClick={() => navigate('/world-settings')}>{t('목록으로')}</Button></section>;
   return <section className="panel page grid gap-3" data-modernized="세계관 상세 separated marker">
     <FormSection title={draft.id ? formatNamedAction(draft.title || t('세계관'), 'edit', locale) : t('새 세계관 등록')}>
         <Field label={t('세계관 이름')}><Input value={draft.title || ''} onChange={(e) => updateDraft({ title: e.target.value })} placeholder={t('예: 사내 비밀 프로젝트실')} /></Field>

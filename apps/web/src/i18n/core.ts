@@ -190,9 +190,10 @@ export function isAppLocale(value: unknown): value is AppLocale {
 }
 
 export function initialLocale(): AppLocale {
-  if (typeof localStorage === 'undefined') return 'ko';
-  const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
-  return isAppLocale(stored) ? stored : 'ko';
+  try {
+    const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
+    return isAppLocale(stored) ? stored : 'ko';
+  } catch { return 'ko'; }
 }
 
 export function translateUiText(key: UiMessageKey, locale: AppLocale): string {

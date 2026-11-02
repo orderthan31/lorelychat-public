@@ -1,8 +1,11 @@
 from datetime import datetime
+from app.schemas.input_policy import RequestModel
 from pydantic import BaseModel, Field
 
 
-class WorldSettingBase(BaseModel):
+class WorldSettingBase(RequestModel):
+    nonnull_fields = frozenset(['title', 'genre_mode', 'enabled'])
+    nonblank_fields = frozenset(['title', 'genre_mode'])
     title: str = Field(min_length=1, max_length=120)
     thumbnail_url: str | None = None
     description: str | None = None
@@ -23,7 +26,9 @@ class WorldSettingCreate(WorldSettingBase):
     pass
 
 
-class WorldSettingUpdate(BaseModel):
+class WorldSettingUpdate(RequestModel):
+    nonnull_fields = frozenset(['title', 'genre_mode', 'enabled', 'tags'])
+    nonblank_fields = frozenset(['title', 'genre_mode'])
     title: str | None = Field(default=None, min_length=1, max_length=120)
     thumbnail_url: str | None = None
     description: str | None = None
@@ -41,6 +46,7 @@ class WorldSettingUpdate(BaseModel):
 
 
 class WorldSettingRead(WorldSettingBase):
+    validate_inputs = False
     id: str
     created_at: datetime
     updated_at: datetime

@@ -106,10 +106,13 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
             genre_mode=getattr(conversation, "genre_mode", None),
             is_multi_room=len(character_ids) >= 2,
         )
+        fallback_overrides = runtime_settings_service.fallback_llm_overrides_for_setting(
+            runtime_setting, session=session,
+        )
         fallback_model_option = model_provider_service.option_by_key(
             session,
             getattr(runtime_setting, "fallback_model_key", None),
-        )
+        ) if fallback_overrides else None
         token_target = runtime_settings_service.preset_token_target(
             getattr(runtime_setting, "response_length_preset", runtime_settings_service.DEFAULT_RESPONSE_LENGTH_PRESET)
         )

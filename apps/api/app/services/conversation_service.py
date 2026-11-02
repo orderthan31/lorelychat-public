@@ -270,49 +270,55 @@ def get_message_generation_job_for_incoming_message(session: Session, incoming_m
 def find_incoming_message_by_client_request_id(session: Session, conversation_id: str, client_request_id: str | None) -> Message | None:
     if not client_request_id:
         return None
-    recent_user_messages = session.exec(
-        select(Message)
-        .where(Message.conversation_id == conversation_id, Message.speaker_type == "user")
-        .order_by(Message.created_at.desc())
-        .limit(100)
-    ).all()
-    for message in recent_user_messages:
-        metadata = message.metadata_ if isinstance(message.metadata_, dict) else {}
-        if metadata.get("client_request_id") == client_request_id:
-            return message
-    return None
+    # Legacy sources predate the acceptance table. Query their JSON identity in
+    # the database, across every speaker and the full room history, without
+    # materializing private historical prose into Python during acceptance.
+    return session.exec(select(Message).where(
+        Message.conversation_id == conversation_id,
+        text("json_extract(messages.metadata, '$.client_request_id') = :client_request_id"),
+    ).params(client_request_id=client_request_id).order_by(Message.created_at.desc(), Message.id.desc()).limit(1)).first()
 
 
 def requeue_expired_message_generation_jobs(
     session: Session,
     *,
     now: datetime | None = None,
+    execution_mode: str | None = None,
 ) -> int:
     current_time = now or datetime.now(timezone.utc)
-    running_jobs = session.exec(
-        select(MessageGenerationJob).where(MessageGenerationJob.status == "running")
-    ).all()
+    jobs = session.exec(select(MessageGenerationJob).where(
+        ((MessageGenerationJob.status == "running") &
+         (MessageGenerationJob.lease_expires_at.is_(None) | (MessageGenerationJob.lease_expires_at <= current_time))) |
+        ((MessageGenerationJob.status == "queued") & MessageGenerationJob.cancel_requested_at.is_not(None)),
+        (MessageGenerationJob.execution_options["execution_mode"].as_string() == execution_mode) if execution_mode is not None else True,
+    ).order_by(MessageGenerationJob.created_at, MessageGenerationJob.id).limit(100)).all()
     recovered = 0
-    for job in running_jobs:
-        if job.lease_expires_at is not None and sortable_datetime(job.lease_expires_at) > sortable_datetime(current_time):
+    for job in jobs:
+        if job.status == "queued" and job.cancel_requested_at is None:
             continue
-        previous_owner = job.lease_owner
-        job.status = "queued"
-        job.lease_owner = None
-        job.lease_expires_at = None
-        job.heartbeat_at = None
-        job.updated_at = current_time
-        job.state_version += 1
-        session.add(job)
-        append_generation_job_event(
-            session,
-            job,
-            "requeued",
-            payload={"reason": "expired_lease", "previous_lease_owner": previous_owner},
-        )
-        recovered += 1
+        if job.status == "running" and job.lease_expires_at is not None and sortable_datetime(job.lease_expires_at) > sortable_datetime(current_time):
+            continue
+        cancelled = job.cancel_requested_at is not None
+        predicate = [MessageGenerationJob.id == job.id,
+                     MessageGenerationJob.status == job.status,
+                     MessageGenerationJob.state_version == job.state_version]
+        if job.status == "running":
+            predicate.append((MessageGenerationJob.lease_expires_at.is_(None)) | (MessageGenerationJob.lease_expires_at <= current_time))
+        result = session.exec(sa_update(MessageGenerationJob).where(*predicate).values(
+            status="cancelled" if cancelled else "queued", lease_owner=None,
+            lease_expires_at=None, heartbeat_at=None, updated_at=current_time,
+            completed_at=current_time if cancelled else None,
+            state_version=MessageGenerationJob.state_version + 1,
+        ).execution_options(synchronize_session=False))
+        if result.rowcount == 1:
+            append_generation_job_event(session, job, "cancelled" if cancelled else "requeued",
+                payload={"reason": "expired_lease"}, state_version=job.state_version + 1)
+            recovered += 1
     if recovered:
         session.commit()
+        session.expire_all()
+    else:
+        session.rollback()
     return recovered
 
 
@@ -332,43 +338,45 @@ def claim_next_message_generation_job(
     lease_owner: str,
     lease_seconds: int = 180,
     now: datetime | None = None,
+    job_id: str | None = None,
+    execution_mode: str | None = None,
 ) -> MessageGenerationJob | None:
     current_time = now or datetime.now(timezone.utc)
     lease_until = current_time + timedelta(seconds=max(5, int(lease_seconds)))
-    candidates = session.exec(
-        select(MessageGenerationJob)
-        .where(
-            MessageGenerationJob.status == "queued",
-            MessageGenerationJob.cancel_requested_at.is_(None),
-        )
-        .order_by(MessageGenerationJob.created_at, MessageGenerationJob.id)
-        .limit(100)
-    ).all()
+    # Correlated eligibility excludes blocked rooms IN SQL before applying a
+    # limit. A long blocked prefix cannot hide an independent runnable room.
+    table = MessageGenerationJob.__table__
+    other = table.alias("earlier_room_job")
+    blocker = select(other.c.id).where(
+        other.c.conversation_id == table.c.conversation_id,
+        other.c.id != table.c.id,
+        (other.c.status == "running") | (
+            (other.c.status == "queued") & other.c.cancel_requested_at.is_(None) & (
+                (other.c.created_at < table.c.created_at) |
+                ((other.c.created_at == table.c.created_at) & (other.c.id < table.c.id))
+            )
+        ),
+    ).exists()
+    from sqlalchemy import func
+    running_table = table.alias("all_running_jobs")
+    running_count = select(func.count()).select_from(running_table).where(running_table.c.status == "running").scalar_subquery()
+    eligible = (~blocker) & (running_count < 2)
+    identity_filter = (table.c.id == job_id) if job_id is not None else True
+    # The default durable dispatcher is real-intended. Mock acceptance is an
+    # immutable execution scope, never permission for a paid send after restart.
+    mode_value = MessageGenerationJob.execution_options["execution_mode"].as_string()
+    mode_filter = (mode_value == execution_mode) if execution_mode is not None else (func.coalesce(mode_value, "") != "mock")
+    candidates = session.exec(select(MessageGenerationJob).where(
+        MessageGenerationJob.status == "queued",
+        MessageGenerationJob.cancel_requested_at.is_(None), eligible, identity_filter, mode_filter,
+    ).order_by(MessageGenerationJob.created_at, MessageGenerationJob.id).limit(32)).all()
     for candidate in candidates:
-        active_for_conversation = session.exec(
-            select(MessageGenerationJob).where(
-                MessageGenerationJob.conversation_id == candidate.conversation_id,
-                MessageGenerationJob.status.in_(["queued", "running"]),
-            )
-        ).all()
-        candidate_key = (sortable_datetime(candidate.created_at), candidate.id)
-        blocked = any(
-            other.id != candidate.id
-            and (
-                other.status == "running"
-                or (
-                    other.status == "queued"
-                    and (sortable_datetime(other.created_at), other.id) < candidate_key
-                )
-            )
-            for other in active_for_conversation
-        )
-        if blocked:
-            continue
         result = session.exec(
             sa_update(MessageGenerationJob)
             .where(
                 MessageGenerationJob.id == candidate.id,
+                eligible,
+                mode_filter,
                 MessageGenerationJob.status == "queued",
                 MessageGenerationJob.cancel_requested_at.is_(None),
             )
@@ -416,6 +424,7 @@ def heartbeat_message_generation_job(
             MessageGenerationJob.id == job_id,
             MessageGenerationJob.status == "running",
             MessageGenerationJob.lease_owner == lease_owner,
+            MessageGenerationJob.lease_expires_at.is_(None) | (MessageGenerationJob.lease_expires_at > current_time),
         )
         .values(
             heartbeat_at=current_time,
@@ -441,11 +450,18 @@ def request_message_generation_job_cancel(
     now: datetime | None = None,
 ) -> MessageGenerationJob:
     current_time = now or datetime.now(timezone.utc)
-    if job.status in {"completed", "failed", "cancelled"}:
+    with session.no_autoflush:
+        result = session.exec(sa_update(MessageGenerationJob).where(
+            MessageGenerationJob.id == job.id, MessageGenerationJob.status.in_(["queued", "running"]),
+            MessageGenerationJob.cancel_requested_at.is_(None),
+        ).values(cancel_requested_at=current_time, updated_at=current_time,
+                 state_version=MessageGenerationJob.state_version + 1)
+          .execution_options(synchronize_session=False))
+    if result.rowcount != 1:
+        session.rollback()
+        session.refresh(job)
         return job
-    job.cancel_requested_at = current_time
-    job.updated_at = current_time
-    job.state_version += 1
+    session.refresh(job)
     event_status = "cancel_requested"
     if job.status == "queued":
         job.status = "cancelled"
@@ -453,12 +469,38 @@ def request_message_generation_job_cancel(
         job.lease_owner = None
         job.lease_expires_at = None
         job.heartbeat_at = None
+        session.add(job)
         event_status = "cancelled"
-    session.add(job)
     append_generation_job_event(session, job, event_status)
     session.commit()
     session.refresh(job)
     return job
+
+
+def _fence_generation_terminal(session: Session, job: MessageGenerationJob, *, allow_cancel: bool = True,
+    expected_owner: str | None = None, expected_attempt: int | None = None, allow_unclaimed: bool = False) -> bool:
+    owner = job.lease_owner if expected_owner is None and expected_attempt is None else expected_owner
+    attempt = job.attempt_count if expected_attempt is None else expected_attempt
+    allowed_state = MessageGenerationJob.status == "running"
+    if allow_unclaimed and expected_attempt is None:
+        # Backward-compatible receipt seeding/completion helper, never used for
+        # generation admission. Real runner callers supply captured attempts.
+        allowed_state = allowed_state | ((MessageGenerationJob.status == "queued") & MessageGenerationJob.lease_owner.is_(None) & (MessageGenerationJob.attempt_count == 0))
+    predicates = [MessageGenerationJob.id == job.id, allowed_state,
+                  MessageGenerationJob.lease_owner == owner, MessageGenerationJob.attempt_count == attempt]
+    if expected_attempt is not None:
+        predicates.append(MessageGenerationJob.lease_expires_at.is_(None) | (MessageGenerationJob.lease_expires_at > datetime.now(timezone.utc)))
+    if not allow_cancel:
+        predicates.append(MessageGenerationJob.cancel_requested_at.is_(None))
+    with session.no_autoflush:
+        result = session.exec(sa_update(MessageGenerationJob).where(*predicates)
+            .values(updated_at=MessageGenerationJob.updated_at).execution_options(synchronize_session=False))
+    if result.rowcount != 1:
+        session.rollback()
+        session.refresh(job)
+        return False
+    session.refresh(job)
+    return True
 
 
 def mark_message_generation_job_cancelled(
@@ -467,6 +509,8 @@ def mark_message_generation_job_cancelled(
     *,
     reason: str = "cancel_requested",
 ) -> MessageGenerationJob:
+    if not _fence_generation_terminal(session, job):
+        return job
     now = datetime.now(timezone.utc)
     job.status = "cancelled"
     job.completed_at = now
@@ -501,7 +545,11 @@ def mark_message_generation_job_completed(
     generated_message_ids: list[str],
     *,
     commit: bool = True,
+    expected_owner: str | None = None,
+    expected_attempt: int | None = None,
 ) -> MessageGenerationJob:
+    if not _fence_generation_terminal(session, job, allow_cancel=False, expected_owner=expected_owner, expected_attempt=expected_attempt, allow_unclaimed=commit):
+        return job
     now = datetime.now(timezone.utc)
     job.status = "completed"
     job.error_message = None
@@ -549,21 +597,14 @@ def requeue_expired_post_commit_tasks(
     now: datetime | None = None,
 ) -> int:
     current_time = now or datetime.now(timezone.utc)
-    tasks = session.exec(select(PostCommitTask).where(PostCommitTask.status == "processing")).all()
-    recovered = 0
-    for task in tasks:
-        if task.lease_expires_at is not None and sortable_datetime(task.lease_expires_at) > sortable_datetime(current_time):
-            continue
-        task.status = "queued"
-        task.lease_owner = None
-        task.lease_expires_at = None
-        task.available_at = current_time
-        task.updated_at = current_time
-        session.add(task)
-        recovered += 1
-    if recovered:
-        session.commit()
-    return recovered
+    result = session.exec(sa_update(PostCommitTask).where(
+        PostCommitTask.status == "processing",
+        PostCommitTask.lease_expires_at.is_(None) | (PostCommitTask.lease_expires_at <= current_time),
+    ).values(status="queued", lease_owner=None, lease_expires_at=None,
+             available_at=current_time, updated_at=current_time).execution_options(synchronize_session=False))
+    session.commit()
+    session.expire_all()
+    return result.rowcount
 
 
 def claim_next_post_commit_task(
@@ -659,6 +700,7 @@ def heartbeat_post_commit_task(
             PostCommitTask.id == task_id,
             PostCommitTask.status == "processing",
             PostCommitTask.lease_owner == lease_owner,
+            PostCommitTask.lease_expires_at.is_(None) | (PostCommitTask.lease_expires_at > current_time),
         )
         .values(
             lease_expires_at=current_time + timedelta(seconds=max(5, int(lease_seconds))),
@@ -676,17 +718,20 @@ def mark_post_commit_task_completed(
     *,
     lease_owner: str,
     commit: bool = True,
+    expected_attempt: int | None = None,
 ) -> bool:
-    if task.status != "processing" or task.lease_owner != lease_owner:
-        return False
     now = datetime.now(timezone.utc)
-    task.status = "completed"
-    task.lease_owner = None
-    task.lease_expires_at = None
-    task.last_error = None
-    task.completed_at = now
-    task.updated_at = now
-    session.add(task)
+    with session.no_autoflush:
+        result = session.exec(sa_update(PostCommitTask).where(
+            PostCommitTask.id == task.id, PostCommitTask.status == "processing",
+            PostCommitTask.lease_owner == lease_owner,
+            PostCommitTask.attempt_count == (task.attempt_count if expected_attempt is None else expected_attempt),
+        ).values(status="completed", lease_owner=None, lease_expires_at=None,
+                 last_error=None, completed_at=now, updated_at=now)
+          .execution_options(synchronize_session=False))
+    if result.rowcount != 1:
+        session.rollback()  # Roll back staged DB effects as well as the ack.
+        return False
     if commit:
         session.commit()
         session.refresh(task)
@@ -702,21 +747,32 @@ def mark_post_commit_task_failed(
     max_attempts: int = 5,
     now: datetime | None = None,
 ) -> bool:
-    if task.status != "processing" or task.lease_owner != lease_owner:
-        return False
     current_time = now or datetime.now(timezone.utc)
     terminal = task.attempt_count >= max(1, int(max_attempts))
-    task.status = "failed" if terminal else "queued"
-    task.lease_owner = None
-    task.lease_expires_at = None
-    task.last_error = compact_text(f"{type(exc).__name__}: {exc}", 1000)
-    task.available_at = current_time if terminal else current_time + timedelta(seconds=min(300, 2 ** max(1, task.attempt_count)))
-    task.updated_at = current_time
-    task.completed_at = current_time if terminal else None
-    session.add(task)
+    with session.no_autoflush:
+        result = session.exec(sa_update(PostCommitTask).where(
+            PostCommitTask.id == task.id, PostCommitTask.status == "processing",
+            PostCommitTask.lease_owner == lease_owner,
+            PostCommitTask.attempt_count == task.attempt_count,
+        ).values(status="failed" if terminal else "queued", lease_owner=None,
+                 lease_expires_at=None, last_error=compact_text(f"{type(exc).__name__}: {exc}", 1000),
+                 available_at=current_time if terminal else current_time + timedelta(seconds=min(300, 2 ** max(1, task.attempt_count))),
+                 updated_at=current_time, completed_at=current_time if terminal else None)
+          .execution_options(synchronize_session=False))
+    if result.rowcount != 1:
+        session.rollback()
+        return False
     session.commit()
     session.refresh(task)
     return True
+
+
+class GenerationReceiptDeleted(ValueError):
+    code = "generation_receipt_deleted"
+
+
+class GenerationReceiptCorrupt(ValueError):
+    code = "generation_receipt_inconsistent"
 
 
 def finalize_message_generation_turn(
@@ -727,31 +783,57 @@ def finalize_message_generation_turn(
     source_message_id: str | None = None,
     source_metadata: dict | None = None,
     post_commit_tasks: list[dict] | None = None,
+    expected_owner: str | None = None,
+    expected_attempt: int | None = None,
 ) -> list[Message]:
     try:
-        existing_messages = []
         if job is not None:
-            existing_messages = list(session.exec(
-                select(Message)
-                .where(Message.generation_job_id == job.id)
-                .order_by(Message.reply_index, Message.created_at)
-            ).all())
-        if existing_messages:
-            if job is not None and job.status != "completed":
-                mark_message_generation_job_completed(
-                    session,
-                    job,
-                    [message.id for message in existing_messages],
-                    commit=False,
-                )
-                session.commit()
-            return existing_messages
+            enforce_lease_expiry = expected_attempt is not None
+            expected_owner = job.lease_owner if expected_owner is None and expected_attempt is None else expected_owner
+            expected_attempt = job.attempt_count if expected_attempt is None else expected_attempt
+            # A no-op UPDATE obtains the write boundary before reading metadata,
+            # fencing cancellations/owner transfer with the same DB transaction.
+            with session.no_autoflush:
+                result = session.exec(sa_update(MessageGenerationJob).where(
+                    MessageGenerationJob.id == job.id,
+                    MessageGenerationJob.status == "running",
+                    MessageGenerationJob.lease_owner == expected_owner,
+                    MessageGenerationJob.attempt_count == expected_attempt,
+                    (MessageGenerationJob.lease_expires_at.is_(None) | (MessageGenerationJob.lease_expires_at > datetime.now(timezone.utc))) if enforce_lease_expiry else True,
+                    MessageGenerationJob.cancel_requested_at.is_(None),
+                ).values(updated_at=MessageGenerationJob.updated_at)
+                  .execution_options(synchronize_session=False))
+            session.refresh(job)
+            existing_messages = list(session.exec(select(Message).where(
+                Message.generation_job_id == job.id,
+            ).order_by(Message.reply_index)).all())
+            if job.status == "completed":
+                expected = list(job.generated_message_ids or [])
+                if ([m.id for m in existing_messages] != expected or
+                    [m.reply_index for m in existing_messages] != list(range(len(expected))) or not expected):
+                    from app.db.models import GenerationReplyDeletion
+                    deleted = set(session.exec(select(GenerationReplyDeletion.message_id).where(GenerationReplyDeletion.job_id == job.id)).all())
+                    surviving = [mid for mid in expected if mid not in deleted]
+                    if deleted and [m.id for m in existing_messages] == surviving and all(m.reply_index == expected.index(m.id) for m in existing_messages):
+                        raise GenerationReceiptDeleted("generation receipt includes intentional user deletions; replay never restores content")
+                    raise GenerationReceiptCorrupt("generation receipt is inconsistent; replay never restores content")
+                session.rollback()
+                return existing_messages
+            if result.rowcount != 1:
+                raise ValueError("generation ownership fence rejected finalization")
+            if existing_messages or job.generated_message_ids:
+                raise ValueError("generation receipt exists without completed state")
+            if not generated_messages:
+                raise ValueError("generation receipt cannot be empty")
 
         if source_message_id is not None and source_metadata is not None:
             source_message = session.get(Message, source_message_id)
             if not source_message:
                 raise ValueError(f"Source message '{source_message_id}' was not found during finalization")
-            source_message.metadata_ = dict(source_metadata)
+            current_metadata = dict(source_message.metadata_ or {})
+            current_metadata.update({key: value for key, value in source_metadata.items()
+                                     if key.startswith(("generation_", "command_postprocess_"))})
+            source_message.metadata_ = current_metadata
             session.add(source_message)
 
         for reply_index, message in enumerate(generated_messages):
@@ -784,8 +866,18 @@ def finalize_message_generation_turn(
     return generated_messages
 
 
-def mark_message_generation_job_failed(session: Session, job: MessageGenerationJob, exc: Exception) -> MessageGenerationJob:
+def mark_message_generation_job_failed(session: Session, job: MessageGenerationJob, exc: Exception,
+    *, expected_owner: str | None = None, expected_attempt: int | None = None) -> MessageGenerationJob:
+    if not _fence_generation_terminal(session, job, expected_owner=expected_owner, expected_attempt=expected_attempt, allow_unclaimed=True):
+        return job
+    if job.cancel_requested_at is not None:
+        return mark_message_generation_job_cancelled(session, job)
     source = session.get(Message, job.incoming_message_id)
+    if source is not None:
+        source.metadata_ = {**(source.metadata_ or {}), "generation_status": "failed",
+            "generation_error_type": type(exc).__name__, "generation_error_message": compact_text(str(exc), 1000),
+            **({"generation_error_code": exc.code} if isinstance(getattr(exc, "code", None), str) else {})}
+        session.add(source)
     if source is not None and (source.metadata_ or {}).get("command_postprocess_status") == "pending":
         source.metadata_ = {
             **(source.metadata_ or {}),
@@ -940,30 +1032,36 @@ def list_messages(
     before_id: str | None = None,
     recent_turns: int | None = None,
 ) -> list[Message]:
+    from sqlalchemy import tuple_
+
     upper_message = session.get(Message, before_id) if before_id else None
     if before_id and (not upper_message or upper_message.conversation_id != conversation_id):
         return []
 
     conditions = [Message.conversation_id == conversation_id]
+    upper_bound = None
     if upper_message:
-        conditions.append(Message.created_at < upper_message.created_at)
+        upper_bound = tuple_(Message.created_at, Message.id) < (upper_message.created_at, upper_message.id)
+        conditions.append(upper_bound)
 
     if recent_turns:
+        bounded_turns = max(1, min(50, recent_turns))
         turn_conditions = [Message.conversation_id == conversation_id, Message.speaker_type.in_({"user", "system"})]
-        if upper_message:
-            turn_conditions.append(Message.created_at < upper_message.created_at)
+        if upper_bound is not None:
+            turn_conditions.append(upper_bound)
         turn_stmt = (
             select(Message)
             .where(*turn_conditions)
             .order_by(Message.created_at.desc(), Message.id.desc())
-            .limit(max(1, min(50, recent_turns)))
+            .limit(bounded_turns)
         )
         anchors = list(session.exec(turn_stmt).all())
         if not anchors:
             stmt = select(Message).where(*conditions).order_by(text("created_at DESC"), text("id DESC")).limit(max(1, min(200, recent_turns)))
             return list(reversed(session.exec(stmt).all()))
-        if len(anchors) >= recent_turns:
-            conditions.append(Message.created_at >= anchors[-1].created_at)
+        if len(anchors) >= bounded_turns:
+            anchor = anchors[-1]
+            conditions.append(tuple_(Message.created_at, Message.id) >= (anchor.created_at, anchor.id))
         stmt = select(Message).where(*conditions).order_by(Message.created_at, Message.id)
         return list(session.exec(stmt).all())
 
@@ -1065,7 +1163,15 @@ def build_live_scene_state(session: Session, conversation: Conversation, scene_s
     )
 
 
+def _record_generation_reply_deletion(session: Session, message: Message) -> None:
+    from app.db.models import GenerationReplyDeletion
+    if message.generation_job_id and session.get(GenerationReplyDeletion, message.id) is None:
+        session.add(GenerationReplyDeletion(message_id=message.id, job_id=message.generation_job_id,
+            conversation_id=message.conversation_id, reply_index=message.reply_index))
+
+
 def delete_message(session: Session, message: Message) -> None:
+    _record_generation_reply_deletion(session, message)
     session.exec(delete(MessageAsset).where(MessageAsset.message_id == message.id))
     conversation = get_conversation(session, message.conversation_id)
     session.delete(message)
@@ -1089,6 +1195,7 @@ def delete_messages(session: Session, conversation_id: str, message_ids: list[st
         return [], missing_ids
     session.exec(delete(MessageAsset).where(MessageAsset.message_id.in_(deleted_ids)))
     for message_id in deleted_ids:
+        _record_generation_reply_deletion(session, found_by_id[message_id])
         session.delete(found_by_id[message_id])
     conversation = get_conversation(session, conversation_id)
     if conversation:
@@ -2843,6 +2950,13 @@ async def _call_compression_stage(
     *,
     response_format: dict | None = None,
 ):
+    from app.services.context_management_service import enforce_compression_stage_capacity, resolve_model_context_capacity
+    capacity = getattr(client, "compression_context_capacity", None)
+    if capacity is None:
+        output_getter = getattr(client, "max_output_tokens", None)
+        reserve = output_getter() if callable(output_getter) else None
+        capacity = resolve_model_context_capacity(None, completion_reserve_tokens=reserve, mandatory_reserve_tokens=0)
+    enforce_compression_stage_capacity(messages, capacity, response_format=response_format)
     try:
         return await chat_with_optional_conversation_id(
             client,
@@ -3305,6 +3419,24 @@ def _latest_message_id(session: Session, conversation_id: str) -> str | None:
     return latest[-1].id if latest else None
 
 
+def _compression_snapshot(model):
+    # SQLModel.model_copy also copies SQLAlchemy InstanceState; an expired row
+    # then becomes an unusable detached object. Materialize every mapped field.
+    from copy import deepcopy
+    return type(model)(**{key: deepcopy(getattr(model, key)) for key in type(model).model_fields})
+
+
+def compression_source_fingerprint(messages: list[Message]) -> str:
+    import hashlib
+    fields = []
+    for message in messages:
+        metadata = message.metadata_ or {}
+        fields.append([message.id, message.speaker_type, message.speaker_id,
+            message.content, message.action, message.thought, message.emotion,
+            {key: metadata.get(key) for key in ("response_protocol", "raw_body", "render_parts")}])
+    return hashlib.sha256(json.dumps(fields, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
 def _claim_compression_result(
     session: Session,
     conversation_id: str,
@@ -3313,7 +3445,23 @@ def _claim_compression_result(
     expected_revision: int | None,
     expected_boundary_message_id: str | None = None,
     folded_message_ids: list[str] | None = None,
+    folded_content_sha256: str | None = None,
 ) -> bool:
+    from app.services.hardening_core_transactions import compression_post_commit_fence
+    fence = compression_post_commit_fence.get()
+    if fence is not None:
+        task_id, owner, attempt = fence
+        result = session.exec(sa_update(PostCommitTask).where(
+            PostCommitTask.id == task_id, PostCommitTask.status == "processing",
+            PostCommitTask.lease_owner == owner, PostCommitTask.attempt_count == attempt,
+            PostCommitTask.lease_expires_at.is_(None) | (PostCommitTask.lease_expires_at > datetime.now(timezone.utc)),
+        ).values(updated_at=PostCommitTask.updated_at).execution_options(synchronize_session=False))
+        if result.rowcount != 1:
+            return False
+    # Acquire a write boundary BEFORE checking source content. Message edits
+    # cannot slip between the freshness read and the scene CAS on SQLite.
+    session.execute(sa_update(SceneState).where(SceneState.conversation_id == conversation_id)
+        .values(updated_at=SceneState.updated_at).execution_options(synchronize_session=False))
     session.expire_all()
     scene_state = session.get(SceneState, conversation_id)
     if not scene_state:
@@ -3344,6 +3492,8 @@ def _claim_compression_result(
         if current_prefix_ids != folded_message_ids:
             return False
         if folded_message_ids[-1] != source_message_id:
+            return False
+        if folded_content_sha256 is not None and compression_source_fingerprint(current_after_boundary[:len(folded_message_ids)]) != folded_content_sha256:
             return False
     return True
 
@@ -3378,6 +3528,7 @@ def apply_conversation_compression_update(
     expected_revision: int | None = None,
     expected_boundary_message_id: str | None = None,
     folded_message_ids: list[str] | None = None,
+    folded_content_sha256: str | None = None,
     expected_relationship_updated_at: Mapping[tuple[str, str, str], datetime | None] | None = None,
 ) -> bool:
     scene = update.get("scene") or {}
@@ -3410,7 +3561,9 @@ def apply_conversation_compression_update(
             expected_revision=expected_revision,
             expected_boundary_message_id=expected_boundary_message_id,
             folded_message_ids=folded_message_ids,
+            folded_content_sha256=folded_content_sha256,
         ):
+            session.rollback()
             return False
         summary = compact_block_text(
             strip_rank_claims_from_scene_summary(scene.get("summary") or ""),
@@ -3628,6 +3781,8 @@ async def update_scene_orchestration_summary(
     # Only a real foldable source window is a compression attempt. Provider or
     # validation failures after this point still advance the retry cadence, but
     # a protected-raw-tail no-op does not postpone the first useful fold.
+    recent = [_compression_snapshot(message) for message in recent]
+    folded_content_sha256 = compression_source_fingerprint(recent)
     scene_state.last_compression_attempt_at = datetime.now(timezone.utc)
     session.add(scene_state)
     session.commit()
@@ -3650,6 +3805,20 @@ async def update_scene_orchestration_summary(
         if participant.participant_type == "character" and participant.role
     }
     prompt_settings = system_prompt_service.prompt_settings_map()
+    # Capture each selected compressor's own metadata before ending the read
+    # transaction. Fallback admission is recomputed for its actual stage inputs.
+    from app.services.context_management_service import resolve_model_context_capacity
+    from app.services import model_provider_service
+    for client in (llm_client, fallback_llm_client):
+        if client is not None and hasattr(client, "__dict__"):
+            overrides = getattr(client, "overrides", {}) or {}
+            option = model_provider_service.option_by_key(session, overrides.get("model_option_key"))
+            output_getter = getattr(client, "max_output_tokens", None)
+            output_reserve = output_getter() if callable(output_getter) else None
+            client.compression_context_capacity = resolve_model_context_capacity(option, completion_reserve_tokens=output_reserve, mandatory_reserve_tokens=0)
+    scene_state = _compression_snapshot(scene_state)
+    memories = [_compression_snapshot(memory) for memory in memories]
+    session.rollback()  # No open DB transaction across any compression stage.
     llm_update = None
     attempt_errors: list[str] = []
     if allowed_character_ids:
@@ -3699,6 +3868,7 @@ async def update_scene_orchestration_summary(
             expected_revision=expected_revision,
             expected_boundary_message_id=expected_boundary_message_id,
             folded_message_ids=[message.id for message in recent],
+            folded_content_sha256=folded_content_sha256,
         )
         session.expire_all()
         scene_state = session.get(SceneState, conversation_id) or scene_state
@@ -3714,6 +3884,20 @@ def delete_conversation(session: Session, conversation_id: str) -> bool:
     conversation = session.get(Conversation, conversation_id)
     if not conversation:
         return False
+    # Explicit whole-room deletion also removes content-free durable identities.
+    # Ordinary message deletion retains them to fence replay/resurrection.
+    # Delete queued external work before deleting the source/job rows it names.
+    params = {"conversation_id": conversation_id}
+    session.execute(text("""
+        DELETE FROM post_commit_tasks
+        WHERE CASE WHEN json_valid(payload) THEN json_extract(payload, '$.conversation_id') END = :conversation_id
+           OR CASE WHEN json_valid(payload) THEN json_extract(payload, '$.job_id') END IN
+                (SELECT id FROM message_generation_jobs WHERE conversation_id = :conversation_id)
+           OR CASE WHEN json_valid(payload) THEN json_extract(payload, '$.message_id') END IN
+                (SELECT id FROM messages WHERE conversation_id = :conversation_id)
+    """), params)
+    for table in ("generation_job_events", "generation_reply_deletions", "generation_acceptance_receipts", "message_generation_jobs"):
+        session.execute(text(f"DELETE FROM {table} WHERE conversation_id = :conversation_id"), params)
     session.execute(text("DELETE FROM message_assets WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = :conversation_id)"), {"conversation_id": conversation_id})
     session.exec(delete(Message).where(Message.conversation_id == conversation_id))
     session.exec(delete(CharacterMemory).where(CharacterMemory.conversation_id == conversation_id))

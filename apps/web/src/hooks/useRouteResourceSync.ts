@@ -15,6 +15,7 @@ export type Entity = { id?: string; trait_scores?: Record<string, unknown>; [key
 
 export type RouteResourceSyncOptions = {
   route: LegacyRoute;
+  reloadKey?: number;
   characters: Entity[];
   presets: Entity[];
   chatCommands?: Entity[];
@@ -38,6 +39,7 @@ function normalizeCharacterDraft(character: Entity): Entity {
 
 export function useRouteResourceSync({
   route,
+  reloadKey = 0,
   characters,
   presets,
   chatCommands = [],
@@ -57,6 +59,7 @@ export function useRouteResourceSync({
     // Each effect visit owns its command request, even when revisiting the same ID.
     let commandRequestActive = true;
     if (route.page === 'characterNew') {
+      setStatus('');
       setDraft({ ...EMPTY_CHARACTER, forbidden_rules: [...DEFAULT_FORBIDDEN_RULES], trait_scores: { ...DEFAULT_TRAIT_SCORES } });
       setCharacterAssets([]);
     }
@@ -64,36 +67,53 @@ export function useRouteResourceSync({
     if ((route.page === 'characterDetail' || route.page === 'characterAssets') && routeId) {
       const local = characters.find((c) => c.id === routeId);
       if (local) setDraft(normalizeCharacterDraft(local));
-      else characterApi.get(routeId).then((character) => setDraft(normalizeCharacterDraft((character || {}) as Entity))).catch((e) => setStatus(e.message));
+      else {
+        setStatus(t('불러오는 중…'));
+        setDraft({ ...EMPTY_CHARACTER });
+        characterApi.get(routeId).then((character) => {
+          if (!commandRequestActive) return;
+          if ((character as Entity)?.id !== routeId) throw new Error('Character not found or invalid identity');
+          setDraft(normalizeCharacterDraft(character as Entity));
+        }).catch((e) => { if (commandRequestActive) setStatus(e.message); });
+      }
       loadCharacterAssets(routeId);
     }
 
-    if (route.page === 'presetNew') setPresetDraft({ ...EMPTY_PRESET });
+    if (route.page === 'presetNew') { setPresetDraft({ ...EMPTY_PRESET }); setStatus(''); }
     if (route.page === 'presetDetail' && routeId) {
       const local = presets.find((preset) => preset.id === routeId);
       if (local) setPresetDraft(local);
-      else settingsApi.preset(routeId).then((preset) => setPresetDraft((preset || {}) as Entity)).catch((e) => setStatus(e.message));
+      else {
+        setStatus(t('불러오는 중…'));
+        setPresetDraft({ ...EMPTY_PRESET });
+        settingsApi.preset(routeId).then((preset) => {
+          if (!commandRequestActive) return;
+          if ((preset as Entity)?.id !== routeId) throw new Error('Preset not found or invalid identity');
+          setPresetDraft(preset as Entity);
+        }).catch((e) => { if (commandRequestActive) setStatus(e.message); });
+      }
     }
 
 
     if (route.page === 'chatCommandNew') {
+      setStatus('');
       setChatCommandDraft?.(normalizeChatCommandDraft());
     }
     if (route.page === 'chatCommandDetail' && routeId) {
       const local = chatCommands.find((command) => command.id === routeId);
-      if (local) setChatCommandDraft?.(normalizeChatCommandDraft(local as ChatCommandItem));
-      else settingsApi.chatCommands().then((commands) => {
+      if (local) { setChatCommandDraft?.(normalizeChatCommandDraft(local as ChatCommandItem)); setStatus(''); }
+      else { setStatus(t('불러오는 중…')); settingsApi.chatCommands().then((commands) => {
         if (!commandRequestActive) return;
         const found = ((commands || []) as Entity[]).find((command) => command.id === routeId);
-        if (found) setChatCommandDraft?.(normalizeChatCommandDraft(found as ChatCommandItem));
+        if (found) { setChatCommandDraft?.(normalizeChatCommandDraft(found as ChatCommandItem)); setStatus(''); }
         else setStatus(t('커맨드를 찾을 수 없습니다.'));
       }).catch((e) => {
         if (commandRequestActive) setStatus(e.message);
-      });
+      }); }
     }
 
     if (route.page === 'conversationDetail' && routeId) fetchConversation(routeId).catch((e) => setStatus(e.message));
     if (route.page === 'conversationEdit' && routeId) loadConversationEditDraft(routeId).catch((e) => setStatus(e.message));
     return () => { commandRequestActive = false; };
-  }, [route.page, routeId, t]);
+  }, [route.page, routeId, t, reloadKey]);
 }

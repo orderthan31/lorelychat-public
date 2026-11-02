@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from app.core.config import get_settings
+from app.core.upload_files import read_verified_image, ensure_private_upload_directory
 
 UPLOAD_ROOT = Path(get_settings().upload_root).expanduser().resolve()
 AVATAR_DIR = UPLOAD_ROOT / "avatars"
@@ -20,23 +21,22 @@ router = APIRouter(prefix="/uploads", tags=["uploads"])
 
 
 async def save_image_upload(request: Request, file: UploadFile, target_dir: Path, prefix: str, response_key: str) -> dict:
-    extension = ALLOWED_AVATAR_TYPES.get(file.content_type or "")
-    if not extension:
-        raise HTTPException(status_code=415, detail="Only jpeg, png, webp, and gif images are allowed")
+    data, extension = await read_verified_image(file, MAX_AVATAR_BYTES)
 
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="Image file is empty")
-    if len(data) > MAX_AVATAR_BYTES:
-        raise HTTPException(status_code=413, detail="Image file must be 5MB or smaller")
-
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = ensure_private_upload_directory(target_dir, UPLOAD_ROOT, get_settings().shared_upload_root)
     filename = f"{prefix}_{uuid4().hex[:16]}{extension}"
     path = target_dir / filename
-    path.write_bytes(data)
-
     upload_path = f"{target_dir.name}/{filename}"
     url = request.url_for("uploads", path=upload_path)
+    created = False
+    try:
+        with path.open('xb') as handle:
+            created = True
+            handle.write(data)
+    except BaseException:
+        if created:
+            path.unlink(missing_ok=True)
+        raise
     return {response_key: str(url), "filename": filename, "content_type": file.content_type, "size": len(data)}
 
 

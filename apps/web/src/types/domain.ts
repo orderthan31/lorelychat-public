@@ -43,6 +43,7 @@ export interface ConversationSummary {
 }
 
 export type CompressionStrategy = 'fast' | 'quality';
+export type FallbackStatus = 'not_configured' | 'available' | 'unavailable';
 
 export type MessageEditDraft = { raw_body?: string; content?: string; action?: string; thought?: string; emotion: string };
 
@@ -50,6 +51,8 @@ export interface RuntimeSetting {
   scope?: 'default' | 'conversation' | string;
   model_key?: string | null;
   fallback_model_key?: string | null;
+  chat_fallback_status?: FallbackStatus;
+  compression_fallback_status?: FallbackStatus;
   compression_model_key?: string | null;
   compression_fallback_model_key?: string | null;
   default_tts_model_option_key?: string | null;

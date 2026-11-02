@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import type * as React from 'react';
+import { Button } from '../atoms/button';
 import { cn } from '../../lib/utils';
 import { useI18n } from '../../i18n/I18nProvider';
 
@@ -29,8 +31,26 @@ function CommandBlockShell({ title, tone = 'default', children }: { title?: stri
   </section>;
 }
 
+export function validCommandBlock(block: unknown): block is CommandBlock {
+  if (!block || typeof block !== 'object' || Array.isArray(block)) return false;
+  const b = block as Record<string, unknown>;
+  for (const key of ['type', 'title', 'text']) if (b[key] !== undefined && typeof b[key] !== 'string') return false;
+  if (b.headers !== undefined && (!Array.isArray(b.headers) || b.headers.some(v => typeof v !== 'string'))) return false;
+  if (b.rows !== undefined && (!Array.isArray(b.rows) || b.rows.some(row => !Array.isArray(row) || row.some(v => typeof v !== 'string')))) return false;
+  for (const key of ['comments', 'items', 'options', 'cards']) {
+    if (b[key] === undefined) continue;
+    if (!Array.isArray(b[key]) || (b[key] as unknown[]).some(item => !item || typeof item !== 'object' || Array.isArray(item) || Object.entries(item).some(([name, value]) => ['author', 'text', 'time', 'label', 'title'].includes(name) ? typeof value !== 'string' : name === 'checked' ? typeof value !== 'boolean' : name === 'value' ? value !== null && !['string', 'number'].includes(typeof value) : false))) return false;
+  }
+  return true;
+}
+
 export function CommandBlockRenderer({ block, index }: { block: CommandBlock; index: number }) {
   const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  if (!validCommandBlock(block)) return <section role="status" data-malformed-command><p>{t('표시할 수 없는 콘텐츠')}</p><details><summary>{t('원본 보기')}</summary><pre className="whitespace-pre-wrap break-all">{JSON.stringify(block, null, 2)}</pre></details></section>;
+  const cells = (block.rows || []).reduce((n, row) => n + row.length, 0);
+  const entries = ['comments', 'items', 'options', 'cards'].reduce((n, key) => n + ((block as any)[key]?.length || 0), cells);
+  if (entries > 400 && !expanded) return <section data-large-command><p>{t('큰 콘텐츠는 기본 텍스트로 표시됩니다.')}</p><pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(block, null, 2)}</pre><Button type="button" className="min-h-11" onClick={() => setExpanded(true)}>{t('서식 펼치기')}</Button></section>;
   const type = String(block.type || 'text').toLowerCase();
   if (type === 'comments' || type === 'commentary') {
     const comments = Array.isArray(block.comments) ? block.comments.filter((item) => item?.text) : [];
@@ -64,7 +84,7 @@ export function CommandBlockRenderer({ block, index }: { block: CommandBlock; in
     const options = Array.isArray(block.options) ? block.options.filter((item) => item?.label) : [];
     if (!options.length) return null;
     const numericValues = options.map((item) => Number(item.value)).filter((value) => Number.isFinite(value) && value > 0);
-    const max = Math.max(100, ...numericValues);
+    const max = numericValues.reduce((max, value) => Math.max(max, value), 100);
     return <CommandBlockShell key={index} title={block.title}><div className="grid gap-2">{options.map((option, optionIndex) => { const value = Number(option.value); const width = Number.isFinite(value) && value > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0; return <div key={`${index}-${optionIndex}`}><div className="flex justify-between gap-2 text-card-foreground/90"><span>{option.label}</span>{option.value !== undefined && option.value !== null && <strong className="font-black text-accent">{String(option.value)}</strong>}</div><div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[linear-gradient(90deg,#ffe8ec,#fff4f6)] dark:bg-[linear-gradient(90deg,rgba(98,111,134,.34),rgba(98,111,134,.34))]"><span className="block h-full rounded-full bg-[linear-gradient(90deg,#ff9aaa_0%,#f05a68_48%,#b91c3a_100%)] dark:bg-[linear-gradient(90deg,color-mix(in_srgb,var(--success)_88%,#fff),color-mix(in_srgb,var(--accent-2)_76%,#fff))]" style={{ width: `${width}%` }} /></div></div>; })}</div></CommandBlockShell>;
   }
   if (type === 'cards') {

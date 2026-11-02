@@ -1,11 +1,14 @@
 from datetime import datetime
 import asyncio
 import json
+import hashlib
+from uuid import uuid4
 import logging
 import threading
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi import BackgroundTasks, APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, col, select
 from app.db.models import BattleMatchRecord, CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, GenerationJobEvent, Message, MessageGenerationJob, PostCommitTask, SceneState
@@ -17,6 +20,11 @@ from app.engine import prompts
 from app.engine.llm_client import LLMClient, LLMUnavailableError
 from app.engine.prompt_harness import PromptHarness, approx_tokens
 from app.engine.input_markup import parse_input_markup
+from app.schemas.generation_jobs import GenerationJobRetryRequest, ActiveGenerationJobsRead
+from app.services.hardening_core_transactions import acceptance_transaction, isolated_mock_execution
+from app.db.models import GenerationAcceptanceReceipt
+from sqlalchemy import update as sa_update, func
+from sqlalchemy.exc import SQLAlchemyError
 from app.schemas.conversations import (
     CharacterMemoryCreate,
     CharacterMemoryRead,
@@ -843,17 +851,26 @@ def build_generated_turn_post_commit_tasks(
         if message.speaker_type != "character" or not message.speaker_id:
             continue
         task_prefix = f"{identity}:reply:{reply_index}"
-        selected_asset = asset_service.select_asset_for_message(
-            session,
-            conversation_id=conversation.id,
-            character_id=message.speaker_id,
-            emotion=message.emotion,
-            action=message.action,
-            content=message.content,
-            scene_state=scene_state,
-            excluded_asset_ids=reserved_asset_ids.setdefault(message.speaker_id, set()),
-            selection_seed=message.id,
-        )
+        try:
+            selected_asset = asset_service.select_asset_for_message(
+                session,
+                conversation_id=conversation.id,
+                character_id=message.speaker_id,
+                emotion=message.emotion,
+                action=message.action,
+                content=message.content,
+                scene_state=scene_state,
+                excluded_asset_ids=reserved_asset_ids.setdefault(message.speaker_id, set()),
+                selection_seed=message.id,
+            )
+        except SQLAlchemyError:
+            # A broken persistence session is not an optional policy failure.
+            raise
+        except Exception:
+            # Selection alone is optional. Do not log prose/policy/exception text
+            # or catch the finalizer/task-persistence boundary below.
+            logger.warning("Optional asset selection failed; preserving validated primary")
+            selected_asset = None
         if selected_asset is not None:
             reserved_asset_ids[message.speaker_id].add(selected_asset.id)
             tasks.append({
@@ -865,14 +882,14 @@ def build_generated_turn_post_commit_tasks(
                     "asset_id": selected_asset.id,
                 },
             })
-        if conversation.tts_enabled and (message.content or "").strip():
+        if not isolated_mock_execution.get() and conversation.tts_enabled and (message.content or "").strip():
             tasks.append({
                 "unique_key": f"{task_prefix}:tts",
                 "task_type": "tts",
                 "payload": {"conversation_id": conversation.id, "message_id": message.id},
             })
 
-    if enqueue_compression and comparison.context_policy != "full_history":
+    if not isolated_mock_execution.get() and enqueue_compression and comparison.context_policy != "full_history":
         tasks.append({
             "unique_key": f"{identity}:compression",
             "task_type": "compression",
@@ -927,7 +944,7 @@ async def _run_scene_compression_in_session(
         fallback_model_option = model_provider_service.option_by_key(
             session,
             getattr(runtime_setting, "fallback_model_key", None),
-        )
+        ) if runtime_settings_service.fallback_llm_overrides_for_setting(runtime_setting, session=session) else None
         automatic_capacity = resolve_safe_model_context_capacity(
             selected_model_option,
             fallback_model_option,
@@ -1054,6 +1071,7 @@ async def _execute_claimed_post_commit_task(
 ) -> None:
     if task.status != "processing" or task.lease_owner != lease_owner:
         raise RuntimeError("Post-commit task lease is not owned by this worker")
+    claimed_attempt = task.attempt_count
     payload = dict(task.payload_ or {})
     if task.task_type == "asset":
         message = session.get(Message, payload.get("message_id"))
@@ -1072,26 +1090,31 @@ async def _execute_claimed_post_commit_task(
     elif task.task_type == "compression":
         conversation_id = str(payload.get("conversation_id") or "")
         if conversation_id:
-            await _run_scene_compression_in_session(
-                session,
-                conversation_id,
-                generated_character_count=int(payload.get("generated_character_count") or 0),
-                comparison_options=ComparisonOptions(
-                    payload.get("chat_history_serialization", "transcript"),
-                    payload.get("chat_context_policy", "compact"),
-                    payload.get("chat_context_input_budget_tokens"),
-                ),
-                character_ids=[str(item) for item in (payload.get("character_ids") or []) if item],
-                raw_tail_token_budget=(
-                    int(payload["raw_tail_token_budget"])
-                    if payload.get("raw_tail_token_budget") is not None else None
-                ),
-                history_accounting=payload.get("history_accounting"),
-                mandatory_prompt_tokens=(
-                    int(payload["mandatory_prompt_tokens"])
-                    if payload.get("mandatory_prompt_tokens") is not None else None
-                ),
-            )
+            from app.services.hardening_core_transactions import compression_post_commit_fence
+            fence_token = compression_post_commit_fence.set((task.id, lease_owner, task.attempt_count))
+            try:
+                await _run_scene_compression_in_session(
+                    session,
+                    conversation_id,
+                    generated_character_count=int(payload.get("generated_character_count") or 0),
+                    comparison_options=ComparisonOptions(
+                        payload.get("chat_history_serialization", "transcript"),
+                        payload.get("chat_context_policy", "compact"),
+                        payload.get("chat_context_input_budget_tokens"),
+                    ),
+                    character_ids=[str(item) for item in (payload.get("character_ids") or []) if item],
+                    raw_tail_token_budget=(
+                        int(payload["raw_tail_token_budget"])
+                        if payload.get("raw_tail_token_budget") is not None else None
+                    ),
+                    history_accounting=payload.get("history_accounting"),
+                    mandatory_prompt_tokens=(
+                        int(payload["mandatory_prompt_tokens"])
+                        if payload.get("mandatory_prompt_tokens") is not None else None
+                    ),
+                )
+            finally:
+                compression_post_commit_fence.reset(fence_token)
             session.expire_all()
             refreshed = session.get(PostCommitTask, task.id)
             if refreshed is None:
@@ -1103,6 +1126,7 @@ async def _execute_claimed_post_commit_task(
         session,
         task,
         lease_owner=lease_owner,
+        expected_attempt=claimed_attempt,
         commit=False,
     ):
         raise RuntimeError("Post-commit task lease was lost before completion")
@@ -1163,6 +1187,8 @@ async def generate_replies_from_message(
     applied_battle_record=None,
     generation_job: MessageGenerationJob | None = None,
 ) -> list[Message]:
+    generation_owner = generation_job.lease_owner if generation_job else None
+    generation_attempt = generation_job.attempt_count if generation_job else None
     replies = [incoming_message] if include_incoming_in_response else []
     comparison = ComparisonOptions.from_settings(get_settings())
     full_history = comparison.context_policy == "full_history"
@@ -1535,11 +1561,19 @@ async def generate_replies_from_message(
 
     async def persist_prompt_snapshot(snapshot: dict):
         try:
-            prompt_snapshot_service.record_prompt_snapshot(session, **snapshot)
+            with Session(session.get_bind()) as snapshot_session:
+                prompt_snapshot_service.record_prompt_snapshot(snapshot_session, **snapshot)
         except Exception:
             session.rollback()
             logger.exception("Non-critical prompt snapshot persistence failed for conversation %s", conversation_id)
 
+    # Compression/snapshot commits can expire otherwise unused columns. Load
+    # every scalar before detaching so later planning cannot reopen a read txn.
+    for mapped in list(session.identity_map.values()):
+        for key in type(mapped).model_fields:
+            getattr(mapped, key)
+    session.expunge_all()
+    session.rollback()  # Frozen ORM inputs are detached; no transaction spans provider I/O.
     generated_replies = await runtime.generate_replies(
         characters=room_characters,
         recent_messages=[message for message in recent_for_prompt if message.id != incoming_message.id],
@@ -1678,6 +1712,7 @@ async def generate_replies_from_message(
             source_message_id=incoming_message.id,
             source_metadata=source_metadata,
             post_commit_tasks=post_commit_tasks,
+            expected_owner=generation_owner, expected_attempt=generation_attempt,
         )
     await _process_inline_post_commit_tasks(finalization_bind, post_commit_tasks)
     post_commit_dispatcher.wake()
@@ -1807,12 +1842,22 @@ async def _run_message_generation_job_in_session(
     job_id: str,
     lease_owner: str | None = None,
 ) -> None:
+    inline_execution = False
     job = conversation_service.get_message_generation_job(session, job_id)
     if not job or job.status in {"completed", "failed", "cancelled"}:
         return
+    if (job.execution_options or {}).get("execution_mode") == "mock" and not get_settings().llm_mock:
+        logger.warning("Mock-only generation job held without execution job=%s", job_id)
+        return
     if job.status == "queued" and lease_owner is None:
-        job = conversation_service.mark_message_generation_job_running(session, job)
-    elif job.status != "running":
+        job = conversation_service.claim_next_message_generation_job(session,
+            lease_owner="inline:" + uuid4().hex, job_id=job_id,
+            execution_mode="mock" if (job.execution_options or {}).get("execution_mode") == "mock" else None)
+        if job is None:
+            return
+        lease_owner = job.lease_owner
+        inline_execution = True
+    elif job.status != "running" or lease_owner is None:
         return
     if lease_owner is not None and job.lease_owner != lease_owner:
         return
@@ -1825,38 +1870,49 @@ async def _run_message_generation_job_in_session(
         conversation_service.mark_message_generation_job_failed(session, job, RuntimeError("Conversation or incoming message not found"))
         return
     payload = _message_payload_from_stored_message(incoming_message)
-    try:
-        replies = await generate_replies_from_message(
-            session=session,
-            conversation_id=job.conversation_id,
-            conversation=conversation,
-            payload=payload,
-            incoming_message=incoming_message,
-            include_incoming_in_response=False,
-            generation_job=job,
-        )
-        session.expire_all()
-        fresh_job = conversation_service.get_message_generation_job(session, job_id)
-        if fresh_job and fresh_job.status == "running":
-            conversation_service.mark_message_generation_job_completed(
-                session,
-                fresh_job,
-                [message.id for message in replies],
-            )
-    except Exception as exc:
-        session.rollback()
-        fresh_job = conversation_service.get_message_generation_job(session, job_id)
-        if fresh_job and fresh_job.status == "completed":
-            logger.warning("Generation finalization committed before a late runner error for job=%s", job_id)
+    worker_owner, worker_attempt = job.lease_owner, job.attempt_count
+    extra_generation = {}
+    options = dict(job.execution_options or {})
+    if options.get("kind") == "regeneration":
+        payload = MessageCreate.model_validate(options["payload"])
+        ordered_ids = list(options.get("recent_message_ids") or [])
+        captured = [session.get(Message, mid) for mid in ordered_ids]
+        if any(message is None or message.conversation_id != job.conversation_id for message in captured):
+            conversation_service.mark_message_generation_job_failed(session, job, RuntimeError("Regeneration context was deleted; it will not be restored"))
             return
-        fresh_incoming = conversation_service.get_message(session, incoming_message.id)
-        if fresh_incoming:
-            conversation_service.mark_message_generation_failed(session, fresh_incoming, exc)
-        fresh_job = conversation_service.get_message_generation_job(session, job_id)
-        if fresh_job and fresh_job.status == "running":
-            conversation_service.mark_message_generation_job_failed(session, fresh_job, exc)
-        logger.exception("Message generation job failed for job=%s conversation=%s source_message=%s", job_id, job.conversation_id, incoming_message.id)
-
+        extra_generation["recent_messages"] = captured
+    with (generation_dispatcher.track_inline_job(session.get_bind(), job_id, worker_owner) if inline_execution else nullcontext()):
+        try:
+            replies = await generate_replies_from_message(
+                session=session,
+                conversation_id=job.conversation_id,
+                conversation=conversation,
+                payload=payload,
+                incoming_message=incoming_message,
+                include_incoming_in_response=False,
+                generation_job=job,
+                **extra_generation,
+            )
+            session.expire_all()
+            fresh_job = conversation_service.get_message_generation_job(session, job_id)
+            if fresh_job and fresh_job.status == "running" and fresh_job.lease_owner == worker_owner and fresh_job.attempt_count == worker_attempt:
+                conversation_service.mark_message_generation_job_completed(
+                    session,
+                    fresh_job,
+                    [message.id for message in replies],
+                    expected_owner=worker_owner, expected_attempt=worker_attempt,
+                )
+        except Exception as exc:
+            session.rollback()
+            fresh_job = conversation_service.get_message_generation_job(session, job_id)
+            if fresh_job and fresh_job.status == "completed":
+                logger.warning("Generation finalization committed before a late runner error for job=%s", job_id)
+                return
+            fresh_job = conversation_service.get_message_generation_job(session, job_id)
+            if fresh_job and fresh_job.status == "running":
+                conversation_service.mark_message_generation_job_failed(session, fresh_job, exc,
+                    expected_owner=worker_owner, expected_attempt=worker_attempt)
+            logger.exception("Message generation job failed for job=%s conversation=%s source_message=%s", job_id, job.conversation_id, incoming_message.id)
 
 async def _run_message_generation_job(job_id: str, lease_owner: str | None = None) -> None:
     with Session(engine) as session:
@@ -1871,47 +1927,188 @@ def _start_message_generation_worker(_job_id: str) -> None:
     generation_dispatcher.wake()
 
 
+async def _run_mock_generation_queue(bind) -> None:
+    # No global dispatcher/engine rebinding. This runner is reachable only in
+    # explicit mock mode and uses exactly the request's synthetic/onboarding DB.
+    if not get_settings().llm_mock:
+        return
+    owner = "mock:" + uuid4().hex
+    while True:
+        with Session(bind) as worker_session:
+            conversation_service.requeue_expired_message_generation_jobs(worker_session, execution_mode="mock")
+            claimed = conversation_service.claim_next_message_generation_job(worker_session, lease_owner=owner, execution_mode="mock")
+            if claimed is None:
+                return
+            token = isolated_mock_execution.set(True)
+            try:
+                await _run_message_generation_job_in_session(worker_session, claimed.id, owner)
+            finally:
+                isolated_mock_execution.reset(token)
+
+
+def _wake_accepted_job(job_id, session, background_tasks, execution_mode: str | None):
+    # Acceptance flags select intent only when creating work. Once durable,
+    # that captured intent owns dispatch even if the app acceptance flag changes.
+    if execution_mode == "mock":
+        if get_settings().llm_mock:
+            background_tasks.add_task(_run_mock_generation_queue, session.get_bind())
+    else:
+        _start_message_generation_worker(job_id)
+
+
+def _admit_generation_backlog(session, conversation_id):
+    active = MessageGenerationJob.status.in_(["queued", "running"])
+    global_count = session.exec(select(func.count()).select_from(MessageGenerationJob).where(active)).one()
+    room_count = session.exec(select(func.count()).select_from(MessageGenerationJob).where(active, MessageGenerationJob.conversation_id == conversation_id)).one()
+    # Admission is checked under the acceptance write lock, not a racy preflight.
+    if global_count >= 1000 or room_count >= 100:
+        raise HTTPException(status_code=429, detail="generation backlog capacity reached", headers={"Retry-After": "1"})
+
+
 @router.post("/{conversation_id}/messages/jobs", response_model=MessageGenerationJobCreateRead)
 async def create_message_generation_job(
     conversation_id: str,
     payload: MessageCreate,
+    request: Request,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
 ):
-    conversation = conversation_service.get_conversation(session, conversation_id)
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    payload = _with_persisted_battle_control(_prepare_message_payload_for_post(session, conversation, payload))
-    if not payload.content.strip() and not (payload.action or "").strip():
-        raise HTTPException(status_code=422, detail="Message content or action is required")
     metadata = payload.metadata if isinstance(payload.metadata, dict) else {}
-    client_request_id = metadata.get("client_request_id")
-    existing_incoming_message = conversation_service.find_incoming_message_by_client_request_id(session, conversation_id, client_request_id)
-    if existing_incoming_message:
-        existing_job = conversation_service.get_message_generation_job_for_incoming_message(session, existing_incoming_message.id)
-        if existing_job:
-            if existing_job.status == "queued":
-                _start_message_generation_worker(existing_job.id)
-            return MessageGenerationJobCreateRead(
-                job=_serialize_generation_job(existing_job),
-                incoming_message=MessageRead.model_validate(asset_service.serialize_message(session, existing_incoming_message)),
-            )
-    incoming_message = conversation_service.add_message(session, conversation_id, payload)
-    if payload.battle_control:
-        try:
-            battle_ledger_service.apply_battle_control(session, conversation, payload.battle_control, message_id=incoming_message.id)
-        except ValueError as exc:
-            fresh_incoming = conversation_service.get_message(session, incoming_message.id)
-            if fresh_incoming:
-                conversation_service.delete_message(session, fresh_incoming)
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if payload.speaker_type == "system":
-        conversation_service.record_system_scene_direction(session, conversation_id, payload.content)
-    job = conversation_service.create_message_generation_job(session, conversation_id, incoming_message.id)
-    _start_message_generation_worker(job.id)
-    return MessageGenerationJobCreateRead(
-        job=_serialize_generation_job(job),
-        incoming_message=MessageRead.model_validate(asset_service.serialize_message(session, incoming_message)),
-    )
+    request_id = metadata.get("client_request_id")
+    if request_id is not None and (not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 200):
+        raise HTTPException(status_code=422, detail="client_request_id must be a nonblank string of at most 200 characters")
+    digest = hashlib.sha256(json.dumps(payload.model_dump(mode="json"), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    # All source, command activation, battle/system effects, job and receipt
+    # commits below are savepoints inside one short durable transaction.
+    with acceptance_transaction(session) as accept:
+        conversation = conversation_service.get_conversation(accept, conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        receipt = accept.exec(select(GenerationAcceptanceReceipt).where(
+            GenerationAcceptanceReceipt.conversation_id == conversation_id,
+            GenerationAcceptanceReceipt.client_request_id == "send:" + request_id,
+        )).first() if request_id else None
+        if receipt:
+            if receipt.payload_sha256 != digest:
+                raise HTTPException(status_code=409, detail="client_request_id payload conflict")
+            incoming_message = accept.get(Message, receipt.incoming_message_id)
+            job = accept.get(MessageGenerationJob, receipt.job_id)
+            if incoming_message is None or job is None:
+                raise HTTPException(status_code=410, detail="accepted source/job was deleted; it will not be recreated")
+        else:
+            new_source = False
+            incoming_message = conversation_service.find_incoming_message_by_client_request_id(accept, conversation_id, request_id)
+            if incoming_message:
+                # Legacy orphan reconciliation reuses the source without rerunning
+                # effects that may already have committed before this release.
+                if (incoming_message.speaker_type, incoming_message.speaker_id, incoming_message.content, incoming_message.action or "", incoming_message.thought or "") != (payload.speaker_type, payload.speaker_id, payload.content, payload.action or "", payload.thought or ""):
+                    raise HTTPException(status_code=409, detail="legacy client_request_id payload conflict")
+                job = conversation_service.get_message_generation_job_for_incoming_message(accept, incoming_message.id)
+                if job is None:
+                    _admit_generation_backlog(accept, conversation_id)
+                    job = conversation_service.create_message_generation_job(accept, conversation_id, incoming_message.id)
+            else:
+                _admit_generation_backlog(accept, conversation_id)
+                prepared = _with_persisted_battle_control(_prepare_message_payload_for_post(accept, conversation, payload))
+                if not prepared.content.strip() and not (prepared.action or "").strip():
+                    raise HTTPException(status_code=422, detail="Message content or action is required")
+                incoming_message = conversation_service.add_message(accept, conversation_id, prepared)
+                new_source = True
+                if prepared.battle_control:
+                    try:
+                        battle_ledger_service.apply_battle_control(accept, conversation, prepared.battle_control, message_id=incoming_message.id)
+                    except ValueError as exc:
+                        raise HTTPException(status_code=422, detail=str(exc)) from exc
+                if prepared.speaker_type == "system":
+                    conversation_service.record_system_scene_direction(accept, conversation_id, prepared.content)
+                job = conversation_service.create_message_generation_job(accept, conversation_id, incoming_message.id)
+            if new_source and get_settings().llm_mock and getattr(request.app.state, "mock_execution", True):
+                job.execution_options = {**(job.execution_options or {}), "execution_mode": "mock"}
+                accept.add(job)
+            accept.add(GenerationAcceptanceReceipt(id="accept_" + uuid4().hex,
+                conversation_id=conversation_id, client_request_id=("send:" + request_id) if request_id else ("anonymous:" + uuid4().hex),
+                payload_sha256=digest, incoming_message_id=incoming_message.id, job_id=job.id))
+        if job.status == "queued" and get_settings().llm_mock and getattr(request.app.state, "mock_execution", True) and (job.execution_options or {}).get("execution_mode") != "mock":
+            raise HTTPException(status_code=409, detail="Existing live-intended work is not executable by the isolated mock runner")
+        execution_mode = (job.execution_options or {}).get("execution_mode")
+        result = MessageGenerationJobCreateRead(job=_serialize_generation_job(job),
+            incoming_message=MessageRead.model_validate(asset_service.serialize_message(accept, incoming_message)))
+    # Wake only AFTER the acceptance commit. A crash here is recovered by polling.
+    if result.job.status == "queued":
+        _wake_accepted_job(result.job.id, session, background_tasks, execution_mode)
+    return result
+
+
+@router.get("/{conversation_id}/generation-jobs/by-request/{request_id}", response_model=MessageGenerationJobCreateRead)
+def generation_receipt_by_request(conversation_id: str, request_id: str, session: Session = Depends(get_session)):
+    if not request_id.strip() or len(request_id) > 200 or any(ord(char) < 32 or ord(char) == 127 for char in request_id):
+        raise HTTPException(status_code=422, detail="request_id must be a nonblank string of at most 200 characters without controls")
+    receipt = session.exec(select(GenerationAcceptanceReceipt).where(
+        GenerationAcceptanceReceipt.conversation_id == conversation_id,
+        GenerationAcceptanceReceipt.client_request_id == "send:" + request_id,
+    )).first()
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Acceptance receipt not found")
+    incoming = session.get(Message, receipt.incoming_message_id)
+    job = session.get(MessageGenerationJob, receipt.job_id)
+    if incoming is None:
+        raise HTTPException(status_code=410, detail="Accepted source was deleted; it will not be recreated")
+    if job is None or incoming.conversation_id != conversation_id or job.conversation_id != conversation_id or job.incoming_message_id != incoming.id:
+        raise HTTPException(status_code=409, detail="Acceptance receipt is inconsistent")
+    return MessageGenerationJobCreateRead(job=_serialize_generation_job(job),
+        incoming_message=MessageRead.model_validate(asset_service.serialize_message(session, incoming)))
+
+
+@router.get("/{conversation_id}/generation-jobs/active", response_model=ActiveGenerationJobsRead)
+def active_message_generation_jobs(conversation_id: str, session: Session = Depends(get_session)):
+    if not conversation_service.get_conversation(session, conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    jobs = session.exec(select(MessageGenerationJob).where(
+        MessageGenerationJob.conversation_id == conversation_id,
+        MessageGenerationJob.status.in_(["queued", "running"]),
+    ).order_by(MessageGenerationJob.created_at, MessageGenerationJob.id)).all()
+    return ActiveGenerationJobsRead(jobs=[_serialize_generation_job(job) for job in jobs])
+
+
+@router.post("/{conversation_id}/generation-jobs/{job_id}/retry", response_model=MessageGenerationJobRead)
+def retry_message_generation_job(conversation_id: str, job_id: str, payload: GenerationJobRetryRequest,
+    request: Request, background_tasks: BackgroundTasks, session: Session = Depends(get_session)):
+    requeued = False
+    with acceptance_transaction(session) as accept:
+        job = accept.get(MessageGenerationJob, job_id)
+        if not job or job.conversation_id != conversation_id:
+            raise HTTPException(status_code=404, detail="Generation job not found")
+        if (job.status in {"failed", "cancelled"} and job.state_version == payload.expected_state_version
+            and not job.generated_message_ids and not accept.exec(select(Message.id).where(Message.generation_job_id == job_id)).first()):
+            source = accept.get(Message, job.incoming_message_id)
+            if source is None or source.conversation_id != conversation_id:
+                raise HTTPException(status_code=410, detail="source was deleted; retry never recreates it")
+            mock_job = (job.execution_options or {}).get("execution_mode") == "mock"
+            if get_settings().llm_mock and getattr(request.app.state, "mock_execution", True) and not mock_job:
+                raise HTTPException(status_code=409, detail="Existing live-intended work is not executable by the isolated mock runner")
+            if mock_job and not get_settings().llm_mock:
+                raise HTTPException(status_code=409, detail={"job_id": job_id, "code": "mock_generation_held"})
+            _admit_generation_backlog(accept, conversation_id)
+            updated = accept.exec(sa_update(MessageGenerationJob).where(
+                MessageGenerationJob.id == job_id, MessageGenerationJob.status.in_(["failed", "cancelled"]),
+                MessageGenerationJob.state_version == payload.expected_state_version,
+            ).values(status="queued", cancel_requested_at=None, error_message=None,
+                completed_at=None, lease_owner=None, lease_expires_at=None, heartbeat_at=None,
+                updated_at=datetime.now().astimezone(), state_version=MessageGenerationJob.state_version + 1)
+              .execution_options(synchronize_session=False))
+            if updated.rowcount == 1:
+                requeued = True
+                accept.refresh(job)
+                # Retry preserves the durable execution intent; it never
+                # converts live work to mock output or mock work to paid work.
+                source.metadata_ = {k:v for k,v in (source.metadata_ or {}).items() if not k.startswith("generation_error") and k != "generation_status"}
+                accept.add(source)
+                conversation_service.append_generation_job_event(accept, job, "queued", payload={"reason":"explicit_retry"})
+        execution_mode = (job.execution_options or {}).get("execution_mode")
+        result = _serialize_generation_job(job)
+    if requeued:
+        _wake_accepted_job(job_id, session, background_tasks, execution_mode)
+    return result
 
 
 @router.get("/{conversation_id}/generation-jobs/{job_id}", response_model=MessageGenerationJobRead)
@@ -1999,7 +2196,10 @@ def stream_message_generation_job_events(
                 serialized = [
                     (event.id, *_serialize_generation_sse_event(event, current_job))
                     for event in events
-                    if event.id is not None
+                    if event.id is not None and not (
+                        event.status in _TERMINAL_GENERATION_STATUSES
+                        and event.state_version < current_job.state_version
+                    )
                 ]
             for event_id, event_name, data in serialized:
                 cursor = int(event_id)
@@ -2011,6 +2211,15 @@ def stream_message_generation_job_events(
                 last_emit_at = loop.time()
                 if event_name in _TERMINAL_GENERATION_STATUSES:
                     return
+            if current_job.status in _TERMINAL_GENERATION_STATUSES:
+                # Exhausted/equal/ahead cursors still get authoritative terminal
+                # reconciliation, without inventing a new durable event ID.
+                data = {"job_id": current_job.id, "conversation_id": conversation_id,
+                        "state_version": current_job.state_version, "status": current_job.status}
+                if current_job.status == "completed":
+                    data["generated_message_ids"] = list(current_job.generated_message_ids or [])
+                yield f"event: {current_job.status}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
+                return
             now = loop.time()
             if now - last_emit_at >= heartbeat_seconds:
                 yield ": heartbeat\n\n"
@@ -2039,75 +2248,86 @@ def cancel_message_generation_job(conversation_id: str, job_id: str, session: Se
 
 
 @router.post("/{conversation_id}/messages", response_model=list[MessageRead])
-async def post_message(conversation_id: str, payload: MessageCreate, session: Session = Depends(get_session)):
-    conversation = conversation_service.get_conversation(session, conversation_id)
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    payload = _with_persisted_battle_control(_prepare_message_payload_for_post(session, conversation, payload))
-    if not payload.content.strip() and not (payload.action or "").strip():
-        raise HTTPException(status_code=422, detail="Message content or action is required")
-    incoming_message = conversation_service.add_message(session, conversation_id, payload)
-    applied_battle_record = None
-    if payload.battle_control:
+async def post_message(conversation_id: str, payload: MessageCreate, request: Request, session: Session = Depends(get_session)):
+    accepted = await create_message_generation_job(conversation_id, payload, request, BackgroundTasks(), session)
+    job = session.get(MessageGenerationJob, accepted.job.id)
+    incoming_message = session.get(Message, accepted.incoming_message.id)
+    if job.status == "queued" and (job.execution_options or {}).get("execution_mode") == "mock" and get_settings().llm_mock:
+        # Legacy response still waits for the isolated runner, with its same
+        # no-paid-auxiliary policy rather than bypassing the execution scope.
+        await _run_mock_generation_queue(session.get_bind())
+        session.expire_all()
+        job = session.get(MessageGenerationJob, accepted.job.id)
+    if job.status == "completed":
+        if not job.generated_message_ids:
+            return [asset_service.serialize_message(session, incoming_message)]
         try:
-            applied_battle_record = battle_ledger_service.apply_battle_control(session, conversation, payload.battle_control, message_id=incoming_message.id)
+            existing = conversation_service.finalize_message_generation_turn(session, job, [])
         except ValueError as exc:
-            fresh_incoming = conversation_service.get_message(session, incoming_message.id)
-            if fresh_incoming:
-                conversation_service.delete_message(session, fresh_incoming)
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if payload.speaker_type == "system":
-        conversation_service.record_system_scene_direction(session, conversation_id, payload.content)
-    try:
-        replies = await generate_replies_from_message(
-            session=session,
-            conversation_id=conversation_id,
-            conversation=conversation,
-            payload=payload,
-            incoming_message=incoming_message,
-            include_incoming_in_response=True,
-            applied_battle_record=applied_battle_record,
-        )
-    except ContextMaintenanceRequired as exc:
-        fresh_incoming = conversation_service.get_message(session, incoming_message.id)
-        if fresh_incoming:
-            conversation_service.mark_message_generation_failed(session, fresh_incoming, exc)
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": exc.code,
-                "projected_tokens": exc.projected_tokens,
-                "working_tokens": exc.working_tokens,
-                "backlog_groups": exc.backlog_groups,
-                "catchup_batches": exc.batches,
-            },
-        ) from exc
-    except LLMUnavailableError as exc:
-        fresh_incoming = conversation_service.get_message(session, incoming_message.id)
-        if fresh_incoming:
-            conversation_service.mark_message_generation_failed(session, fresh_incoming, exc)
-        logger.exception(
-            "LLM generation failed for conversation=%s source_message=%s speaker_type=%s speaker_id=%s",
-            conversation_id,
-            incoming_message.id,
-            payload.speaker_type,
-            payload.speaker_id,
-        )
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception as exc:
-        fresh_incoming = conversation_service.get_message(session, incoming_message.id)
-        if fresh_incoming:
-            conversation_service.mark_message_generation_failed(session, fresh_incoming, exc)
-        logger.exception(
-            "Message generation failed for conversation=%s source_message=%s speaker_type=%s speaker_id=%s",
-            conversation_id,
-            incoming_message.id,
-            payload.speaker_type,
-            payload.speaker_id,
-        )
-        raise
-    return [asset_service.serialize_message(session, message) for message in replies]
-
+            raise HTTPException(status_code=410, detail="completed receipt was deleted or is inconsistent; no content is recreated") from exc
+        return [asset_service.serialize_message(session, message) for message in [incoming_message, *existing]]
+    if job.status in {"failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail={"job_id":job.id,"status":job.status,"code":"explicit_retry_required"})
+    owner = "compat:" + uuid4().hex
+    claimed = conversation_service.claim_next_message_generation_job(session, lease_owner=owner, job_id=job.id)
+    if claimed is None:
+        raise HTTPException(status_code=409, detail={"job_id":job.id,"code":"durable_generation_pending"})
+    job = claimed
+    conversation = conversation_service.get_conversation(session, conversation_id)
+    payload = _message_payload_from_stored_message(incoming_message)
+    applied_battle_record = None  # Acceptance already applied the declared effect.
+    with generation_dispatcher.track_inline_job(session.get_bind(), job.id, owner):
+        try:
+            replies = await generate_replies_from_message(
+                session=session,
+                conversation_id=conversation_id,
+                conversation=conversation,
+                payload=payload,
+                incoming_message=incoming_message,
+                include_incoming_in_response=True,
+                applied_battle_record=applied_battle_record,
+                generation_job=job,
+            )
+        except ContextMaintenanceRequired as exc:
+            session.rollback()
+            conversation_service.mark_message_generation_job_failed(session, session.get(MessageGenerationJob, job.id), exc, expected_owner=owner, expected_attempt=claimed.attempt_count)
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": exc.code,
+                    "projected_tokens": exc.projected_tokens,
+                    "working_tokens": exc.working_tokens,
+                    "backlog_groups": exc.backlog_groups,
+                    "catchup_batches": exc.batches,
+                },
+            ) from exc
+        except LLMUnavailableError as exc:
+            session.rollback()
+            conversation_service.mark_message_generation_job_failed(session, session.get(MessageGenerationJob, job.id), exc, expected_owner=owner, expected_attempt=claimed.attempt_count)
+            logger.exception(
+                "LLM generation failed for conversation=%s source_message=%s speaker_type=%s speaker_id=%s",
+                conversation_id,
+                incoming_message.id,
+                payload.speaker_type,
+                payload.speaker_id,
+            )
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            session.rollback()
+            conversation_service.mark_message_generation_job_failed(session, session.get(MessageGenerationJob, job.id), exc, expected_owner=owner, expected_attempt=claimed.attempt_count)
+            logger.exception(
+                "Message generation failed for conversation=%s source_message=%s speaker_type=%s speaker_id=%s",
+                conversation_id,
+                incoming_message.id,
+                payload.speaker_type,
+                payload.speaker_id,
+            )
+            raise
+        session.expire_all()
+        current_job = session.get(MessageGenerationJob, job.id)
+        if current_job and current_job.status == "running" and current_job.lease_owner == owner:
+            conversation_service.mark_message_generation_job_completed(session, current_job, [message.id for message in replies if message.id != incoming_message.id])
+        return [asset_service.serialize_message(session, message) for message in replies]
 
 @router.delete("/{conversation_id}/messages/{message_id}", status_code=204)
 def delete_message(conversation_id: str, message_id: str, session: Session = Depends(get_session)):
@@ -2132,6 +2352,8 @@ def bulk_delete_messages(conversation_id: str, payload: MessageBulkDeleteRequest
 async def regenerate_after_message(
     conversation_id: str,
     message_id: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     payload: MessageRegenerateRequest | None = None,
     session: Session = Depends(get_session),
 ):
@@ -2177,13 +2399,63 @@ async def regenerate_after_message(
         # For 1:1 character-bubble regeneration, exclude the selected answer so
         # the appended reply is an alternative to it, not a continuation of it.
         recent_messages = messages[:selected_index]
-    replies = await generate_replies_from_message(
-        session=session,
-        conversation_id=conversation_id,
-        conversation=conversation,
-        payload=message_payload,
-        incoming_message=selected_message,
-        recent_messages=recent_messages,
-        include_incoming_in_response=False,
-    )
+    if idempotency_key is not None and (not idempotency_key.strip() or len(idempotency_key) > 200):
+        raise HTTPException(status_code=422, detail="Idempotency-Key must be nonblank and at most 200 characters")
+    source_id = selected_message.id
+    isolated_mock_request = get_settings().llm_mock and getattr(request.app.state, "mock_execution", True)
+    captured_options = {"kind":"regeneration", "payload":message_payload.model_dump(mode="json"),
+                        "recent_message_ids":[message.id for message in recent_messages]}
+    if isolated_mock_request:
+        captured_options["execution_mode"] = "mock"
+    receipt_key = "regeneration:" + source_id + ":" + (idempotency_key or uuid4().hex)
+    digest = hashlib.sha256(json.dumps({"source":source_id,"request":payload.model_dump(mode="json")}, sort_keys=True).encode()).hexdigest()
+    with acceptance_transaction(session) as accept:
+        receipt = accept.exec(select(GenerationAcceptanceReceipt).where(
+            GenerationAcceptanceReceipt.conversation_id == conversation_id,
+            GenerationAcceptanceReceipt.client_request_id == receipt_key,
+        )).first()
+        if receipt:
+            if receipt.payload_sha256 != digest:
+                raise HTTPException(status_code=409, detail="Idempotency-Key payload conflict")
+            job = accept.get(MessageGenerationJob, receipt.job_id)
+            if job is None:
+                raise HTTPException(status_code=410, detail="Regeneration was deleted; it will not be recreated")
+        else:
+            if accept.get(Message, source_id) is None:
+                raise HTTPException(status_code=410, detail="Source was deleted; it will not be recreated")
+            _admit_generation_backlog(accept, conversation_id)
+            job = conversation_service.create_message_generation_job(accept, conversation_id, source_id)
+            job.execution_options = captured_options
+            accept.add(job)
+            accept.add(GenerationAcceptanceReceipt(id="accept_"+uuid4().hex, conversation_id=conversation_id,
+                client_request_id=receipt_key, payload_sha256=digest, incoming_message_id=source_id, job_id=job.id))
+        job_id = job.id
+        mock_job = (job.execution_options or {}).get("execution_mode") == "mock"
+        pending = job.status in {"queued", "running"}
+        if pending and isolated_mock_request and not mock_job:
+            raise HTTPException(status_code=409, detail="Existing live-intended work is not executable by the isolated mock runner")
+        if pending and mock_job and not get_settings().llm_mock:
+            raise HTTPException(status_code=409, detail={"job_id":job_id,"code":"mock_generation_held"})
+        queued = job.status == "queued"
+    # Dispatch only after acceptance commits, using the persisted mode rather
+    # than relabelling a receipt on replay. The mock queue binds this request's
+    # engine and scopes all auxiliary enqueue through isolated_mock_execution.
+    if queued:
+        if mock_job:
+            await _run_mock_generation_queue(session.get_bind())
+        else:
+            _start_message_generation_worker(job_id)
+            await _run_message_generation_job_in_session(session, job_id)
+    session.expire_all()
+    current = session.get(MessageGenerationJob, job_id)
+    if current.status in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail={"job_id":job_id,"code":"durable_generation_pending"})
+    if current.status != "completed":
+        raise HTTPException(status_code=503, detail={"job_id":job_id,"status":current.status,"code":_public_generation_error_code(current)})
+    if not current.generated_message_ids:
+        return []
+    try:
+        replies = conversation_service.finalize_message_generation_turn(session, current, [])
+    except ValueError as exc:
+        raise HTTPException(status_code=410, detail="completed receipt was deleted or is inconsistent; no content is recreated") from exc
     return [asset_service.serialize_message(session, message) for message in replies]

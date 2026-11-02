@@ -35,19 +35,19 @@ export function useSettingsMutations(): SettingsMutationsState {
 
     saveChatCommand: useMutation({
       mutationFn: settingsApi.saveChatCommand,
-      onSuccess: () => invalidate(queryKeys.chatCommands),
+      onSuccess: () => invalidate(['chat-commands']),
     }),
     deleteChatCommand: useMutation({
       mutationFn: settingsApi.deleteChatCommand,
-      onSuccess: () => invalidate(queryKeys.chatCommands),
+      onSuccess: () => invalidate(['chat-commands']),
     }),
     saveWorldSetting: useMutation({
       mutationFn: settingsApi.saveWorldSetting,
-      onSuccess: () => invalidate(queryKeys.worldSettings),
+      onSuccess: () => invalidate(['world-settings']),
     }),
     deleteWorldSetting: useMutation({
       mutationFn: settingsApi.deleteWorldSetting,
-      onSuccess: () => invalidate(queryKeys.worldSettings),
+      onSuccess: () => invalidate(['world-settings']),
     }),
   };
 }

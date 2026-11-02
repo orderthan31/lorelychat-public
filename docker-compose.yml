@@ -11,6 +11,9 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
       LLM_MOCK: ${LLM_MOCK:-true}
       LLM_TRANSPORT: ${LLM_TRANSPORT:-legacy_http}
+      LLM_TASK_DEADLINE_SECONDS: ${LLM_TASK_DEADLINE_SECONDS:-300}
+      DISPATCHER_SHUTDOWN_TIMEOUT_SECONDS: ${DISPATCHER_SHUTDOWN_TIMEOUT_SECONDS:-30}
+      TTS_TIMEOUT_SECONDS: ${TTS_TIMEOUT_SECONDS:-120}
       LORECHAT_SEED_DEMO: ${LORECHAT_SEED_DEMO:-true}
       CHAT_RESPONSE_PROTOCOL: ${CHAT_RESPONSE_PROTOCOL:-legacy_json}
       CHAT_COMMAND_POSTPROCESS_MODE: ${CHAT_COMMAND_POSTPROCESS_MODE:-separate}
@@ -31,6 +34,8 @@ services:
       MEM0_ENABLED: ${MEM0_ENABLED:-false}
       MEM0_API_KEY: ${MEM0_API_KEY:-}
       MEM0_BASE_URL: ${MEM0_BASE_URL:-}
+    # Must exceed uvicorn graceful (35s); dispatcher budget is 30s.
+    stop_grace_period: 45s
     expose:
       - "8123"
     extra_hosts:

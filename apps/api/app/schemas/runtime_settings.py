@@ -1,5 +1,6 @@
 from typing import Literal
 
+from app.schemas.input_policy import RequestModel
 from pydantic import BaseModel, Field
 
 
@@ -32,6 +33,8 @@ class CompressionIntervalOptionRead(BaseModel):
 
 class RuntimeSettingRead(BaseModel):
     scope: str
+    chat_fallback_status: Literal["not_configured", "available", "unavailable"] = "not_configured"
+    compression_fallback_status: Literal["not_configured", "available", "unavailable"] = "not_configured"
     conversation_id: str | None = None
     model_key: str | None = None
     fallback_model_key: str | None = None
@@ -52,7 +55,9 @@ class RuntimeSettingRead(BaseModel):
     compression_interval_options: list[CompressionIntervalOptionRead] = Field(default_factory=list)
 
 
-class RuntimeSettingUpdate(BaseModel):
+class RuntimeSettingUpdate(RequestModel):
+    nonnull_fields = frozenset(['compression_strategy', 'response_length_preset', 'safety_preset', 'min_output_tokens', 'compression_interval_turns'])
+    nonblank_fields = frozenset(['response_length_preset'])
     model_key: str | None = None
     fallback_model_key: str | None = None
     compression_model_key: str | None = None

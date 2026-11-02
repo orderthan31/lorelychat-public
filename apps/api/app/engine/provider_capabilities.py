@@ -21,6 +21,20 @@ def verified_endpoint(url: str, host: str, paths: tuple[str, ...]) -> bool:
         return False
 
 
+def is_local_endpoint(url: str) -> bool:
+    """Literal loopback only: no DNS lookups, suffix guesses or ambient routes."""
+    import ipaddress
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme not in {'http', 'https'} or parsed.username is not None or
+                parsed.password is not None or parsed.query or parsed.fragment or parsed.port == 0):
+            return False
+        host = parsed.hostname
+        return host == 'localhost' or ipaddress.ip_address(host or '').is_loopback
+    except ValueError:
+        return False
+
+
 def safe_count(value: object) -> int | None:
     return value if type(value) is int and value >= 0 else None
 

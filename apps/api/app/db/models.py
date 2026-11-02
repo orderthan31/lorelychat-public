@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 from sqlmodel import Field, SQLModel, Column, JSON
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import Index, UniqueConstraint
 
 
 def utc_now() -> datetime:
@@ -97,6 +97,11 @@ class ConversationReadState(SQLModel, table=True):
 
 class MessageGenerationJob(SQLModel, table=True):
     __tablename__ = "message_generation_jobs"
+    __table_args__ = (
+        Index("ix_generation_jobs_room_order", "conversation_id", "status", "created_at", "id"),
+        Index("ix_generation_jobs_queue_order", "status", "created_at", "id"),
+        Index("ix_generation_jobs_recovery", "status", "lease_expires_at"),
+    )
 
     id: str = Field(primary_key=True)
     conversation_id: str = Field(index=True)
@@ -104,6 +109,7 @@ class MessageGenerationJob(SQLModel, table=True):
     status: str = Field(default="queued", index=True)
     error_message: Optional[str] = None
     generated_message_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    execution_options: dict = Field(default_factory=dict, sa_column=Column(JSON))
     lease_owner: Optional[str] = Field(default=None, index=True)
     lease_expires_at: Optional[datetime] = Field(default=None, index=True)
     heartbeat_at: Optional[datetime] = Field(default=None, index=True)
@@ -113,6 +119,29 @@ class MessageGenerationJob(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, index=True)
     updated_at: datetime = Field(default_factory=utc_now, index=True)
     completed_at: Optional[datetime] = None
+
+
+class GenerationReplyDeletion(SQLModel, table=True):
+    """Content-free user-deletion evidence; never a restoration payload."""
+    __tablename__ = "generation_reply_deletions"
+    message_id: str = Field(primary_key=True)
+    job_id: str = Field(index=True)
+    conversation_id: str
+    reply_index: Optional[int] = None
+    deleted_at: datetime = Field(default_factory=utc_now)
+
+
+class GenerationAcceptanceReceipt(SQLModel, table=True):
+    __tablename__ = "generation_acceptance_receipts"
+    __table_args__ = (UniqueConstraint("conversation_id", "client_request_id", name="uq_generation_acceptance_request"),)
+
+    id: str = Field(primary_key=True)
+    conversation_id: str = Field(index=True)
+    client_request_id: str
+    payload_sha256: str
+    incoming_message_id: str
+    job_id: str
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class GenerationJobEvent(SQLModel, table=True):
@@ -176,6 +205,7 @@ class ChatCommand(SQLModel, table=True):
     postprocess_probability: int = 100
     postprocess_block_types: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, server_default="[]"))
     postprocess_context_options: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    context_sources: Optional[list[str]] = Field(default=None, sa_column=Column(JSON(none_as_null=True), nullable=True))
     enabled: bool = True
     priority: int = 0
     created_at: datetime = Field(default_factory=utc_now)

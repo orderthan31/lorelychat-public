@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import wraps
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
@@ -23,6 +23,12 @@ from app.core.config import Settings, get_settings
 from app.db.models import LLMUsageEvent
 from app.db.session import engine
 from app.engine.provider_capabilities import capabilities, safe_count, safe_model_version, thinking_off_parameters
+from app.engine.llm_error_types import (
+    LLMTerminalError, LLMPolicyBlockedError, LLMAuthenticationError,
+    LLMRequestError, LLMConfigurationError, LLMCapabilityError,
+    LLMResponseEvidenceError, LLMTaskDeadlineError,
+)
+from app.engine.llm_transport_deadline import TASK_DEADLINE, deadline_seconds, remaining_seconds, within_deadline
 
 logger = logging.getLogger(__name__)
 
@@ -94,14 +100,17 @@ class CircuitOpenError(LLMUnavailableError):
     pass
 
 
-class LLMAttemptBudgetError(LLMUnavailableError):
+class LLMAttemptBudgetError(LLMTerminalError):
     """The task's network budget is spent, not a provider outage."""
+    code = 'network_budget_exhausted'
 
 
 @dataclass
 class LLMAttemptBudget:
     limit: int = 3
     used: int = 0
+    deadline: float | None = None
+    started: float = field(default_factory=time.monotonic)
 
 
 _TASK_BUDGET: ContextVar[LLMAttemptBudget | None] = ContextVar("llm_task_budget", default=None)
@@ -111,10 +120,23 @@ def bounded_llm_task(function):
     """Isolate concurrent tasks while sharing transport allowance across repair passes."""
     @wraps(function)
     async def wrapped(*args, **kwargs):
-        token = _TASK_BUDGET.set(LLMAttemptBudget())
-        try:
+        if _TASK_BUDGET.get() is not None:
             return await function(*args, **kwargs)
+        settings = getattr(args[0], 'settings', None) if args else None
+        deadline = time.monotonic() + deadline_seconds(settings or get_settings())
+        budget = LLMAttemptBudget()
+        budget.deadline = deadline
+        token = _TASK_BUDGET.set(budget)
+        deadline_token = TASK_DEADLINE.set(deadline)
+        requested_token = _TASK_REQUESTED_ROUTE.set(None)
+        try:
+            return await within_deadline(function(*args, **kwargs), deadline=deadline)
+        except LLMTaskDeadlineError as exc:
+            exc.transport_attempts = budget.used
+            raise
         finally:
+            _TASK_REQUESTED_ROUTE.reset(requested_token)
+            TASK_DEADLINE.reset(deadline_token)
             _TASK_BUDGET.reset(token)
     return wrapped
 
@@ -124,8 +146,22 @@ def task_attempt_metadata() -> dict[str, int]:
     return {"network_attempts": budget.used, "network_attempt_limit": budget.limit} if budget else {}
 
 
-_CIRCUIT_STATES: dict[str, dict[str, float | int]] = {}
+_CIRCUIT_STATES: dict[str, dict] = {}
 _CIRCUIT_LOCK = threading.Lock()
+_TELEMETRY_WRITE_FAILURES = 0
+_ATTEMPT_TRACE: ContextVar[list | None] = ContextVar('llm_attempt_trace', default=None)
+_TASK_REQUESTED_ROUTE: ContextVar[dict | None] = ContextVar('llm_requested_route', default=None)
+
+
+def telemetry_write_failure_count():
+    return _TELEMETRY_WRITE_FAILURES
+
+
+def _telemetry_write_failed():
+    global _TELEMETRY_WRITE_FAILURES
+    with _CIRCUIT_LOCK:
+        _TELEMETRY_WRITE_FAILURES += 1
+    logger.warning('LLM telemetry write failed')
 
 
 class LLMResponse(BaseModel):
@@ -194,43 +230,58 @@ class LLMClient:
         return max(1.0, min(600.0, float(self.overrides.get("circuit_cooldown_seconds") or 30.0)))
 
     def circuit_key(self) -> str:
-        provider_identity = self.overrides.get("provider_account_id") or self.base_url()
-        return f"{self.provider()}|{provider_identity}|{self.model()}"
+        # Opaque, content-free route revision. Never include the credential or ref.
+        try:
+            endpoint = self.overrides.get('base_url') or self.base_url()
+        except LLMTerminalError:
+            endpoint = None
+        identity = [self.provider(), self.overrides.get('provider_account_id'),
+                    self.overrides.get('model_option_key'), self.model(),
+                    endpoint,
+                    self.overrides.get('provider_config_revision')]
+        return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
-    def ensure_circuit_available(self) -> None:
+    def ensure_circuit_available(self):
         if not self.circuit_breaker_enabled():
-            return
-        now = time.monotonic()
+            return None
         key = self.circuit_key()
         with _CIRCUIT_LOCK:
-            state = _CIRCUIT_STATES.get(key)
-            if not state:
+            state = _CIRCUIT_STATES.setdefault(key, {'failures': 0, 'open_until': 0.0, 'epoch': uuid4().hex, 'probe': None})
+            if state['open_until'] > time.monotonic() or state.get('probe'):
+                raise CircuitOpenError('LLM circuit breaker is open', transport_attempts=0)
+            probe = uuid4().hex if state['open_until'] else None
+            state['probe'] = probe
+            return (key, state['epoch'], probe, state['failures'])
+
+    def record_circuit_failure(self, token=None) -> None:
+        if not self.circuit_breaker_enabled():
+            return
+        key = self.circuit_key()
+        with _CIRCUIT_LOCK:
+            state = _CIRCUIT_STATES.setdefault(key, {'failures': 0, 'open_until': 0.0, 'epoch': uuid4().hex, 'probe': None})
+            if token is not None and (state['epoch'] != token[1] or state.get('probe') != token[2]):
                 return
-            open_until = float(state.get("open_until") or 0.0)
-            if open_until > now:
-                raise CircuitOpenError(
-                    f"LLM circuit breaker is open for {self.provider()}:{self.model()}",
-                    transport_attempts=0,
-                )
-            if open_until:
-                _CIRCUIT_STATES.pop(key, None)
+            state['failures'] += 1
+            if state['failures'] >= self.circuit_failure_threshold():
+                state.update(open_until=time.monotonic() + self.circuit_cooldown_seconds(), epoch=uuid4().hex, probe=None)
 
-    def record_circuit_failure(self) -> None:
-        if not self.circuit_breaker_enabled():
-            return
-        key = self.circuit_key()
-        with _CIRCUIT_LOCK:
-            state = _CIRCUIT_STATES.setdefault(key, {"failures": 0, "open_until": 0.0})
-            failures = int(state.get("failures") or 0) + 1
-            state["failures"] = failures
-            if failures >= self.circuit_failure_threshold():
-                state["open_until"] = time.monotonic() + self.circuit_cooldown_seconds()
-
-    def record_circuit_success(self) -> None:
+    def record_circuit_success(self, token=None) -> None:
         if not self.circuit_breaker_enabled():
             return
         with _CIRCUIT_LOCK:
-            _CIRCUIT_STATES.pop(self.circuit_key(), None)
+            key = self.circuit_key()
+            state = _CIRCUIT_STATES.get(key)
+            if state and token is not None and (state['epoch'] != token[1] or state.get('probe') != token[2] or state['failures'] != token[3] or (state['open_until'] and token[2] is None)):
+                return
+            _CIRCUIT_STATES.pop(key, None)
+
+    def release_circuit_probe(self, token):
+        if token is None or token[2] is None:
+            return
+        with _CIRCUIT_LOCK:
+            state = _CIRCUIT_STATES.get(token[0])
+            if state and state.get('probe') == token[2]:
+                state.update(probe=None, open_until=time.monotonic() + self.circuit_cooldown_seconds())
 
     def normalize_response_format(self, response_format: dict | None) -> dict | None:
         if response_format and response_format.get("type") == "json_object":
@@ -322,7 +373,20 @@ class LLMClient:
         return diagnostics
 
     def usage_context(self) -> dict:
-        return {"stage": self.overrides.get("stage") or self.purpose}
+        trace = _ATTEMPT_TRACE.get() or []
+        return {"stage": self.overrides.get("stage") or self.purpose,
+                "provider_account_id": self.overrides.get('provider_account_id'),
+                "model_option_key": self.overrides.get('model_option_key'),
+                "route_revision": self.circuit_key(),
+                "requested_route": _TASK_REQUESTED_ROUTE.get(),
+                "effective_route": self.route_observation(),
+                "attempt_trace": list(trace)}
+
+    def route_observation(self):
+        return {'provider': self.provider(), 'model': self.model(),
+                'provider_account_id': self.overrides.get('provider_account_id'),
+                'model_option_key': self.overrides.get('model_option_key'),
+                'route_revision': self.circuit_key()}
 
     def gemini_response_schema(self, response_format: dict | None) -> dict | None:
         if not response_format or response_format.get("type") != "json_object":
@@ -396,7 +460,7 @@ class LLMClient:
         if not key:
             key = usable_key(self.settings.chat_llm_api_key) or usable_key(self.settings.gemini_api_key) or usable_key(self.settings.google_api_key)
         if not key:
-            raise LLMUnavailableError("Gemini API key is not configured")
+            raise LLMConfigurationError("Gemini API key is not configured")
         return key
 
     def should_fallback_to_gemini(self) -> bool:
@@ -424,7 +488,17 @@ class LLMClient:
         # express length as a bubble range, while this only supplies a ceiling.
         return max(512, min(8192, int(value) * 2))
 
+    @bounded_llm_task
     async def chat(self, messages: list[dict], *, response_format: dict | None = None, conversation_id: str | None = None) -> LLMResponse:
+        trace_token = _ATTEMPT_TRACE.set([])
+        try:
+            if _TASK_REQUESTED_ROUTE.get() is None:
+                _TASK_REQUESTED_ROUTE.set(self.route_observation())
+            return await self._chat(messages, response_format=response_format, conversation_id=conversation_id)
+        finally:
+            _ATTEMPT_TRACE.reset(trace_token)
+
+    async def _chat(self, messages: list[dict], *, response_format: dict | None = None, conversation_id: str | None = None) -> LLMResponse:
         if self.settings.llm_mock:
             user_text = _mock_visible_user_text(next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""))
             if (response_format or {}).get("name") == "free_body_replies":
@@ -458,23 +532,49 @@ class LLMClient:
                 }, ensure_ascii=False), provider="mock", model="mock")
             return LLMResponse(content=f"Mock reply to: {user_text[:80]}", provider="mock", model="mock")
 
+        circuit_token = None
         try:
+            if response_format and self.overrides.get('supports_json') is False:
+                raise LLMCapabilityError('Selected model does not support JSON output')
+            sampling, omitted = self.sampling_parameters()
+            if any(self.overrides.get(name) is not None for name in omitted):
+                raise LLMCapabilityError('Explicit sampling control is unsupported')
+            _, thinking_diagnostics = self.thinking_parameters()
+            if thinking_diagnostics['omission_reason'] == 'explicit_override_not_serialized':
+                raise LLMCapabilityError('Explicit thinking control is unsupported')
             if self.settings.llm_transport == "litellm":
                 from app.engine.litellm_transport import resolve_route
                 route = resolve_route(self)
-            self.ensure_circuit_available()
+            circuit_token = self.ensure_circuit_available()
             if self.settings.llm_transport == "litellm":
                 response = await self._chat_litellm(route, messages, response_format=response_format, conversation_id=conversation_id)
             elif self.provider() == "gemini":
                 response = await self._chat_gemini(messages, response_format=response_format)
             else:
                 response = await self._chat_openai_compatible(messages, response_format=response_format, conversation_id=conversation_id)
+            deadline = TASK_DEADLINE.get()
+            if deadline is not None and time.monotonic() >= deadline:
+                raise LLMTaskDeadlineError(transport_attempts=response.generation_attempts)
+            if response.finish_reason in {'SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'MODEL_ARMOR', 'IMAGE_SAFETY', 'content_filter', 'refusal'}:
+                raise LLMPolicyBlockedError(transport_attempts=response.generation_attempts)
         except LLMUnavailableError as exc:
             if not isinstance(exc, (CircuitOpenError, LLMAttemptBudgetError)):
-                self.record_circuit_failure()
+                self.record_circuit_failure(circuit_token)
             self._record_transport_failure(exc, conversation_id=conversation_id)
             raise
-        self.record_circuit_success()
+        except LLMTerminalError as exc:
+            self.release_circuit_probe(circuit_token)
+            self._record_transport_failure(exc, conversation_id=conversation_id)
+            raise
+        except asyncio.CancelledError:
+            self.release_circuit_probe(circuit_token)
+            trace = _ATTEMPT_TRACE.get() or []
+            deadline = TASK_DEADLINE.get()
+            expired = deadline is not None and time.monotonic() >= deadline
+            exc = LLMTaskDeadlineError(error_type='task_deadline_exhausted' if expired else 'task_cancelled', transport_attempts=sum(t['dispatched'] for t in trace))
+            self._record_transport_failure(exc, conversation_id=conversation_id)
+            raise
+        self.record_circuit_success(circuit_token)
         self._record_usage(response, conversation_id=conversation_id)
         if response.provider_diagnostics and self.profile == "compression":
             logger.warning(
@@ -508,7 +608,7 @@ class LLMClient:
 
         async def request(reserve):
             return await sdk.completion(route, messages=messages, parameters=parameters,
-                                        timeout=self.timeout_seconds(), reserve=reserve)
+                                        timeout=min(self.timeout_seconds(), remaining_seconds()), reserve=reserve)
 
         response = await self._post_with_retries(request, endpoint_label="LLM endpoint", boundary_counted=True)
         observed, data = sdk.native_observation(response, route)
@@ -650,6 +750,32 @@ class LLMClient:
             return f"{endpoint_label} unavailable for {self.provider()}:{self.model()} (HTTP {exc.response.status_code})"
         return f"{endpoint_label} unavailable for {self.provider()}:{self.model()} ({type(exc).__name__})"
 
+    def _http_error_has_code(self, exc, allowed):
+        if not isinstance(exc, httpx.HTTPStatusError) or len(exc.response.content) > 8 * 1024 * 1024:
+            return False
+        try:
+            data = exc.response.json()
+            error = data.get('error') if isinstance(data, dict) else None
+            if not isinstance(error, dict):
+                return False
+            inner = error.get('innererror')
+            codes = [error.get('code'), error.get('type'), inner.get('code') if isinstance(inner, dict) else None]
+            return any(isinstance(code, str) and code in allowed for code in codes)
+        except (ValueError, UnicodeError, RecursionError):
+            return False
+
+    def explicit_http_policy_block(self, exc):
+        return self._http_error_has_code(exc, {
+            'content_policy_violation', 'content_filter', 'safety',
+            'prohibited_content', 'moderation_blocked', 'ResponsibleAIPolicyViolation',
+        })
+
+    def explicit_http_billing_failure(self, exc):
+        return self._http_error_has_code(exc, {
+            'insufficient_quota', 'billing_hard_limit_reached', 'billing_not_active',
+            'credit_balance_too_low',
+        })
+
     async def _post_with_retries(self, request, *, endpoint_label: str, boundary_counted: bool = False) -> httpx.Response:
         attempts = self.transport_retry_attempts()
         budget = _TASK_BUDGET.get()
@@ -664,6 +790,9 @@ class LLMClient:
 
         def reserve():
             nonlocal dispatched
+            remaining_seconds()
+            if budget is not None and budget.deadline is not None and time.monotonic() >= budget.deadline:
+                raise LLMTaskDeadlineError()
             if budget is not None:
                 if budget.used >= budget.limit:
                     raise LLMAttemptBudgetError("LLM task network attempt budget exhausted", transport_attempts=0,
@@ -672,19 +801,46 @@ class LLMClient:
             dispatched += 1
 
         for attempt in range(1, attempts + 1):
+            started = time.monotonic()
+            before = dispatched
+            trace = _ATTEMPT_TRACE.get()
+            record = {'attempt': attempt, 'dispatched': 0, 'outcome': 'pending',
+                      'http_status': None, 'transport_elapsed_seconds': 0.0, 'backoff_elapsed_seconds': 0.0}
+            if trace is not None:
+                trace.append(record)
             try:
+                deadline = budget.deadline if budget is not None else TASK_DEADLINE.get()
                 if boundary_counted:
-                    response = await request(reserve)
+                    response = await within_deadline(request(reserve), deadline=deadline)
                 else:
                     reserve()
-                    response = await request()
+                    response = await within_deadline(request(), deadline=deadline)
                 response.raise_for_status()
+                record.update(outcome='success', http_status=response.status_code)
                 response.extensions["lorechat_attempts"] = dispatched
                 return response
+            except asyncio.CancelledError:
+                record['outcome'] = 'cancelled'
+                raise
             except Exception as exc:
-                if boundary_counted and isinstance(exc, (ValueError, LLMAttemptBudgetError)):
+                if isinstance(exc, (LLMTerminalError, LLMAttemptBudgetError)):
+                    exc.transport_attempts = dispatched
+                    record.update(outcome=exc.error_type, http_status=exc.http_status)
                     raise
+                status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                warning_count = len(exc.response.headers.get_list("warning")) if isinstance(exc, httpx.HTTPStatusError) else 0
+                if self.explicit_http_billing_failure(exc):
+                    record.update(outcome='account_billing_unavailable', http_status=status)
+                    raise LLMConfigurationError(error_type='account_billing_unavailable', http_status=status, transport_attempts=dispatched, provider_warning_count=warning_count) from None
+                if self.explicit_http_policy_block(exc):
+                    record.update(outcome='provider_policy_block', http_status=status)
+                    raise LLMPolicyBlockedError(http_status=status, transport_attempts=dispatched, provider_warning_count=warning_count) from None
+                record.update(outcome='availability_failure' if self.is_retryable_transport_exception(exc) else 'terminal_failure', http_status=status)
                 last_exc = exc
+                if not self.is_retryable_transport_exception(exc):
+                    kind = (LLMAuthenticationError if status in {401, 403} else
+                            LLMConfigurationError if status == 404 else LLMRequestError)
+                    raise kind(http_status=status, transport_attempts=dispatched, provider_warning_count=warning_count) from None
                 if not self.is_retryable_transport_exception(exc) or attempt >= attempts:
                     status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
                     raise LLMUnavailableError(
@@ -693,8 +849,21 @@ class LLMClient:
                         http_status=status,
                         error_type=type(exc).__name__,
                         provider_warning_count=len(exc.response.headers.get_list("warning")) if isinstance(exc, httpx.HTTPStatusError) else 0,
-                    ) from exc
-                await asyncio.sleep(self.retry_delay_seconds(exc, attempt=attempt))
+                    ) from None
+                record['transport_elapsed_seconds'] = time.monotonic() - started
+                sleep_started = time.monotonic()
+                try:
+                    await within_deadline(asyncio.sleep(self.retry_delay_seconds(exc, attempt=attempt)), deadline=deadline)
+                except LLMTaskDeadlineError as deadline_error:
+                    deadline_error.transport_attempts = dispatched
+                    record['outcome'] = deadline_error.error_type
+                    raise
+                finally:
+                    record['backoff_elapsed_seconds'] = time.monotonic() - sleep_started
+            finally:
+                record['dispatched'] = dispatched - before
+                if record['transport_elapsed_seconds'] == 0.0:
+                    record['transport_elapsed_seconds'] = time.monotonic() - started
         assert last_exc is not None
         raise LLMUnavailableError(
             self.transport_error_message(last_exc, endpoint_label=endpoint_label),
@@ -757,6 +926,8 @@ class LLMClient:
         response = await self._post_gemini_with_retries(url, model=model, payload=payload)
         data = response.json()
         candidates = data.get("candidates") or []
+        if (data.get('promptFeedback') or {}).get('blockReason'):
+            raise LLMPolicyBlockedError(transport_attempts=response.extensions.get('lorechat_attempts', 1))
         candidate = candidates[0] if candidates else {}
         parts = ((candidate.get("content") or {}).get("parts") or []) if candidate else []
         content = "".join(part.get("text", "") for part in parts if not part.get("thought")).strip()
@@ -826,11 +997,19 @@ class LLMClient:
             response.usage_event_id = event_id
         except Exception:
             # Attempt accounting must never break chat generation.
+            _telemetry_write_failed()
             return
+
+    def failure_transport_diagnostics(self, warning_count=0):
+        try:
+            return self.transport_diagnostics(warning_count=warning_count)
+        except Exception:
+            # A failing route preflight must not prevent its zero-send ledger.
+            return {'diagnostic_code': 'route_preflight_unavailable'}
 
     def _record_transport_failure(
         self,
-        exc: LLMUnavailableError,
+        exc: LLMUnavailableError | LLMTerminalError,
         *,
         conversation_id: str | None = None,
     ) -> None:
@@ -852,7 +1031,7 @@ class LLMClient:
                         "requested_model": self.model(),
                         "reported_model_version": None,
                         "token_details": {"cached_tokens": None, "reasoning_tokens": None},
-                        "transport": self.transport_diagnostics(warning_count=exc.provider_warning_count),
+                        "transport": self.failure_transport_diagnostics(warning_count=exc.provider_warning_count),
                         "output_budget": {"requested_max_output_tokens": self.max_output_tokens()},
                         **task_attempt_metadata(),
                         "transport_attempts": exc.transport_attempts,
@@ -866,6 +1045,7 @@ class LLMClient:
                 ))
                 session.commit()
         except Exception:
+            _telemetry_write_failed()
             return
 
     def record_response_outcome(
@@ -896,4 +1076,5 @@ class LLMClient:
                 session.add(event)
                 session.commit()
         except Exception:
+            _telemetry_write_failed()
             return

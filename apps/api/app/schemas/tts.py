@@ -1,3 +1,4 @@
+from app.schemas.input_policy import RequestModel
 from pydantic import BaseModel, Field
 
 
@@ -15,7 +16,7 @@ class TTSModelOption(BaseModel):
     cost_hint: str | None = None
 
 
-class TTSSampleRequest(BaseModel):
+class TTSSampleRequest(RequestModel):
     text: str | None = Field(default=None, max_length=500)
     voice_style: str | None = None
     tts_provider: str | None = None

@@ -105,9 +105,15 @@ def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
             connection.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_messages_generation_job_id ON messages(generation_job_id)"
             ))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_client_request_id ON messages(conversation_id, json_extract(metadata, '$.client_request_id'))"))
     if "message_generation_jobs" in table_names:
         columns = {column["name"] for column in inspector.get_columns("message_generation_jobs")}
         with active_engine.begin() as connection:
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_jobs_room_order ON message_generation_jobs(conversation_id, status, created_at, id)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_jobs_queue_order ON message_generation_jobs(status, created_at, id)"))
+            # Lease column is added below for legacy databases.
+            if "execution_options" not in columns:
+                connection.execute(text("ALTER TABLE message_generation_jobs ADD COLUMN execution_options JSON NOT NULL DEFAULT '{}'"))
             if "lease_owner" not in columns:
                 connection.execute(text("ALTER TABLE message_generation_jobs ADD COLUMN lease_owner VARCHAR"))
             if "lease_expires_at" not in columns:
@@ -124,6 +130,7 @@ def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
                 "CREATE INDEX IF NOT EXISTS ix_message_generation_jobs_lease_expires_at "
                 "ON message_generation_jobs(lease_expires_at)"
             ))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_jobs_recovery ON message_generation_jobs(status, lease_expires_at)"))
             connection.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_message_generation_jobs_heartbeat_at "
                 "ON message_generation_jobs(heartbeat_at)"
@@ -204,6 +211,8 @@ def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
     if "chat_commands" in table_names:
         columns = {column["name"] for column in inspector.get_columns("chat_commands")}
         with active_engine.begin() as connection:
+            if "context_sources" not in columns:
+                connection.execute(text("ALTER TABLE chat_commands ADD COLUMN context_sources JSON"))
             if "generation_prompt" not in columns:
                 connection.execute(text("ALTER TABLE chat_commands ADD COLUMN generation_prompt VARCHAR NOT NULL DEFAULT ''"))
                 connection.execute(text("UPDATE chat_commands SET generation_prompt = prompt WHERE generation_prompt IS NULL OR generation_prompt = ''"))
@@ -340,10 +349,11 @@ def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
                 connection.execute(text("DROP TABLE conversation_relationship_states_old"))
 
 
-def init_db() -> None:
-    configure_sqlite_runtime(engine)
-    SQLModel.metadata.create_all(engine)
-    migrate_sqlite_columns()
+def init_db(target_engine: Engine | None = None) -> None:
+    active_engine = target_engine or engine
+    configure_sqlite_runtime(active_engine)
+    SQLModel.metadata.create_all(active_engine)
+    migrate_sqlite_columns(active_engine)
 
 
 def get_session() -> Generator[Session, None, None]:

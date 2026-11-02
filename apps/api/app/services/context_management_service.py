@@ -93,6 +93,22 @@ def enforce_rendered_context_capacity(messages: Sequence[Mapping], capacity: Con
         )
 
 
+def enforce_compression_stage_capacity(messages: Sequence[Mapping], capacity: ContextCapacity,
+    *, response_format: dict | None = None) -> None:
+    """Admit the actual stage, not a diagnostic harness or a row-count proxy.
+
+    Compression always sends native system/user messages. Include schema bytes
+    and preserve the separately reserved model output; never clip source text.
+    """
+    import json
+    from app.engine.harness_comparison import rendered_input_tokens
+    projected = rendered_input_tokens(messages, history_serialization="native")
+    if response_format:
+        projected += approx_tokens(json.dumps(response_format, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    if projected > capacity.working_input_tokens:
+        raise ContextMaintenanceRequired(projected_tokens=projected, working_tokens=capacity.working_input_tokens)
+
+
 @dataclass(frozen=True)
 class ContextPressureReport:
     status: PressureStatus

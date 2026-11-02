@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
+from app.schemas.input_policy import RequestModel
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -28,7 +29,11 @@ def normalize_command_name(value: str) -> str:
 RESERVED_COMMAND_NAMES = {"off", "OFF", "끄기", "해제", "커맨드해제", "커맨드끄기", "명령해제"}
 
 
-class ChatCommandBase(BaseModel):
+class ChatCommandBase(RequestModel):
+    # New field: None/unset inherits; [] explicitly selects no context sources.
+    context_sources: list[PostprocessContextOption] | None = Field(default=None, max_length=64)
+    nonnull_fields = frozenset(['name', 'description', 'prompt', 'generation_prompt', 'postprocess_prompt', 'postprocess_target', 'postprocess_probability', 'enabled', 'priority'])
+    nonblank_fields = frozenset(['name'])
     name: str = Field(min_length=1, max_length=40)
     display_name: str | None = Field(default=None, max_length=80)
     description: str = Field(default="", max_length=500)
@@ -93,7 +98,11 @@ class ChatCommandCreate(ChatCommandBase):
     pass
 
 
-class ChatCommandUpdate(BaseModel):
+class ChatCommandUpdate(RequestModel):
+    # New field: None/unset inherits; [] explicitly selects no context sources.
+    context_sources: list[PostprocessContextOption] | None = Field(default=None, max_length=64)
+    nonnull_fields = frozenset(['name', 'description', 'prompt', 'generation_prompt', 'postprocess_prompt', 'postprocess_target', 'postprocess_probability', 'enabled', 'priority'])
+    nonblank_fields = frozenset(['name'])
     name: str | None = Field(default=None, min_length=1, max_length=40)
     display_name: str | None = Field(default=None, max_length=80)
     description: str | None = Field(default=None, max_length=500)
@@ -128,6 +137,8 @@ class ChatCommandUpdate(BaseModel):
 
 
 class ChatCommandRead(BaseModel):
+    # New field: None/unset inherits; [] explicitly selects no context sources.
+    context_sources: list[PostprocessContextOption] | None = Field(default=None, max_length=64)
     id: str
     name: str
     display_name: str

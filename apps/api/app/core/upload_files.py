@@ -2,12 +2,55 @@
 
 import mimetypes
 import os
+import struct
+import zlib
 from pathlib import Path
 
 from starlette.exceptions import HTTPException
 from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
+
+
+async def read_verified_image(file, max_bytes: int) -> tuple[bytes, str]:
+    """Never request an unbounded read; reject at limit+1 before publication."""
+    from fastapi import HTTPException as APIError
+    from app.ops.image_validation import verify_image_async, ImageDecoderBusy, ImageDecoderUnavailable
+    allowed = {'image/png', 'image/jpeg', 'image/gif', 'image/webp'}
+    if file.content_type not in allowed:
+        raise APIError(status_code=415, detail='Unsupported image type')
+    data = bytearray()
+    while True:
+        chunk = await file.read(min(65536, max_bytes + 1 - len(data)))
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > max_bytes:
+            raise APIError(status_code=413, detail='Image exceeds upload byte limit')
+    if not data:
+        raise APIError(status_code=400, detail='Image file is empty')
+    payload = bytes(data)
+    try:
+        extension = await verify_image_async(payload, file.content_type)
+    except ImageDecoderBusy:
+        raise APIError(status_code=503, detail="Image decoder busy", headers={"Retry-After": "1"}) from None
+    except ImageDecoderUnavailable:
+        raise APIError(status_code=503, detail="Image decoder unavailable", headers={"Retry-After": "1"}) from None
+    except (ValueError, IndexError, OverflowError, zlib.error, struct.error):
+        raise APIError(status_code=422, detail='Invalid image or image exceeds safety budget') from None
+    return payload, extension
+
+
+def ensure_private_upload_directory(target_dir, upload_root, shared_upload_root=None):
+    """Refuse accidental publication through a shared/outside-root symlink."""
+    from fastapi import HTTPException as APIError
+    private = Path(upload_root).expanduser().resolve()
+    target = Path(target_dir).expanduser().resolve()
+    shared = Path(shared_upload_root).expanduser().resolve() if shared_upload_root else None
+    if not target.is_relative_to(private) or (shared and (target.is_relative_to(shared) or private == shared)):
+        raise APIError(status_code=500, detail='Private upload storage is unavailable')
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 class UploadStaticFiles(StaticFiles):

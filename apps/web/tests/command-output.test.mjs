@@ -21,7 +21,7 @@ try {
   const errors = [], requests = [];
   page.on('pageerror', error => errors.push(error.message));
   const command = (id, extra = {}) => ({ id, name: id, postprocess_prompt: 'Synthetic instruction', ...extra });
-  const records = [command('remote', { postprocess_block_types: ['checklist'] }), command('legacy'), command('subset', { postprocess_block_types: ['note', 'table'] }), command('empty', { postprocess_block_types: [] }), command('future', { postprocess_block_types: ['future_block', 'text'] })];
+  const records = [command('remote', { postprocess_block_types: ['checklist'] }), command('legacy'), command('subset', { postprocess_block_types: ['note', 'table'] }), command('empty', { postprocess_block_types: [] }), command('future', { postprocess_block_types: ['future_block', 'text'] }), command('inherited-context', { context_sources: null, postprocess_context_options: [] }), command('none-context', { context_sources: [], postprocess_context_options: ['characters'] }), command('authored-context', { context_sources: ['recent_messages'], postprocess_context_options: ['world'] })];
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   let holdGets = false;
   const heldGets = [];
@@ -72,6 +72,29 @@ try {
   const open = async id => { await page.evaluate(id => window.openCommand(id), id); await page.waitForFunction(id => window.currentDraft.id === id, id); };
   const save = async () => { const before = requests.length; await page.evaluate(() => { window.saved = null; }); await page.getByRole('button', { name: 'Save', exact: true }).click(); await page.waitForFunction(() => window.saved); assert.equal(requests.length, before + 1); return requests.at(-1); };
   const check = async (name, fn) => { await fn(); console.log(`ok ${++passed} - ${name}`); };
+
+  await check('name-only save preserves inherited legacy [], explicit new [], and authored context values', async () => {
+    for (const [id, expected, legacy] of [['inherited-context', null, []], ['none-context', [], ['characters']], ['authored-context', ['recent_messages'], ['world']]]) {
+      await open(id);
+      await page.getByRole('textbox', { name: 'Command name', exact: true }).fill(id + '-renamed');
+      const request = await save();
+      assert.deepEqual(request.body.context_sources, expected);
+      assert.deepEqual(request.body.postprocess_context_options, legacy);
+    }
+    await open('legacy');
+    assert.equal(Object.hasOwn((await save()).body, 'context_sources'), false);
+  });
+  await check('actual context checkbox edits set only new context_sources, deselect all means none and reopens empty', async () => {
+    await open('none-context');
+    const context = page.locator('section').filter({ has: page.getByText('Follow-up prompt context', { exact: true }) }).last();
+    assert.equal(await context.getByRole('checkbox', { checked: true }).count(), 0);
+    await context.getByRole('checkbox').first().check();
+    assert.deepEqual((await save()).body.context_sources, ['scene']);
+    await context.getByRole('checkbox').first().uncheck();
+    const request = await save(); assert.deepEqual(request.body.context_sources, []); assert.deepEqual(request.body.postprocess_context_options, ['characters']);
+    await open('legacy'); await open('none-context'); assert.equal(await context.getByRole('checkbox', { checked: true }).count(), 0);
+    await open('legacy');
+  });
   await check('legacy missing becomes empty; nine accessible labeled checkboxes; PATCH includes []', async () => {
     await group().waitFor();
     assert.equal(await group().getByRole('checkbox').count(), 9);

@@ -21,12 +21,15 @@ from app.engine.llm_client import (
     LLMAttemptBudgetError,
     LLMClient,
     LLMUnavailableError,
+    LLMTerminalError,
+    LLMPolicyBlockedError,
     bounded_llm_task,
     chat_with_optional_conversation_id,
     task_attempt_metadata,
 )
 from app.engine.output_contract import SEMANTIC_FIELD_MARKDOWN_DESCRIPTION, THOUGHT_MAX_CHARS
 from app.engine.output_guard import internal_control_token_reason
+from app.engine.text_scanner import check_legacy_ownership, unique_object, require_unicode_scalars
 from app.engine.prompt_harness import PromptHarness, approx_tokens
 from app.engine.prompt_graph import build_prompt_generation_graph, run_prompt_generation_pipeline
 from app.engine.prompts import build_character_messages, build_multi_character_prompt_harness, is_silent_cast_role
@@ -41,7 +44,7 @@ from app.services.context_management_service import (
 
 
 class CharacterRuntimeError(RuntimeError):
-    pass
+    code = "structured_parse_error"
 
 
 class FreeBodyRuntimeError(CharacterRuntimeError):
@@ -289,8 +292,8 @@ class CanonicalParserError(CharacterRuntimeError):
 
 def parse_canonical_multi_reply_content(content: str) -> list[dict]:
     try:
-        data = json.loads(content)
-    except json.JSONDecodeError as exc:
+        data = json.loads(content, object_pairs_hook=unique_object)
+    except (ValueError, RecursionError) as exc:
         raise CanonicalParserError("invalid_json", "Canonical reply envelope was not valid JSON") from exc
     if not isinstance(data, dict):
         raise CanonicalParserError("top_level_not_object", "Canonical reply envelope must be an object")
@@ -365,12 +368,36 @@ def resolve_character_id_from_alias(alias: str, character_id_by_name: dict[str, 
     return matches[0] if len(set(matches)) == 1 else None
 
 
+def check_legacy_reply_shape(data):
+    # Input ownership is checked before compatibility coercion/normalization.
+    allowed = CANONICAL_REPLY_FIELDS | {
+        'text', 'type', 'character', 'character_name', 'speaker', 'name',
+    } | INTERNAL_EVENT_FIELDS
+    if not isinstance(data, dict) or set(data) - allowed:
+        raise CharacterRuntimeError('Unknown or server-owned legacy reply fields')
+    for key in ('reply_type', 'type'):
+        if key in data and not isinstance(data[key], str):
+            raise CharacterRuntimeError('Invalid legacy reply type shape')
+    for key in ('dialogue', 'text', 'emotion', 'action', 'thought'):
+        if key in data and data[key] is not None and not isinstance(data[key], str):
+            raise CharacterRuntimeError('Invalid legacy text field shape')
+    # Retain historical scalar identity alias coercion, not container coercion.
+    for key in ('character_id', 'character', 'character_name', 'speaker', 'speaker_name', 'name'):
+        if isinstance(data.get(key), (dict, list, bool)):
+            raise CharacterRuntimeError('Invalid legacy identity shape')
+    try:
+        require_unicode_scalars(data)
+    except ValueError as exc:
+        raise CharacterRuntimeError(str(exc)) from exc
+
+
 def normalize_reply_data(
     data: dict,
     *,
     default_character_id: str | None = None,
     character_id_by_name: dict[str, str] | None = None,
 ) -> dict:
+    check_legacy_reply_shape(data)
     normalized = dict(data)
     if not normalized.get("text") and isinstance(normalized.get("dialogue"), str):
         normalized["text"] = normalized["dialogue"]
@@ -460,6 +487,12 @@ def json_structure_is_complete(content: str) -> bool:
 
 
 def iter_json_candidates(content: str) -> list[dict | list]:
+    try:
+        if len(content) > free_body.MAX_RESPONSE_CHARS:
+            raise ValueError('Oversized legacy response')
+        check_legacy_ownership(content)
+    except ValueError as exc:
+        raise CharacterRuntimeError(str(exc)) from exc
     decoder = json.JSONDecoder()
     candidates: list[dict | list] = []
     try:
@@ -607,6 +640,23 @@ def degenerate_repetition_reason(value: Any) -> str | None:
     return None
 
 
+def validate_turn_quality(replies, error_type):
+    # Group by actual speaker and semantic channel: different speakers do not
+    # manufacture a duplicate, while alternating-speaker loops cannot evade it.
+    groups = {}
+    for reply in replies:
+        for field in ('text', 'action', 'thought', 'emotion'):
+            value = free_body._masked(getattr(reply, field) or '')
+            if value.strip():
+                groups.setdefault((reply.character_id, field), []).append(value)
+    for (_, field), values in groups.items():
+        if field == 'emotion' or len(values) < 8:
+            continue
+        count = Counter(' '.join(v.split()) for v in values).most_common(1)[0][1]
+        if (count >= 8 and count / len(values) >= .65) or degenerate_repetition_reason('\n'.join(values)):
+            raise error_type('Turn-level repetition loop detected')
+
+
 def validate_replies(
     raw_replies: list[dict],
     *,
@@ -626,6 +676,7 @@ def validate_replies(
     replies: list[CharacterReply] = []
     multi_character_strict = bool(allowed_character_ids and len(allowed_character_ids) > 1)
     for index, raw in enumerate(raw_replies, start=1):
+        check_legacy_reply_shape(raw)
         raw_type = (raw.get("reply_type") or raw.get("type") or "character").strip().lower()
         if raw_type not in VISIBLE_REPLY_TYPES:
             raise CharacterRuntimeError(
@@ -695,10 +746,13 @@ def validate_replies(
 
     if not any(reply.reply_type != "storytelling" for reply in replies):
         raise CharacterRuntimeError("Structured JSON requires at least one character dialogue reply")
+    validate_turn_quality(replies, CharacterRuntimeError)
     return replies
 
 
 def has_character_reply_candidate(raw_replies: list[dict]) -> bool:
+    for raw in raw_replies:
+        check_legacy_reply_shape(raw)
     return any((raw.get("reply_type") or raw.get("type") or "character").strip().lower() != "storytelling" for raw in raw_replies)
 
 
@@ -836,12 +890,19 @@ class CharacterRuntime:
                     response_format=response_format,
                     conversation_id=conversation_id,
                 )
+            if (getattr(last_llm_response, 'provider_diagnostics', None) or {}).get('policy_blocked') is True:
+                last_response_content = getattr(last_llm_response, 'content', '') or ''
+                raise LLMPolicyBlockedError()
             return last_llm_response
 
         def parse_and_validate(content: str) -> list[CharacterReply]:
             nonlocal last_response_content, last_parser_shadow, parse_attempts, panel_outcomes
             parse_attempts += 1
             last_response_content = content or ""
+            try:
+                require_unicode_scalars(last_response_content)
+            except ValueError as exc:
+                raise CharacterRuntimeError(str(exc)) from exc
             last_parser_shadow = (
                 build_parser_shadow_metrics(last_response_content, compatibility_replies=None)
                 if protocol == "legacy_json"
@@ -890,7 +951,8 @@ class CharacterRuntime:
                         raise StructuredOutputTruncatedError(f"Unproved complete primary at output limit: {exc}") from exc
                     raise FreeBodyRuntimeError(str(exc)) from exc
                 for reply in replies:
-                    if internal_control_token_reason(free_body._masked(reply.raw_body or "")):
+                    if any(internal_control_token_reason(free_body._masked(value or ""))
+                           for value in (reply.raw_body, reply.emotion)):
                         raise FreeBodyRuntimeError("Free-body output exposed an internal control token")
                     # Keep the existing quality firewall without counting tag syntax
                     # or literal code samples as repeated narrative prose.
@@ -898,6 +960,7 @@ class CharacterRuntime:
                         reason = degenerate_repetition_reason(free_body._masked(value or ""))
                         if reason:
                             raise FreeBodyRuntimeError(f"Free-body output contained a degenerate repetition loop: {reason}")
+                validate_turn_quality(replies, FreeBodyRuntimeError)
                 if auxiliary_cut:
                     # Publish this older proof only for an actual auxiliary cut.
                     for command in panel_plan.eligible.values():
@@ -1013,19 +1076,19 @@ class CharacterRuntime:
                     conversation_id=conversation_id,
                 )
                 break
-            except (json.JSONDecodeError, ValidationError, CharacterRuntimeError, LLMUnavailableError, ContextMaintenanceRequired) as exc:
+            except (json.JSONDecodeError, ValidationError, CharacterRuntimeError, LLMUnavailableError, LLMTerminalError, ContextMaintenanceRequired) as exc:
                 last_error = exc
                 diagnostic = {
                     "semantic_attempt": semantic_attempts,
                     "code": getattr(exc, "code", getattr(exc, "error_type", "structured_parse_error")),
                     "finish_reason": getattr(last_llm_response, "finish_reason", None),
                     "response_length": len(last_response_content),
-                    "response_sha256": hashlib.sha256(last_response_content.encode()).hexdigest(),
+                    "response_sha256": hashlib.sha256(last_response_content.encode(errors='surrogatepass')).hexdigest(),
                     "output_budget": getattr(last_llm_response, "budget_diagnostics", None),
                     **task_attempt_metadata(),
                 }
                 attempt_diagnostics.append(diagnostic)
-                if not isinstance(exc, (LLMUnavailableError, ContextMaintenanceRequired)) and hasattr(active_llm_client, "record_response_outcome"):
+                if not isinstance(exc, (LLMUnavailableError, LLMTerminalError, ContextMaintenanceRequired)) and hasattr(active_llm_client, "record_response_outcome"):
                     parse_code = getattr(exc, "code", "json_decode_error" if isinstance(exc, json.JSONDecodeError) else "structured_parse_error")
                     validation_code = "schema_validation_error" if isinstance(exc, ValidationError) else type(exc).__name__
                     active_llm_client.record_response_outcome(
@@ -1035,8 +1098,17 @@ class CharacterRuntime:
                         validation_code=validation_code,
                         metadata_updates={**last_parser_shadow, **diagnostic},
                     )
-                if attempt >= 1 or isinstance(exc, (LLMUnavailableError, ContextMaintenanceRequired)):
+                if attempt >= 1 or isinstance(exc, (LLMUnavailableError, LLMTerminalError, ContextMaintenanceRequired)):
                     if prompt_snapshot_callback is not None:
+                        # JSON escapes preserve invalid raw scalars reversibly in
+                        # analysis evidence without sending them to SQLite TEXT.
+                        safe_preview = last_response_content
+                        raw_encoding = {}
+                        try:
+                            require_unicode_scalars(safe_preview)
+                        except ValueError:
+                            safe_preview = json.dumps(safe_preview, ensure_ascii=True)
+                            raw_encoding = {'response_preview_encoding': 'json_string'}
                         failure_snapshot = {
                             "conversation_id": conversation_id,
                             "source_message_id": source_message_id,
@@ -1052,13 +1124,14 @@ class CharacterRuntime:
                             "prompt_tokens": getattr(last_llm_response, "prompt_tokens", None),
                             "completion_tokens": getattr(last_llm_response, "completion_tokens", None),
                             "total_tokens": getattr(last_llm_response, "total_tokens", None),
-                            "response_preview": last_response_content or f"[parse failed before response capture: {type(exc).__name__}: {exc}]",
+                            "response_preview": safe_preview or f"[parse failed before response capture: {type(exc).__name__}: {exc}]",
                             "metadata": {
                                 "finish_reason": getattr(last_llm_response, "finish_reason", None),
                                 "response_length": len(last_response_content),
                                 "generation_attempts": getattr(last_llm_response, "generation_attempts", 1),
                                 "parse_attempts": parse_attempts,
                                 "parse_status": "failed",
+                                **raw_encoding,
                                 "fallback_used": fallback_used, "response_protocol": protocol,
                                 **comparison_metadata,
                                 **({"command_postprocess": panel_outcomes} if panel_outcomes else {}),

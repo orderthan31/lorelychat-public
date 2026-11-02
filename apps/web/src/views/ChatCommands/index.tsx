@@ -52,7 +52,7 @@ function normalizeDraft(command?: ChatCommandItem): ChatCommandItem {
     postprocess_prompt: command?.postprocess_prompt || command?.prompt || '',
     postprocess_target: command?.postprocess_target || 'last_bubble',
     postprocess_probability: command?.postprocess_probability ?? 100,
-    postprocess_context_options: command?.postprocess_context_options?.length ? command.postprocess_context_options : DEFAULT_POSTPROCESS_CONTEXT_OPTIONS,
+
   };
 }
 
@@ -128,7 +128,7 @@ function CommandForm({ draft, updateDraft, saveChatCommand, deleteChatCommand, b
       <TextareaWithExpand label={t('메시지 생성 프롬프트')} rows={5} value={draft.generation_prompt || ''} onChange={(value) => updateDraft({ generation_prompt: value, prompt: draft.postprocess_prompt || value })} placeholder={t('메시지를 만들 때 적용할 지시')} />
       <TextareaWithExpand label={t('후처리 프롬프트')} rows={7} value={draft.postprocess_prompt || ''} onChange={(value) => updateDraft({ postprocess_prompt: value, prompt: value || draft.generation_prompt || '' })} placeholder={t('생성된 메시지에 적용할 후처리 지시')} />
       <PostprocessBlockTypeSelector selected={draft.postprocess_block_types ?? []} onChange={(value) => updateDraft({ postprocess_block_types: value })} />
-      <PostprocessContextSelector selected={draft.postprocess_context_options || DEFAULT_POSTPROCESS_CONTEXT_OPTIONS} onChange={(value) => updateDraft({ postprocess_context_options: value })} />
+      <PostprocessContextSelector selected={draft.context_sources ?? (draft.postprocess_context_options?.length ? draft.postprocess_context_options : DEFAULT_POSTPROCESS_CONTEXT_OPTIONS)} onChange={(value) => updateDraft({ context_sources: value })} />
       <div className="grid md:grid-cols-2 gap-3">
         <label>{t('후처리 대상')}
           <Select value={target} onChange={(e) => updateDraft({ postprocess_target: e.target.value as ChatCommandItem['postprocess_target'] })}>

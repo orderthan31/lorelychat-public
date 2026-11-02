@@ -1,6 +1,6 @@
 from functools import lru_cache
 from typing import Literal
-from pydantic import PositiveInt
+from pydantic import PositiveInt, PositiveFloat
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     chat_context_policy: Literal["compact", "expanded", "full_history"] = "compact"
     chat_context_input_budget_tokens: PositiveInt | None = None
     llm_timeout_seconds: float = 120.0
+    llm_task_deadline_seconds: PositiveFloat = 300.0
+    dispatcher_shutdown_timeout_seconds: PositiveFloat = 30.0
+    tts_timeout_seconds: PositiveFloat = 120.0
     # Context pressure is the product default. legacy/shadow remain explicit
     # rollback modes for operators and existing deployments.
     context_management_mode: Literal["legacy", "shadow", "automatic"] = "automatic"

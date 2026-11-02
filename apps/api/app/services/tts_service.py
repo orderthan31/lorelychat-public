@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
+import os
 import re
+import signal
+import subprocess
+import sys
+import tempfile
 import wave
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlmodel import Session
+from sqlalchemy import exists, update
+from sqlmodel import Session, select
 
 from app.core.config import get_settings
 from app.db.models import Character, Message
@@ -136,7 +143,40 @@ def _write_wave_file(path: Path, pcm: bytes, *, channels: int = 1, rate: int = 2
         wf.writeframes(pcm)
 
 
+def _run_tts_process(command: list[str], *, payload: bytes, timeout: float) -> None:
+    """Bound the entire engine lifecycle, including download, and reap on exit.
+
+    A thread timeout cannot stop native inference. A dedicated process group
+    also contains descendants; no private text or engine output enters logs.
+    """
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, start_new_session=True)
+    try:
+        process.communicate(payload, timeout=timeout)
+        if process.returncode:
+            raise TTSUnavailableError("TTS synthesis process failed")
+    except BaseException as exc:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate()
+        if isinstance(exc, subprocess.TimeoutExpired):
+            raise TTSUnavailableError("TTS synthesis deadline exceeded") from None
+        raise
+
+
 def _synthesize_supertonic(clean_text: str, *, voice_style: str, output_path: Path) -> None:
+    configured_timeout = getattr(get_settings(), "tts_timeout_seconds", 120.0)
+    timeout = 120.0 if configured_timeout is None else float(configured_timeout)
+    if timeout <= 0:
+        raise TTSUnavailableError("Invalid TTS deadline")
+    _run_tts_process([sys.executable, "-m", "app.services.derived_tts_worker"],
+        payload=json.dumps({"text": clean_text, "voice_style": voice_style,
+                            "output_path": str(output_path)}).encode(), timeout=timeout)
+
+
+def _synthesize_supertonic_in_process(clean_text: str, *, voice_style: str, output_path: Path) -> None:
     tts = _tts_engine()
     style = tts.get_voice_style(voice_name=voice_style)
     result = tts.synthesize(clean_text, voice_style=style, lang="ko")
@@ -176,6 +216,32 @@ def _synthesize_gemini(clean_text: str, *, model: str, voice_style: str, output_
     _write_wave_file(output_path, pcm)
 
 
+def _valid_wave(path: Path) -> bool:
+    """Reject truncated headers/data, empty sound, symlinks and incomplete PCM."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False
+        with wave.open(str(path), "rb") as audio:
+            if audio.getcomptype() != "NONE" or audio.getnframes() <= 0 or audio.getframerate() <= 0:
+                return False
+            remaining = audio.getnframes() * audio.getnchannels() * audio.getsampwidth()
+            while remaining:
+                block = audio.readframes(min(65536, max(1, remaining // (audio.getnchannels() * audio.getsampwidth()))))
+                if not block:
+                    return False
+                remaining -= len(block)
+            return remaining == 0
+    except (OSError, EOFError, wave.Error, ValueError):
+        return False
+
+
+def _cached_audio_valid(url: Any) -> bool:
+    if not isinstance(url, str) or not url.startswith("/uploads/tts/"):
+        return False
+    name = url.removeprefix("/uploads/tts/")
+    return bool(name and Path(name).name == name and _valid_wave(TTS_UPLOAD_DIR / name))
+
+
 def synthesize_to_upload(text: str, *, voice_style: str, file_stem: str, provider: str | None = None, model: str | None = None) -> str:
     clean_text = " ".join((text or "").split())
     if not clean_text:
@@ -185,12 +251,26 @@ def synthesize_to_upload(text: str, *, voice_style: str, file_stem: str, provide
     normalized_model = normalize_tts_model(model, provider=normalized_provider)
     voice_key = normalize_voice_style(voice_style, provider=normalized_provider)
     output_path = TTS_UPLOAD_DIR / f"{_safe_name(file_stem)}_{normalized_provider}_{_safe_name(normalized_model)}_{voice_key}_{_hash_text(clean_text)}.wav"
-    if output_path.exists():
+    if _valid_wave(output_path):
         return f"/uploads/tts/{output_path.name}"
-    if normalized_provider == "gemini":
-        _synthesize_gemini(clean_text, model=normalized_model, voice_style=voice_key, output_path=output_path)
-    else:
-        _synthesize_supertonic(clean_text, voice_style=voice_key, output_path=output_path)
+    # Each producer owns its staging file. Never remove a completed cache here:
+    # another message/request may reference it. Atomic replacement is safe even
+    # when equivalent producers finish concurrently.
+    fd, temporary = tempfile.mkstemp(prefix=".partial-", suffix=".wav", dir=TTS_UPLOAD_DIR)
+    os.close(fd)
+    staging = Path(temporary)
+    try:
+        if normalized_provider == "gemini":
+            _synthesize_gemini(clean_text, model=normalized_model, voice_style=voice_key, output_path=staging)
+        else:
+            _synthesize_supertonic(clean_text, voice_style=voice_key, output_path=staging)
+        if not _valid_wave(staging):
+            raise TTSUnavailableError("TTS synthesis did not produce a complete WAV")
+        with staging.open("rb") as audio:
+            os.fsync(audio.fileno())
+        os.replace(staging, output_path)
+    finally:
+        staging.unlink(missing_ok=True)
     return f"/uploads/tts/{output_path.name}"
 
 
@@ -204,6 +284,14 @@ def synthesize_sample(character: Character, *, sample_text: str | None = None, v
     return {"audio_url": audio_url, "tts_text": tts_text, "voice_style": style, "tts_provider": normalized_provider, "tts_model": normalized_model}
 
 
+def _tts_source(message: Message) -> tuple:
+    metadata = message.metadata_ or {}
+    return (message.conversation_id, message.speaker_type, message.speaker_id,
+            message.created_at, message.content, message.action, message.emotion,
+            message.thought, json.dumps({key: metadata.get(key) for key in
+                ("raw_body", "render_parts", "response_protocol")}, sort_keys=True, ensure_ascii=False))
+
+
 def ensure_message_tts(
     session: Session,
     message: Message,
@@ -214,31 +302,65 @@ def ensure_message_tts(
     voice_style: str | None = None,
     commit: bool = True,
 ) -> Message:
+    with session.no_autoflush:
+        current = session.exec(select(Message).where(Message.id == message.id)
+                               .execution_options(populate_existing=True)).first()
+        if current is None:
+            raise TTSUnavailableError("TTS source message no longer exists")
+        message = current
     if message.speaker_type != "character" or not (message.content or "").strip():
         return message
-    character = character or session.get(Character, message.speaker_id)
+    with session.no_autoflush:
+        character = session.exec(select(Character).where(Character.id == message.speaker_id)
+                                 .execution_options(populate_existing=True)).first()
     if not character:
         return message
+    source = _tts_source(message)
+    voice_source = (character.tts_provider, character.tts_model, character.tts_voice_style)
     metadata: dict[str, Any] = dict(message.metadata_ or {})
     normalized_provider = normalize_tts_provider(provider or character.tts_provider)
     normalized_model = normalize_tts_model(model or character.tts_model, provider=normalized_provider)
     normalized_voice_style = normalize_voice_style(voice_style or character.tts_voice_style, provider=normalized_provider)
-    if metadata.get("tts_audio_url") and metadata.get("tts_provider", DEFAULT_TTS_PROVIDER) == normalized_provider and metadata.get("tts_model", DEFAULT_TTS_MODEL) == normalized_model and metadata.get("tts_voice_style") == normalized_voice_style:
-        return message
     tts_text = build_tts_text(message, character)
     if not tts_text:
         return message
+    if (metadata.get("tts_text") == tts_text and _cached_audio_valid(metadata.get("tts_audio_url"))
+            and metadata.get("tts_provider", DEFAULT_TTS_PROVIDER) == normalized_provider
+            and metadata.get("tts_model", DEFAULT_TTS_MODEL) == normalized_model
+            and metadata.get("tts_voice_style") == normalized_voice_style):
+        return message
     audio_url = synthesize_to_upload(tts_text, voice_style=normalized_voice_style, file_stem=message.id, provider=normalized_provider, model=normalized_model)
-    metadata.update({
-        "tts_audio_url": audio_url,
-        "tts_text": tts_text,
-        "tts_voice_style": normalized_voice_style,
-        "tts_provider": normalized_provider,
-        "tts_model": normalized_model,
-    })
-    message.metadata_ = metadata
-    session.add(message)
-    if commit:
-        session.commit()
-        session.refresh(message)
-    return message
+    # Read current DB state after the external effect; never restore captured
+    # metadata. A conditional UPDATE closes the remaining read/write race.
+    with session.no_autoflush:
+        current = session.exec(select(Message).where(Message.id == message.id)
+                               .execution_options(populate_existing=True)).first()
+        current_character = session.exec(select(Character).where(Character.id == character.id)
+                                         .execution_options(populate_existing=True)).first()
+        if current is None or current_character is None or _tts_source(current) != source:
+            return current or message
+        if (current_character.tts_provider, current_character.tts_model, current_character.tts_voice_style) != voice_source:
+            return current
+        metadata = dict(current.metadata_ or {})
+        updated_metadata = {**metadata,
+            "tts_audio_url": audio_url, "tts_text": tts_text,
+            "tts_voice_style": normalized_voice_style, "tts_provider": normalized_provider,
+            "tts_model": normalized_model}
+        statement = update(Message).where(
+            Message.id == current.id, Message.conversation_id == current.conversation_id,
+            Message.created_at == current.created_at, Message.speaker_id == current.speaker_id,
+            Message.speaker_type == current.speaker_type, Message.content == current.content,
+            Message.action == current.action, Message.emotion == current.emotion,
+            Message.thought == current.thought, Message.metadata_ == metadata,
+            exists(select(Character.id).where(Character.id == current_character.id,
+                Character.tts_provider == voice_source[0], Character.tts_model == voice_source[1],
+                Character.tts_voice_style == voice_source[2])),
+        ).values(metadata_=updated_metadata).execution_options(synchronize_session=False)
+        result = session.execute(statement)
+        if result.rowcount != 1:
+            session.refresh(current)
+            return current
+        if commit:
+            session.commit()
+        session.refresh(current)
+    return current

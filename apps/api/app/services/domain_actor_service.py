@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.db.models import Character, Conversation
 from app.services import character_service, conversation_service
@@ -63,10 +63,12 @@ def resolve_mentioned_actors(
     """Resolve names/aliases against the global character table, not just room participants."""
     active_character_ids = active_character_ids or set()
     normalized_text = _normalize(text)
-    if not normalized_text:
+    if not normalized_text or limit <= 0:
         return []
     candidates: list[tuple[int, MentionedActor]] = []
-    for character in character_service.list_characters(session):
+    # Scan only identifiers/names for alias matching; never every full persona.
+    for character_id, name in session.exec(select(Character.id, Character.name).execution_options(yield_per=256)):
+        character = Character(id=character_id, name=name, persona="")
         matched: list[str] = []
         score = 0
         for alias in _character_aliases(character):
@@ -80,6 +82,9 @@ def resolve_mentioned_actors(
                 matched_aliases=matched,
                 on_stage=character.id in active_character_ids,
             )))
+            # Keep only the best requested names, not every matching full card.
+            candidates.sort(key=lambda item: (item[1].on_stage, item[0], item[1].character.name), reverse=True)
+            del candidates[limit:]
     candidates.sort(key=lambda item: (item[1].on_stage, item[0], item[1].character.name), reverse=True)
     selected: list[MentionedActor] = []
     seen: set[str] = set()
@@ -90,7 +95,8 @@ def resolve_mentioned_actors(
         selected.append(actor)
         if len(selected) >= limit:
             break
-    return selected
+    # Materialize full cards only for the bounded selected result.
+    return [MentionedActor(character=character_service.get_character(session, actor.character.id), matched_aliases=actor.matched_aliases, on_stage=actor.on_stage) for actor in selected]
 
 
 def _format_local_actor_memory(character: Character, memories) -> list[str]:

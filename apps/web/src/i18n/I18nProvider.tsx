@@ -14,7 +14,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const setLocale = (nextLocale: AppLocale) => {
     if (!isAppLocale(nextLocale)) return;
-    localStorage.setItem(LOCALE_STORAGE_KEY, nextLocale);
+    try { localStorage.setItem(LOCALE_STORAGE_KEY, nextLocale); } catch { /* In-memory locale still works. */ }
     updateLocale(nextLocale);
   };
 

@@ -52,6 +52,9 @@ function setup() {
   const roomWork = new RoomWork(); const visit = roomWork.enter('A');
   const env = {
     ...lifecycle, RoomWorkCancelledError,
+    deletedMessageIdsRef: { current: new Map() },
+    unknownSubmissionsForRoom: () => [], rememberUnknownSubmission: () => {}, forgetUnknownSubmission: () => {},
+    terminalJobsForRoom: () => [], rememberTerminalJob: () => {}, forgetTerminalJob: () => {},
     roomWork, readyVisitRef: { current: visit }, generationOwners: new GenerationOwners(),
     activeGenerationSubscriptionRef: { current: null },
     selectedConversationId: 'A', selectedConversationIdRef: { current: 'A' },
@@ -62,14 +65,14 @@ function setup() {
     JOB_POLL_INTERVAL_MS: 1200, JOB_POLL_MAX_ATTEMPTS: 3, JOB_PENDING_TIMEOUT_MESSAGE: 'pending', BUBBLE_REVEAL_DELAY_MS: 50,
     newClientRequestId: () => 'request-1', contextDrawerOpen: false,
     markConversationRead: async () => {}, loadConversations: async () => {}, loadBattleState: async () => {},
-    conversationApi: { generationJob: async () => ({ status: 'completed', generated_message_ids: ['A-reply'] }), messages: async () => [{ id: 'A-incoming' }, { id: 'A-reply' }], get: async (id) => ({ id }), participants: async () => [], runtimeSetting: async () => ({}) },
+    conversationApi: { activeGenerationJobs: async () => ({ jobs: [] }), generationJob: async () => ({ status: 'completed', generated_message_ids: ['A-reply'] }), messages: async () => [{ id: 'A-incoming' }, { id: 'A-reply' }], get: async (id) => ({ id }), participants: async () => [], runtimeSetting: async () => ({}) },
     conversationMutations: { createMessageJob: { mutateAsync: async () => ({ job: { id: 'job-A' }, incoming_message: { id: 'A-incoming' } }) } },
   };
   env.setMessages = (update) => { env.messages = typeof update === 'function' ? update(env.messages) : update; };
   env.setStatus = (status) => env.statuses.push(status);
   env.setLoadingOlderMessages = (value) => { env.loadingOlderMessages = value; };
   env.setHasOlderMessages = (value) => { env.hasOlderMessages = value; };
-  for (const key of ['setOlderPagingReady', 'setMessageSelectionMode', 'setSelectedMessageIds', 'setShowJumpToLatest', 'setConversation', 'setParticipants', 'setConversationRuntimeSetting', 'setConversationContext', 'setBattleState', 'setBattleControlDraft', 'setSpeakerId']) env[key] = () => {};
+  for (const key of ['setRoomLoadError', 'setChatSettingsOpen', 'setContextDrawerOpen', 'setOlderPagingReady', 'clearMessageSelection', 'setShowJumpToLatest', 'setConversation', 'setParticipants', 'setConversationRuntimeSetting', 'setConversationContext', 'setBattleState', 'setBattleControlDraft', 'setSpeakerId']) env[key] = () => {};
   env.EMPTY_BATTLE_CONTROL_DRAFT = {}; env.USER_ID = 'user';
   const fns = instantiate(env);
   const enter = (id, messages = [{ id: `${id}-current` }]) => {

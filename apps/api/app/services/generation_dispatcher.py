@@ -4,7 +4,9 @@ import logging
 import os
 import socket
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+import time
+from contextlib import contextmanager
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Callable
 from uuid import uuid4
 
@@ -43,14 +45,29 @@ class GenerationDispatcher:
         self._executor: ThreadPoolExecutor | None = None
         self._futures: set[Future] = set()
         self._lock = threading.Lock()
+        self._last_progress = time.monotonic()
+        self._supervisor_error = False
+        self._heartbeat_errors: set[str] = set()
 
     @property
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
+    @property
+    def is_healthy(self) -> bool:
+        return (self.is_running and not self._supervisor_error and not self._heartbeat_errors
+                and time.monotonic() - self._last_progress < max(15.0, self.poll_interval_seconds * 4))
+
+    def request_stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+
     def start(self, runner: GenerationRunner) -> None:
         if self.is_running:
             return
+        with self._lock:
+            if any(not future.done() for future in self._futures):
+                raise RuntimeError("Cannot restart dispatcher before previous workers drain")
         self._runner = runner
         self._stop.clear()
         self._wake.clear()
@@ -58,10 +75,8 @@ class GenerationDispatcher:
             max_workers=self.max_workers,
             thread_name_prefix="lorechat-generation",
         )
-        with Session(self.engine) as session:
-            recovered = conversation_service.requeue_expired_message_generation_jobs(session)
-        if recovered:
-            logger.warning("Requeued %s generation jobs with expired leases", recovered)
+        # Recovery runs continuously inside the exception-resilient supervisor.
+        self._supervisor_error = True
         self._thread = threading.Thread(
             target=self._dispatch_loop,
             name="lorechat-generation-dispatcher",
@@ -70,17 +85,63 @@ class GenerationDispatcher:
         self._thread.start()
         self.wake()
 
-    def stop(self, *, timeout_seconds: float = 5.0) -> None:
-        self._stop.set()
-        self._wake.set()
+    def stop(self, *, timeout_seconds: float = 5.0) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        self.request_stop()
         if self._thread:
-            self._thread.join(timeout=max(0.1, timeout_seconds))
+            self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        with self._lock:
+            futures = set(self._futures)
+        if futures:
+            wait(futures, timeout=max(0.0, deadline - time.monotonic()))
+        drained = not (self._thread and self._thread.is_alive()) and all(f.done() for f in futures)
         if self._executor:
             self._executor.shutdown(wait=False, cancel_futures=False)
-        self._thread = None
-        self._executor = None
+        if drained:
+            self._thread = None
+            self._executor = None
+            self._cleanup_futures()
+        return drained
+
+    @contextmanager
+    def track_inline_job(self, target_engine: Engine, job_id: str, lease_owner: str):
+        """Count compatibility execution in the same drain and lease boundary.
+
+        The request owns no executor and the engine is explicit, so this does not
+        enable a live dispatcher in mock/test lifespans.
+        """
+        future = Future()
+        future.set_running_or_notify_cancel()
+        stop_heartbeat = threading.Event()
         with self._lock:
-            self._futures.clear()
+            if self._stop.is_set():
+                raise RuntimeError("Generation dispatcher is draining")
+            self._futures.add(future)
+        def renew():
+            while not stop_heartbeat.wait(self.heartbeat_interval_seconds):
+                try:
+                    with Session(target_engine) as session:
+                        owned = conversation_service.heartbeat_message_generation_job(
+                            session, job_id, lease_owner=lease_owner, lease_seconds=self.lease_seconds)
+                    if not owned:
+                        self._heartbeat_errors.add(job_id)
+                        return
+                    self._heartbeat_errors.discard(job_id)
+                except Exception:
+                    self._heartbeat_errors.add(job_id)
+                    logger.exception("Inline lease renewal failed; readiness degraded")
+        heartbeat = threading.Thread(target=renew, name=f"lorechat-inline-heartbeat-{job_id}", daemon=True)
+        heartbeat.start()
+        try:
+            yield
+        finally:
+            stop_heartbeat.set()
+            heartbeat.join()  # DB busy_timeout bounds this wait; retain ownership until it ends.
+            self._heartbeat_errors.discard(job_id)
+            future.set_result(None)
+            with self._lock:
+                self._futures.discard(future)
+            self.wake()
 
     def wake(self) -> None:
         self._wake.set()
@@ -97,67 +158,79 @@ class GenerationDispatcher:
 
     def _dispatch_loop(self) -> None:
         while not self._stop.is_set():
-            self._cleanup_futures()
-            with self._lock:
-                available_slots = self.max_workers - len(self._futures)
-            for _ in range(max(0, available_slots)):
-                if self._stop.is_set():
-                    break
+            try:
                 with Session(self.engine) as session:
-                    claimed = conversation_service.claim_next_message_generation_job(
-                        session,
-                        lease_owner=self.lease_owner,
-                        lease_seconds=self.lease_seconds,
-                    )
-                if claimed is None:
-                    break
-                executor = self._executor
-                if executor is None:
-                    break
-                future = executor.submit(self._run_claimed_job, claimed.id)
+                    conversation_service.requeue_expired_message_generation_jobs(session)
+                self._cleanup_futures()
                 with self._lock:
-                    self._futures.add(future)
+                    available_slots = self.max_workers - len(self._futures)
+                for _ in range(max(0, available_slots)):
+                    if self._stop.is_set():
+                        break
+                    with Session(self.engine) as session:
+                        claimed = conversation_service.claim_next_message_generation_job(
+                            session,
+                            lease_owner=f"{self.lease_owner}:{uuid4().hex}",
+                            lease_seconds=self.lease_seconds,
+                        )
+                    if claimed is None:
+                        break
+                    executor = self._executor
+                    if executor is None:
+                        break
+                    future = executor.submit(self._run_claimed_job, claimed.id, claimed.lease_owner)
+                    with self._lock:
+                        self._futures.add(future)
+                self._supervisor_error = False
+                self._last_progress = time.monotonic()
+            except Exception:
+                self._supervisor_error = True
+                logger.exception("Dispatcher iteration failed; retrying after bounded poll")
             self._wake.wait(self.poll_interval_seconds)
             self._wake.clear()
 
-    def _heartbeat_loop(self, job_id: str, stop_heartbeat: threading.Event) -> None:
+    def _heartbeat_loop(self, job_id: str, stop_heartbeat: threading.Event, lease_owner: str) -> None:
         while not stop_heartbeat.wait(self.heartbeat_interval_seconds):
-            with Session(self.engine) as session:
-                renewed = conversation_service.heartbeat_message_generation_job(
-                    session,
-                    job_id,
-                    lease_owner=self.lease_owner,
-                    lease_seconds=self.lease_seconds,
-                )
-            if not renewed:
-                return
+            try:
+                with Session(self.engine) as session:
+                    renewed = conversation_service.heartbeat_message_generation_job(
+                        session, job_id, lease_owner=lease_owner,
+                        lease_seconds=self.lease_seconds,
+                    )
+                if not renewed:
+                    self._heartbeat_errors.add(job_id)
+                    return
+                self._heartbeat_errors.discard(job_id)
+            except Exception:
+                self._heartbeat_errors.add(job_id)
+                logger.exception("Lease renewal failed; readiness degraded until recovery")
 
-    def _run_claimed_job(self, job_id: str) -> None:
+    def _run_claimed_job(self, job_id: str, lease_owner: str) -> None:
         runner = self._runner
         if runner is None:
             return
         stop_heartbeat = threading.Event()
         heartbeat = threading.Thread(
             target=self._heartbeat_loop,
-            args=(job_id, stop_heartbeat),
+            args=(job_id, stop_heartbeat, lease_owner),
             name=f"lorechat-generation-heartbeat-{job_id}",
             daemon=True,
         )
         heartbeat.start()
         try:
-            runner(job_id, self.lease_owner)
+            runner(job_id, lease_owner)
         except Exception as exc:
             logger.exception("Generation runner failed for job=%s", job_id)
             with Session(self.engine) as session:
                 job = session.get(MessageGenerationJob, job_id)
-                if job and job.status == "running" and job.lease_owner == self.lease_owner:
+                if job and job.status == "running" and job.lease_owner == lease_owner:
                     conversation_service.mark_message_generation_job_failed(session, job, exc)
         finally:
             stop_heartbeat.set()
-            heartbeat.join(timeout=1.0)
+            heartbeat.join()  # A worker is not drained while its heartbeat can still write.
             with Session(self.engine) as session:
                 job = session.get(MessageGenerationJob, job_id)
-                if job and job.status == "running" and job.lease_owner == self.lease_owner:
+                if job and job.status == "running" and job.lease_owner == lease_owner:
                     if job.cancel_requested_at is not None:
                         conversation_service.mark_message_generation_job_cancelled(session, job)
                     else:
@@ -166,6 +239,7 @@ class GenerationDispatcher:
                             job,
                             RuntimeError("Generation runner exited without a terminal job state"),
                         )
+            self._heartbeat_errors.discard(job_id)
             self.wake()
 
 

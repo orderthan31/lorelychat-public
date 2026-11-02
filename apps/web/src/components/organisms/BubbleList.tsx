@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type RefObject, type UIEvent, type MouseEvent, type PointerEvent } from 'react';
+import { Component, type ReactNode, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type RefObject, type UIEvent, type MouseEvent, type PointerEvent } from 'react';
 import { useChatWindow } from '../../hooks/useChatWindow';
 import { Cloud } from 'lucide-react';
 import { assetUrlFor, avatarUrlFor } from '../../utils/assets';
@@ -8,7 +8,16 @@ import { BubbleRichText, ChatImageFrame, CommandBlockRenderer, type CommandBlock
 import { useI18n } from '../../i18n/I18nProvider';
 import type { MessageEditDraft } from '../../types/domain';
 import { formatProfileImageAlt } from '../../i18n/core';
-import { messageTextForCopy } from '../../utils/messageClipboard';
+import { messageTextForCopy, writeMessageTextToClipboard } from '../../utils/messageClipboard';
+
+class BubbleContentBoundary extends Component<{ children: ReactNode; source: ChatMessage; failureLabel: string; retryLabel: string }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return <section role="alert" data-bubble-fallback><p>{this.props.failureLabel}</p><pre className="whitespace-pre-wrap break-all">{typeof this.props.source.content === 'string' ? this.props.source.content : JSON.stringify(this.props.source.content)}</pre><Button type="button" className="min-h-11" onClick={() => this.setState({ failed: false })}>{this.props.retryLabel}</Button></section>;
+  }
+}
 
 type Character = { id?: string; name?: string; [key: string]: unknown };
 type Participant = { id?: string; type?: string; [key: string]: unknown };
@@ -126,7 +135,11 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
   const theme = useUiStore((state) => state.theme);
   const { locale, t } = useI18n();
   const [openMenuId, setOpenMenuId] = useState('');
+  const [copyFeedback, setCopyFeedback] = useState<'복사 완료' | '복사 실패' | null>(null);
+  const copyVersion = useRef(0);
+  useEffect(() => () => { copyVersion.current += 1; }, []);
   const [editingMessageId, setEditingMessageId] = useState('');
+  const [editError, setEditError] = useState('');
   const [editDraft, setEditDraft] = useState<MessageEditDraft>({ content: '', action: '', thought: '', emotion: '' });
   const longPressTimerRef = useRef<number | null>(null);
   const longPressOriginRef = useRef<{ x: number; y: number } | null>(null);
@@ -154,13 +167,20 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
   };
   const characterForMessage = (message: ChatMessage) => characterById.get(message.speaker_id) || { id: message.speaker_id, name: displayName(message) };
   const copyMessage = async (message: ChatMessage) => {
-    const text = messageTextForCopy(message, t);
-    await navigator.clipboard?.writeText(text || '');
+    const version = ++copyVersion.current;
+    setCopyFeedback(null);
     setOpenMenuId('');
+    try {
+      await writeMessageTextToClipboard(messageTextForCopy(message, t));
+      if (version === copyVersion.current) setCopyFeedback('복사 완료');
+    } catch {
+      if (version === copyVersion.current) setCopyFeedback('복사 실패');
+    }
   };
   const startMessageEdit = (message: ChatMessage) => {
     if (!message.id) return;
     setOpenMenuId('');
+    setEditError('');
     setEditingMessageId(String(message.id));
     setEditDraft(isFreeBody(message) && typeof message.metadata?.raw_body === 'string' ? {
       raw_body: message.metadata.raw_body,
@@ -179,6 +199,8 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
   const submitMessageEdit = async (event: FormEvent<HTMLFormElement>, message: ChatMessage) => {
     event.preventDefault();
     if (!hasEditText(editDraft)) return;
+    setEditError('');
+    try {
     await onUpdateMessage?.(message, editDraft.raw_body !== undefined ? {
       raw_body: editDraft.raw_body,
       emotion: editDraft.emotion.trim(),
@@ -189,6 +211,7 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
       emotion: editDraft.emotion.trim(),
     });
     cancelMessageEdit();
+    } catch (error) { setEditError(error instanceof Error ? error.message : String(error)); }
   };
   const isSelectableMessage = (message: ChatMessage) => !!message?.id && !message.is_typing;
   const clearLongPressTimer = () => {
@@ -228,6 +251,7 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
   };
 
   return <div className="chat-thread" style={{ overflowAnchor: 'none' }} tabIndex={0} ref={threadRef} onScroll={handleThreadScroll} data-modernized="채팅 버블 design-system primitive marker">
+    <div role="status" aria-live="polite" aria-atomic="true" className={copyFeedback ? 'sticky top-0 z-30 shrink-0 rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground' : 'sr-only'}>{copyFeedback ? t(copyFeedback) : ''}</div>
     {hasOlderMessages && <div className="grid place-items-center pb-2 pt-1"><Button type="button" variant="ghost" size="sm" className="min-h-[42px] px-3 py-2" disabled={loadingOlderMessages} onClick={onLoadOlderMessages}>{t(loadingOlderMessages ? '이전 대화 불러오는 중…' : '이전 대화 더 보기')}</Button></div>}
     <div ref={windowed.listRef} role="list" data-chat-window data-total-messages={messages.length} style={{ position: 'relative', height: windowed.total, flexShrink: 0 }}>
     <div style={{ position: 'absolute', top: windowed.top, left: 0, right: 0, display: 'flex', flexDirection: 'column', gap: 7 }}>
@@ -246,7 +270,7 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
       const renderParts = normalizedRenderPartsFor(message);
       const hasRenderParts = renderParts.length > 0;
       const freeBody = isFreeBody(message);
-      const canSpeak = message.speaker_type === 'character' && (hasRenderParts ? renderParts.some((part) => part.type === 'dialogue') : !freeBody && Boolean(message.content?.trim()));
+      const canSpeak = message.speaker_type === 'character' && (hasRenderParts ? renderParts.some((part) => part.type === 'dialogue') : !freeBody && Boolean(typeof message.content === 'string' && message.content.trim()));
       const renderPartsIncludeThought = renderParts.some((part) => part.type === 'thought');
       const showDialogue = !hasRenderParts && Boolean(message.content);
       const showAction = !hasRenderParts && Boolean(message.action);
@@ -256,8 +280,9 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
         <article className={`bubble ${side} ${side === 'right' ? 'text-white' : ''} ${message.speaker_type === 'system' ? 'system' : ''} ${message.speaker_type === 'storytelling' ? 'storytelling' : ''} ${message.is_typing ? 'typing' : ''} ${selected ? 'selected' : ''}`} onPointerDown={(event) => startLongPress(message, event)} onPointerMove={(event) => { const origin = longPressOriginRef.current; if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 10) clearLongPressTimer(); }} onPointerUp={clearLongPressTimer} onPointerCancel={clearLongPressTimer} onPointerLeave={clearLongPressTimer} onClick={(event) => handleBubbleClick(event, message)}>
           <div className={`bubble-name ${side === 'right' ? 'text-white/90' : ''}`}>{displayName(message)}</div>
           {message.is_typing ? <div className="inline-flex min-h-[22px] min-w-[52px] items-center gap-[5px]" aria-label={t('대화 생성 중')}><span className="size-[7px] animate-[typingPulse_1s_infinite_ease-in-out] rounded-full bg-current opacity-35"></span><span className="size-[7px] animate-[typingPulse_1s_infinite_ease-in-out] rounded-full bg-current opacity-35 [animation-delay:.14s]"></span><span className="size-[7px] animate-[typingPulse_1s_infinite_ease-in-out] rounded-full bg-current opacity-35 [animation-delay:.28s]"></span></div> : <>
-            <div className="bubble-menu-wrap"><Button type="button" variant="ghost" size="icon" className="bubble-menu-button" aria-label={t('버블 액션 메뉴')} disabled={selectionMode} onClick={(event) => { event.stopPropagation(); setOpenMenuId(openMenuId === message.id ? '' : String(message.id || '')); }}>⋯</Button>{openMenuId === message.id && <div className="bubble-action-menu" role="menu"><Button type="button" variant="ghost" size="sm" onClick={() => copyMessage(message)}>{t('복사')}</Button><Button type="button" variant="ghost" size="sm" disabled={!canEdit || busy} onClick={() => startMessageEdit(message)}>{t('수정')}</Button>{canSpeak && <Button type="button" variant="ghost" size="sm" onClick={() => { setOpenMenuId(''); onGenerateTts?.(message); }}>{t('TTS')}</Button>}{message.failed && message.retryPayload && <Button type="button" variant="ghost" size="sm" onClick={() => { setOpenMenuId(''); onRetryMessage?.(message); }}>{t('재시도')}</Button>}<Button type="button" variant="ghost" size="sm" disabled={!canRegenerate || busy} title={t(canRegenerate ? '이 메시지 이후를 새로 생성' : '저장된 캐릭터 메시지만 가능')} onClick={() => { setOpenMenuId(''); onRegenerateMessage?.(message); }}>{t('이후 재생성')}</Button><Button type="button" variant="destructive" size="sm" className="danger-menu-item" disabled={!canDelete || busy} title={t('이 버블 삭제')} onClick={() => { setOpenMenuId(''); onDeleteMessage?.(message); }}>{t('삭제')}</Button><Button type="button" variant="ghost" size="sm" disabled={!canDelete || busy} onClick={() => { setOpenMenuId(''); onEnterSelectionMode?.(message.id); }}>{t('여러 개 선택')}</Button></div>}</div>
+            <div className="bubble-menu-wrap"><Button type="button" variant="ghost" size="icon" className="bubble-menu-button" aria-label={t('버블 액션 메뉴')} disabled={selectionMode} onClick={(event) => { event.stopPropagation(); copyVersion.current += 1; setCopyFeedback(null); setOpenMenuId(openMenuId === message.id ? '' : String(message.id || '')); }}>⋯</Button>{openMenuId === message.id && <div className="bubble-action-menu" role="menu"><Button type="button" variant="ghost" size="sm" onClick={() => copyMessage(message)}>{t('복사')}</Button><Button type="button" variant="ghost" size="sm" disabled={!canEdit || busy} onClick={() => startMessageEdit(message)}>{t('수정')}</Button>{canSpeak && <Button type="button" variant="ghost" size="sm" onClick={() => { setOpenMenuId(''); onGenerateTts?.(message); }}>{t('TTS')}</Button>}{message.failed && message.retryPayload && <Button type="button" variant="ghost" size="sm" onClick={() => { setOpenMenuId(''); onRetryMessage?.(message); }}>{t('재시도')}</Button>}<Button type="button" variant="ghost" size="sm" disabled={!canRegenerate || busy} title={t(canRegenerate ? '이 메시지 이후를 새로 생성' : '저장된 캐릭터 메시지만 가능')} onClick={() => { setOpenMenuId(''); onRegenerateMessage?.(message); }}>{t('이후 재생성')}</Button><Button type="button" variant="destructive" size="sm" className="danger-menu-item" disabled={!canDelete || busy} title={t('이 버블 삭제')} onClick={() => { setOpenMenuId(''); onDeleteMessage?.(message); }}>{t('삭제')}</Button><Button type="button" variant="ghost" size="sm" disabled={!canDelete || busy} onClick={() => { setOpenMenuId(''); onEnterSelectionMode?.(message.id); }}>{t('여러 개 선택')}</Button></div>}</div>
             {isEditing ? <form className="grid w-full min-w-0 grid-cols-1 gap-2 rounded-2xl border border-border bg-card p-3 text-foreground" aria-label={t('버블 수정')} onSubmit={(event) => submitMessageEdit(event, message)} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+              {editError && <p role="alert">{editError}</p>}
               {editDraft.raw_body !== undefined ? <label className="grid min-w-0 gap-1 text-xs font-semibold text-muted-foreground">{t('본문')}<Textarea rows={7} value={editDraft.raw_body} onChange={(event) => setEditDraft({ ...editDraft, raw_body: event.target.value })} aria-label={t('버블 본문 수정')} /></label> : <>
               <label className="grid min-w-0 grid-cols-1 gap-1 text-xs font-semibold text-muted-foreground">{t('대사')}<Textarea rows={3} maxLength={8000} value={editDraft.content} onChange={(event) => setEditDraft({ ...editDraft, content: event.target.value })} aria-label={t('버블 대사 수정')} /></label>
               <label className="grid min-w-0 grid-cols-1 gap-1 text-xs font-semibold text-muted-foreground">{t('행동')}<Textarea rows={2} maxLength={4000} value={editDraft.action} onChange={(event) => setEditDraft({ ...editDraft, action: event.target.value })} aria-label={t('버블 행동 수정')} /></label>
@@ -265,7 +290,8 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
               <label className="grid min-w-0 grid-cols-1 gap-1 text-xs font-semibold text-muted-foreground">{t('감정')}<Input maxLength={120} value={editDraft.emotion} onChange={(event) => setEditDraft({ ...editDraft, emotion: event.target.value })} aria-label={t('버블 감정 수정')} /></label>
               <div className="mt-1 grid grid-cols-2 gap-2"><Button type="button" variant="ghost" disabled={busy} onClick={cancelMessageEdit}>{t('취소')}</Button><Button type="submit" disabled={busy || !hasEditText(editDraft)}>{t(busy ? '저장 중…' : '수정 저장')}</Button></div>
             </form> : <>
-            {renderImages && message.assets && message.assets.length > 0 && <div className="bubble-assets grid gap-1.5">{message.assets.map((asset) => <ChatImageFrame key={asset.id} src={assetUrlFor(asset.thumbnail_url || asset.image_url)} alt={asset.label || t('상황별 이미지')} onClick={() => onAvatarPreview?.({ character: { id: asset.character_id, name: asset.label }, emotion: asset.description || t('이미지 에셋'), src: assetUrlFor(asset.image_url) })} />)}</div>}
+            <BubbleContentBoundary key={`${message.id}:${message.content}`} source={message} failureLabel={t('표시할 수 없는 콘텐츠')} retryLabel={t('재시도')}>
+            {renderImages && message.assets && message.assets.length > 0 && <div className="bubble-assets grid gap-1.5">{(Array.isArray(message.assets) ? message.assets : []).filter(asset => asset && typeof asset === 'object' && typeof (asset.thumbnail_url || asset.image_url) === 'string').map((asset) => <ChatImageFrame key={asset.id} src={assetUrlFor(asset.thumbnail_url || asset.image_url)} alt={asset.label || t('상황별 이미지')} onClick={() => onAvatarPreview?.({ character: { id: asset.character_id, name: asset.label }, emotion: asset.description || t('이미지 에셋'), src: assetUrlFor(asset.image_url) })} />)}</div>}
             {hasRenderParts && renderParts.map((part, partIndex) => renderMessagePart(part, partIndex, side, t('속마음'), message.speaker_type === 'storytelling', freeBody))}
             {showAction && renderMessagePart({ type: 'action', text: message.action }, 'action', side, t('속마음'))}
             {showDialogue && renderMessagePart({ type: 'dialogue', text: message.content }, 'dialogue', side, t('속마음'), message.speaker_type === 'storytelling')}
@@ -273,6 +299,7 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
             {!hasRenderParts && !showDialogue && !showAction && commandBlocks.length === 0 && <p className="m-0 whitespace-pre-wrap text-[14px] font-[430] leading-[1.45] text-inherit">{t('(빈 응답)')}</p>}
             {message.thought && !freeBody && !renderPartsIncludeThought && renderMessagePart({ type: 'thought', text: message.thought }, 'thought', side, t('속마음'))}
             {canSpeak && <div className="mt-2 flex justify-end gap-1.5 [&_audio]:h-8 [&_audio]:w-[min(240px,100%)] [&_button]:min-h-[30px] [&_button]:px-2.5 [&_button]:py-1.5 [&_button]:text-xs">{message.tts_audio_url ? <audio controls preload="none" src={assetUrlFor(message.tts_audio_url)} title={message.tts_text || t('TTS')} /> : <Button type="button" variant="ghost" size="sm" onClick={() => onGenerateTts?.(message)}>🔊 {t('TTS')}</Button>}</div>}
+            </BubbleContentBoundary>
             </>}
             {message.failed && <div className="mt-2 text-[0.78rem] leading-[1.3] text-red-200">{t('전송 실패 ·')} {message.error || t('요청 실패')}</div>}
           </>}

@@ -7,7 +7,8 @@ import httpx
 import pytest
 
 from app.core.config import Settings
-from app.engine.llm_client import LLMClient, LLMUnavailableError, bounded_llm_task, task_attempt_metadata
+from app.engine.llm_client import (LLMClient, LLMUnavailableError, LLMRequestError, LLMConfigurationError,
+    LLMCapabilityError, LLMPolicyBlockedError, bounded_llm_task, task_attempt_metadata)
 from app.engine import litellm_transport as sdk
 
 
@@ -108,7 +109,7 @@ async def test_retry_owner_no_hidden_sends(wire, provider, model, url, failure):
     outcomes.append(httpx.Response(failure, json={'error': {'message': 'private'}}, headers={'retry-after': '0'})
                     if isinstance(failure, int) else errors[failure])
     if failure == 422:
-        with pytest.raises(LLMUnavailableError) as exc:
+        with pytest.raises(LLMRequestError) as exc:
             await make(provider, model).chat([{'role': 'user', 'content': 'hello'}])
         assert exc.value.http_status == 422 and exc.value.transport_attempts == 1
         assert 'private' not in str(exc.value)
@@ -125,7 +126,7 @@ async def test_retry_owner_no_hidden_sends(wire, provider, model, url, failure):
 async def test_preflight_zero_budget_and_no_circuit(wire, overrides):
     @bounded_llm_task
     async def run():
-        with pytest.raises(ValueError):
+        with pytest.raises(LLMConfigurationError):
             await make(**overrides).chat([{'role': 'user', 'content': 'hello'}])
         assert task_attempt_metadata()['network_attempts'] == 0
     await run()
@@ -136,7 +137,8 @@ async def test_preflight_zero_budget_and_no_circuit(wire, overrides):
 async def test_controls_schema_and_messages_are_not_mutated(wire, provider, model, url):
     requests, outcomes = wire
     outcomes.append(httpx.Response(200, json=native(provider)))
-    obj = make(provider, model, temperature=0, top_p=0, thinking_budget=0)
+    obj = make(provider, model, temperature=0, top_p=0,
+               **({"thinking_budget": 0} if provider == "google" else {}))
     obj.settings.chat_thinking_policy = 'off_when_supported'
     messages = [{'role': 'system', 'content': 'Original system.'},
                 {'role': 'user', 'content': 'First user.'},
@@ -206,6 +208,13 @@ async def test_gemini_empty_blocked_diagnostics(wire, data):
     wire[1].append(httpx.Response(200, json=data))
     obj = make('google', 'gemini-2.5-flash')
     obj.profile = 'compression'
+    if data.get('promptFeedback', {}).get('blockReason'):
+        # Explicit provider blocks are terminal, not ordinary empty completions.
+        with pytest.raises(LLMPolicyBlockedError) as exc:
+            await obj.chat([{'role': 'user', 'content': 'hi'}])
+        assert exc.value.transport_attempts == len(wire[0]) == 1
+        assert 'secret' not in str(exc.value)
+        return
     response = await obj.chat([{'role': 'user', 'content': 'hi'}])
     assert response.content == ''
     assert response.provider_diagnostics is not None
@@ -367,21 +376,25 @@ async def test_xai_default_strict_and_modern_gemini_omissions(wire):
     await make('xai', 'grok-4.3').chat([{'role': 'user', 'content': 'hi'}],
         response_format={'type': 'json_object', 'schema': {'type': 'object'}})
     assert json.loads(wire[0][0].content)['response_format']['json_schema']['strict'] is True
+    # Explicit modern-Gemini sampling overrides are no longer silently dropped.
+    @bounded_llm_task
+    async def reject():
+        with pytest.raises(LLMCapabilityError):
+            await make('google', 'gemini-3.8-flash', temperature=0, top_p=0, top_k=0,
+                       thinking_level='low').chat([{'role': 'user', 'content': 'hi'}])
+        assert task_attempt_metadata()['network_attempts'] == 0
+    await reject()
+    assert len(wire[0]) == 1
     wire[1].append(httpx.Response(200, json=native('google')))
-    result = await make('google', 'gemini-3.8-flash', temperature=0, top_p=0, top_k=0,
-                        thinking_level='low').chat([{'role': 'user', 'content': 'hi'}])
+    result = await make('google', 'gemini-3.8-flash', thinking_level='low').chat(
+        [{'role': 'user', 'content': 'hi'}])
     config = json.loads(wire[0][1].content)['generationConfig']
-    # User-approved contract supersedes strict SDK omission; existing app
-    # capability omission remains distinct from the observed SDK default.
     assert config['temperature'] == 1.0
     assert all(k not in config for k in ('top_p', 'top_k'))
     assert config['thinkingConfig']['thinkingLevel'] == 'low'
     diag = result.transport_diagnostics
-    assert set(diag['application_omitted_parameters']) == {'temperature', 'topP', 'topK'}
-    assert set(diag['omitted_parameters']) == {'topP', 'topK'}
     assert diag['serialized_wire_controls']['temperature'] == 1.0
     assert diag['sdk_added_defaults'] == {'temperature': 1.0}
-    assert diag['requested_controls']['temperature'] == 0
     assert 'temperature' not in diag['application_controls']
 
 
@@ -438,7 +451,7 @@ async def test_controlled_sdk_error_native_admission_matrix(wire, monkeypatch, p
             assert result.transport_diagnostics['sdk_response_status'] == 'native_validated_after_sdk_error'
             assert 'PRIVATE' not in json.dumps(result.transport_diagnostics)
         else:
-            kind = sdk.TransportConfigurationError if capture == 'before' else LLMUnavailableError if capture == 'status' else sdk.ResponseEvidenceError
+            kind = sdk.TransportConfigurationError if capture == 'before' else LLMRequestError if capture == 'status' else sdk.ResponseEvidenceError
             with pytest.raises(kind) as exc:
                 await make(provider, model).chat([{'role': 'user', 'content': 'PRIVATE PROMPT'}])
             assert 'PRIVATE' not in str(exc.value)

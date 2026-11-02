@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
+from app.schemas.input_policy import RequestModel
 from pydantic import BaseModel, Field
 
 ProviderType = Literal["openai", "google", "anthropic", "openrouter", "xai", "openai_compatible"]
@@ -10,7 +11,7 @@ ModelFamily = Literal["gemini", "gpt", "claude", "grok", "openrouter", "local", 
 ModelSource = Literal["fetched", "manual", "preset"]
 
 
-class ProviderAccountCreate(BaseModel):
+class ProviderAccountCreate(RequestModel):
     provider_type: ProviderType
     alias: str = Field(min_length=1, max_length=80)
     enabled: bool = True
@@ -19,7 +20,9 @@ class ProviderAccountCreate(BaseModel):
     preset: str | None = None
 
 
-class ProviderAccountUpdate(BaseModel):
+class ProviderAccountUpdate(RequestModel):
+    nonnull_fields = frozenset(['alias', 'enabled'])
+    nonblank_fields = frozenset(['alias'])
     alias: str | None = Field(default=None, min_length=1, max_length=80)
     enabled: bool | None = None
     base_url: str | None = None
@@ -51,7 +54,7 @@ class ProviderAccountTestRead(BaseModel):
     tested_at: datetime
 
 
-class ModelOptionManualCreate(BaseModel):
+class ModelOptionManualCreate(RequestModel):
     provider_account_id: str
     model: str = Field(min_length=1)
     label: str | None = None
@@ -65,7 +68,9 @@ class ModelOptionManualCreate(BaseModel):
     max_output_tokens: int | None = Field(default=None, ge=1)
 
 
-class ModelOptionUpdate(BaseModel):
+class ModelOptionUpdate(RequestModel):
+    nonnull_fields = frozenset(['label', 'enabled', 'supports_chat', 'supports_compression', 'supports_tts', 'model_family', 'supports_json'])
+    nonblank_fields = frozenset(['label'])
     label: str | None = None
     enabled: bool | None = None
     supports_chat: bool | None = None

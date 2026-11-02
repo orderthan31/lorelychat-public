@@ -1,4 +1,9 @@
 {
+  "세계관을 찾을 수 없습니다.": "World setting not found.",
+  "표시할 수 없는 콘텐츠": "Content could not be rendered",
+  "원본 보기": "View source",
+  "큰 콘텐츠는 기본 텍스트로 표시됩니다.": "Large content is shown as plain text by default.",
+  "서식 펼치기": "Expand formatting",
   "본문": "Body",
   "버블 본문 수정": "Edit bubble body",
   ". 종료 후 새 경기를 시작할 수 있습니다.": ". You can start a new match after finishing.",

@@ -1,3 +1,4 @@
+from app.schemas.input_policy import RequestModel
 from pydantic import BaseModel, Field, field_validator
 
 DEFAULT_FORBIDDEN_RULES = [
@@ -20,15 +21,19 @@ DEFAULT_TRAIT_SCORES = {
 def normalize_trait_scores(value: dict[str, int] | None) -> dict[str, int]:
     if value is None:
         return DEFAULT_TRAIT_SCORES.copy()
+    if not isinstance(value, dict):
+        raise ValueError("trait_scores must be an object")
     normalized = DEFAULT_TRAIT_SCORES.copy()
     for key, score in value.items():
-        if not isinstance(score, int) or score < 1 or score > 5:
+        if type(score) is not int or score < 1 or score > 5:
             raise ValueError("trait_scores values must be integers from 1 to 5")
         normalized[key] = score
     return normalized
 
 
-class CharacterCreate(BaseModel):
+class CharacterCreate(RequestModel):
+    nonnull_fields = frozenset(['name', 'persona', 'tts_provider', 'tts_model', 'tts_voice_style'])
+    nonblank_fields = frozenset(['name', 'persona'])
     name: str = Field(min_length=1)
     persona: str = Field(min_length=1)
     description: str | None = None
@@ -51,7 +56,9 @@ class CharacterCreate(BaseModel):
         return normalize_trait_scores(value)
 
 
-class CharacterUpdate(BaseModel):
+class CharacterUpdate(RequestModel):
+    nonnull_fields = frozenset(['name', 'persona', 'tts_provider', 'tts_model', 'tts_voice_style', 'emotional_rules', 'forbidden_rules', 'trait_scores'])
+    nonblank_fields = frozenset(['name', 'persona'])
     name: str | None = Field(default=None, min_length=1)
     persona: str | None = Field(default=None, min_length=1)
     description: str | None = None
