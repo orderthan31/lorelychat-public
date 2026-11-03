@@ -29,7 +29,7 @@ from app.core.upload_files import UploadStaticFiles
 from app.db.session import get_session, init_db, engine
 from app.ops.sqlite_ops import acquire_runtime_lock, release_runtime_lock
 from app.ops.request_limits import RequestBodyLimitMiddleware
-from app.services import asset_service, conversation_service, prompt_snapshot_service, world_migration_service
+from app.services import asset_service, conversation_service, world_migration_service
 from app.services.generation_dispatcher import generation_dispatcher
 from app.services.post_commit_dispatcher import post_commit_dispatcher
 from app.services.chat_command_service import seed_default_chat_commands
@@ -75,7 +75,6 @@ async def lifespan(app: FastAPI):
             seed_default_chat_commands(session)
             asset_service.migrate_existing_avatars(session)
             world_migration_service.clone_missing_conversation_world_settings(session)
-            prompt_snapshot_service.prune_prompt_snapshots(session)
             conversation_service.requeue_expired_message_generation_jobs(session, execution_mode="mock" if settings.llm_mock else None)
             if not settings.llm_mock:
                 conversation_service.requeue_expired_post_commit_tasks(session)
