@@ -1,10 +1,11 @@
 from typing import Literal
 
 from app.schemas.input_policy import RequestModel
+from app.schemas.model_providers import ModelInputCapabilities
 from pydantic import BaseModel, Field
 
 
-class RuntimeModelOptionRead(BaseModel):
+class RuntimeModelOptionRead(ModelInputCapabilities):
     key: str
     label: str
     provider: str
@@ -45,12 +46,15 @@ class RuntimeSettingRead(BaseModel):
     compression_strategy: Literal["fast", "quality"] = "quality"
     response_length_preset: str
     default_tts_model_option_key: str | None = None
+    decision_enabled: bool = False
+    decision_model_option_key: str | None = None
     safety_preset: str = "medium"
     min_output_tokens: int
     compression_interval_turns: int
     options: list[RuntimeModelOptionRead] = Field(default_factory=list)
     compression_options: list[RuntimeModelOptionRead] = Field(default_factory=list)
     tts_options: list[RuntimeModelOptionRead] = Field(default_factory=list)
+    decision_options: list[RuntimeModelOptionRead] = Field(default_factory=list)
     response_length_presets: list[ResponseLengthPresetRead] = Field(default_factory=list)
     compression_interval_options: list[CompressionIntervalOptionRead] = Field(default_factory=list)
 
@@ -65,6 +69,8 @@ class RuntimeSettingUpdate(RequestModel):
     compression_strategy: Literal["fast", "quality"] | None = None
     response_length_preset: str | None = None
     default_tts_model_option_key: str | None = None
+    decision_enabled: bool | None = None
+    decision_model_option_key: str | None = None
     safety_preset: str | None = Field(default=None, pattern="^(high|medium|low)$")
     # Backward-compatible internal knob. The UI should use response_length_preset instead.
     min_output_tokens: int | None = Field(default=None, ge=64, le=4096)

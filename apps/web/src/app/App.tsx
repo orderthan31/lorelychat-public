@@ -6,6 +6,7 @@ import { characterApi, conversationApi, settingsApi } from '../api/resources';
 import { GenerationLifecycleSubscriptionClosedError, subscribeGenerationJobLifecycle } from '../api/generationJobEvents';
 import { terminalJobsForRoom, rememberTerminalJob, forgetTerminalJob, unknownSubmissionsForRoom, rememberUnknownSubmission, forgetUnknownSubmission } from '../utils/generationRecovery';
 import { GenerationOwners, RoomVisit, RoomWork, RoomWorkCancelledError } from '../utils/roomWork';
+import { createAssetDecisionRefresh } from '../utils/assetDecisionRefresh';
 import { useAppDerivedData } from '../hooks/useAppDerivedData';
 import { useBootstrapResources } from '../hooks/useBootstrapResources';
 import { useBootstrapSync } from '../hooks/useBootstrapSync';
@@ -224,6 +225,7 @@ export function App() {
   const roomWork = useRef(new RoomWork()).current;
   const readyVisitRef = useRef<RoomVisit | null>(null);
   const deletedMessageIdsRef = useRef(new Map<string, Set<string>>());
+  const assetDecisionRefreshRef = useRef<ReturnType<typeof createAssetDecisionRefresh> | null>(null);
   const activeGenerationSubscriptionRef = useRef<any>(null);
   const appRoute = route as typeof route & { id?: string };
   const routeId = appRoute.id || '';
@@ -298,6 +300,30 @@ export function App() {
       activeGenerationSubscriptionRef.current = null;
     };
   }, [selectedConversationId]);
+
+  useLayoutEffect(() => {
+    if (!selectedConversationId) return;
+    const visit = roomWork.capture();
+    const refresh = createAssetDecisionRefresh({
+      roomId: selectedConversationId,
+      isCurrent: () => visit.current && roomWork.capture() === visit,
+      read: async ids => await conversationApi.messagesByIds(selectedConversationId, ids) as ChatMessage[],
+      merge: update => setMessages(current => update(current)),
+    });
+    assetDecisionRefreshRef.current = refresh;
+    const visibilityChanged = () => refresh.setVisible(document.visibilityState === 'visible');
+    visibilityChanged();
+    document.addEventListener('visibilitychange', visibilityChanged);
+    return () => {
+      refresh.stop();
+      document.removeEventListener('visibilitychange', visibilityChanged);
+      if (assetDecisionRefreshRef.current === refresh) assetDecisionRefreshRef.current = null;
+    };
+  }, [selectedConversationId]);
+  useLayoutEffect(() => {
+    // Do not seed a new visit from the previous room's still-loaded snapshot.
+    if (readyVisitRef.current === roomWork.capture()) assetDecisionRefreshRef.current?.update(messages);
+  }, [messages, selectedConversationId]);
 
   const { messageSelectionMode, selectedMessageIds,
     enterMessageSelectionMode, toggleMessageSelection, clearMessageSelection,

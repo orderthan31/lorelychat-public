@@ -496,9 +496,10 @@ def test_additive_model_context_metadata_migration_preserves_existing_rows(tmp_p
     migrate_sqlite_columns(test_engine)
 
     columns = {column["name"] for column in inspect(test_engine).get_columns("model_options")}
-    assert {"context_window_tokens", "max_output_tokens"}.issubset(columns)
+    assert {"context_window_tokens", "max_output_tokens", "supports_decision"}.issubset(columns)
     with test_engine.connect() as connection:
         row = connection.execute(text(
-            "SELECT model, context_window_tokens, max_output_tokens FROM model_options WHERE id='legacy_option'"
+            "SELECT model, context_window_tokens, max_output_tokens, input_modalities, image_mime_types, capability_source FROM model_options WHERE id='legacy_option'"
         )).one()
-    assert tuple(row) == ("legacy-model", None, None)
+    assert tuple(row) == ("legacy-model", None, None, None, None, "unknown")
+    migrate_sqlite_columns(test_engine)  # additive migration remains idempotent

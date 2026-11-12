@@ -1,12 +1,13 @@
 import json
 from pathlib import Path
-from uuid import uuid4
+
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlmodel import Session, select
+from sqlmodel import Session
 from pydantic import ValidationError
-from app.db.models import Character, CharacterAsset
-from app.core.upload_files import read_verified_image, ensure_private_upload_directory
+from app.db.models import Character
+from app.core.upload_files import read_verified_image
+from app.ops.image_validation import ImageDecoderBusy, ImageDecoderUnavailable
 
 from app.core.config import get_settings
 from app.db.session import get_session
@@ -41,11 +42,14 @@ def list_character_assets(character_id: str, include_disabled: bool = True, sess
 
 
 @router.post("/characters/{character_id}/assets", response_model=CharacterAssetRead)
-def create_character_asset(character_id: str, payload: CharacterAssetCreate, session: Session = Depends(get_session)):
+async def create_character_asset(character_id: str, payload: CharacterAssetCreate, session: Session = Depends(get_session)):
     try:
-        return asset_service.to_asset_read(asset_service.create_asset(session, character_id, payload))
+        return asset_service.to_asset_read(await asset_service.create_asset_ingested(
+            session, character_id, payload, upload_root=UPLOAD_ROOT, shared_root=get_settings().shared_upload_root))
+    except (ImageDecoderBusy, ImageDecoderUnavailable):
+        raise HTTPException(status_code=503, detail="Image decoder unavailable", headers={"Retry-After": "1"}) from None
     except ValueError as error:
-        raise HTTPException(status_code=404, detail=str(error))
+        raise HTTPException(status_code=404 if str(error) == "Character not found" else 422, detail=str(error)) from None
 
 
 @router.post("/characters/{character_id}/assets/upload", response_model=CharacterAssetRead)
@@ -78,33 +82,15 @@ async def upload_character_asset(
         )
     except (ValidationError, ValueError):
         raise HTTPException(status_code=422, detail="Invalid asset metadata") from None
-    data, extension = await read_verified_image(file, MAX_ASSET_BYTES)
-    directory = ensure_private_upload_directory(ASSET_DIR, UPLOAD_ROOT, get_settings().shared_upload_root)
-    filename = f"asset_{uuid4().hex}{extension}"
-    path = directory / filename
-    payload.image_url = f"/uploads/character-assets/{filename}"
-    payload.source = "upload"
-    payload.metadata = {"content_type": file.content_type, "size": len(data), "filename": filename}
-    created = False
+    data, _ = await read_verified_image(file, MAX_ASSET_BYTES)
     try:
-        # Exclusive UUID path: cleanup owns only this request's newly created file.
-        with path.open("xb") as handle:
-            created = True
-            handle.write(data)
-        return asset_service.to_asset_read(asset_service.create_asset(session, character_id, payload))
-    except BaseException as error:
-        session.rollback()
-        # A refresh/serialization exception after commit must not remove durable bytes.
-        # If reference verification itself fails, retain the file for a dry-run audit.
-        try:
-            registered = session.exec(select(CharacterAsset.id).where(CharacterAsset.image_url == payload.image_url).limit(1)).first()
-        except Exception:
-            registered = True
-        if created and not registered:
-            path.unlink(missing_ok=True)
-        if isinstance(error, ValueError):
-            raise HTTPException(status_code=404, detail="Character not found") from None
-        raise
+        return asset_service.to_asset_read(await asset_service.create_asset_ingested(
+            session, character_id, payload, upload_root=UPLOAD_ROOT, shared_root=get_settings().shared_upload_root,
+            data=data, source_mime=file.content_type))
+    except (ImageDecoderBusy, ImageDecoderUnavailable):
+        raise HTTPException(status_code=503, detail="Image decoder unavailable", headers={"Retry-After": "1"}) from None
+    except ValueError as error:
+        raise HTTPException(status_code=404 if str(error) == "Character not found" else 422, detail=str(error)) from None
 
 
 @router.get("/character-assets/{asset_id}", response_model=CharacterAssetRead)
@@ -116,11 +102,17 @@ def get_character_asset(asset_id: str, session: Session = Depends(get_session)):
 
 
 @router.patch("/character-assets/{asset_id}", response_model=CharacterAssetRead)
-def update_character_asset(asset_id: str, payload: CharacterAssetUpdate, session: Session = Depends(get_session)):
+async def update_character_asset(asset_id: str, payload: CharacterAssetUpdate, session: Session = Depends(get_session)):
     asset = asset_service.get_asset(session, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
-    return asset_service.to_asset_read(asset_service.update_asset(session, asset, payload))
+    try:
+        return asset_service.to_asset_read(await asset_service.update_asset_ingested(
+            session, asset, payload, upload_root=UPLOAD_ROOT, shared_root=get_settings().shared_upload_root))
+    except (ImageDecoderBusy, ImageDecoderUnavailable):
+        raise HTTPException(status_code=503, detail="Image decoder unavailable", headers={"Retry-After": "1"}) from None
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
 
 
 @router.post("/character-assets/{asset_id}/set-default-avatar", response_model=CharacterAssetRead)

@@ -55,17 +55,21 @@ def test_asset_upload_lifecycle(session,tmp_path,monkeypatch):
     app=FastAPI();app.include_router(assets.router);app.dependency_overrides[get_session]=lambda: session
     with TestClient(app,raise_server_exceptions=False) as client:
         response=client.post('/characters/missing/assets/upload',files={'file':('a.png',png(),'image/png')})
-        assert response.status_code==404 and not list(tmp_path.rglob('*.png'))
+        assert response.status_code==404 and not list(tmp_path.rglob('*.webp'))
         session.add(Character(id='c',name='C',persona='p'));session.commit()
         original=assets.asset_service.create_asset
         def fail(*a,**kw):raise RuntimeError('synthetic DB registration failure')
         monkeypatch.setattr(assets.asset_service,'create_asset',fail)
         assert client.post('/characters/c/assets/upload',files={'file':('a.png',png(),'image/png')}).status_code==500
-        assert not list(tmp_path.rglob('*.png'))
+        assert not list(tmp_path.rglob('*.webp'))
         monkeypatch.setattr(assets.asset_service,'create_asset',original)
         response=client.post('/characters/c/assets/upload',files={'file':('a.png',png(),'image/png')},data={'is_default':'true'})
         assert response.status_code==200,response.text
-        assert len(list(tmp_path.rglob('*.png')))==1
+        stored_paths={tmp_path/response.json()[field].removeprefix('/uploads/') for field in ('image_url','thumbnail_url')}
+        assert set(tmp_path.rglob('*.webp'))==stored_paths
+        from PIL import Image
+        for path in stored_paths:
+            with Image.open(path) as image:assert image.format=='WEBP'
         assert session.get(Character,'c').avatar_url==response.json()['image_url']
 
 

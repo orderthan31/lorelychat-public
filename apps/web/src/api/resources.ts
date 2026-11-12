@@ -44,6 +44,10 @@ export type ModelOption = {
   supports_chat: boolean;
   supports_compression: boolean;
   supports_tts: boolean;
+  supports_decision: boolean;
+  input_modalities: string[] | null;
+  image_mime_types: string[] | null;
+  capability_source: 'provider_metadata' | 'official_registry' | 'manual' | 'unknown';
   model_family: 'gemini' | 'gpt' | 'claude' | 'grok' | 'openrouter' | 'local' | 'custom';
   supports_json?: boolean;
   source: 'fetched' | 'manual' | 'preset';
@@ -104,6 +108,13 @@ export const conversationApi = {
   remove: (id: Id) => api(`/conversations/${id}`, { method: 'DELETE' }),
   participants: (id: Id) => api(`/conversations/${id}/participants`),
   messages: (id: Id, beforeId?: Id | null) => api(`/conversations/${id}/messages?recent_turns=${MESSAGE_PAGE_TURNS}${beforeId ? `&before_id=${beforeId}` : ''}`),
+  messagesByIds: (id: Id, messageIds: Id[]) => {
+    const ids = [...new Set(messageIds)];
+    if (!ids.length || ids.length > 100) return Promise.resolve([]);
+    const query = new URLSearchParams();
+    ids.forEach(messageId => query.append('message_ids', messageId));
+    return api<any[]>(`/conversations/${id}/messages?${query.toString()}`);
+  },
   generateMessageTts: (messageId: Id) => api(`/messages/${messageId}/tts`, { method: 'POST', body: JSON.stringify({}) }),
   markRead: (id: Id) => api(`/conversations/${id}/read`, { method: 'POST', body: JSON.stringify({}) }),
   sendMessage: (id: Id, payload: Payload) => api(`/conversations/${id}/messages`, { method: 'POST', body: JSON.stringify(payload) }),

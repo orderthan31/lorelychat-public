@@ -355,6 +355,8 @@ class RuntimeSetting(SQLModel, table=True):
     min_output_tokens: int = Field(default=768)
     compression_interval_turns: int = Field(default=5)
     default_tts_model_option_key: Optional[str] = None
+    decision_enabled: bool = Field(default=False)
+    decision_model_option_key: Optional[str] = None
     safety_preset: str = Field(default="medium")
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -392,6 +394,10 @@ class ModelOption(SQLModel, table=True):
     supports_chat: bool = True
     supports_compression: bool = True
     supports_tts: bool = False
+    supports_decision: bool = False
+    input_modalities: Optional[list[str]] = Field(default=None, sa_column=Column(JSON, nullable=True))
+    image_mime_types: Optional[list[str]] = Field(default=None, sa_column=Column(JSON, nullable=True))
+    capability_source: str = "unknown"
     model_family: str = Field(default="custom", index=True)
     supports_json: bool = True
     context_window_tokens: Optional[int] = None

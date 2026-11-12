@@ -1,9 +1,48 @@
+def test_decision_explicit_opt_in_clear_and_inventory_free_serialization(client, session):
+    from app.services import runtime_settings_service
+
+    assert client.patch('/runtime-settings/default', json={'decision_enabled': True}).status_code == 400
+    account = client.post('/model-provider-accounts', json={
+        'provider_type': 'openai_compatible', 'alias': 'Synthetic decision',
+        'base_url': 'http://127.0.0.1:1234/v1', 'preset': 'custom',
+    }).json()
+    option = client.post('/model-options/manual', json={
+        'provider_account_id': account['id'], 'model': 'decision-test',
+        'supports_chat': False, 'supports_compression': False, 'supports_decision': True,
+    }).json()
+    selected = client.patch('/runtime-settings/default', json={'decision_model_option_key': option['key']})
+    assert selected.status_code == 200, selected.text
+    assert selected.json()['decision_enabled'] is False
+    enabled = client.patch('/runtime-settings/default', json={'decision_enabled': True})
+    assert enabled.status_code == 200, enabled.text
+    setting = runtime_settings_service.get_global_setting(session)
+    compact = runtime_settings_service.serialize_setting(setting, scope='default', options=False, session=session)
+    assert compact.decision_enabled is True
+    assert compact.decision_model_option_key == option['key']
+    assert compact.decision_options == []
+    assert client.patch('/runtime-settings/default', json={'decision_model_option_key': None}).status_code == 400
+    unchanged = client.get('/runtime-settings/default').json()
+    assert unchanged['decision_enabled'] is True
+    assert unchanged['decision_model_option_key'] == option['key']
+    cleared = client.patch('/runtime-settings/default', json={'decision_model_option_key': None, 'decision_enabled': False})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()['decision_model_option_key'] is None
+    assert cleared.json()['decision_enabled'] is False
+    client.patch(f"/model-options/{option['id']}", json={'enabled': False})
+    rejected = client.patch('/runtime-settings/default', json={
+        'decision_model_option_key': option['key'], 'decision_enabled': True,
+    })
+    assert rejected.status_code == 400
+
+
 def test_runtime_settings_default_and_conversation_override(client):
     default_response = client.get('/runtime-settings/default')
     assert default_response.status_code == 200
     default_data = default_response.json()
     assert default_data['model_key'] is None
     assert default_data['compression_model_key'] is None
+    assert default_data['decision_enabled'] is False
+    assert default_data['decision_model_option_key'] is None
     assert default_data['compression_strategy'] == 'quality'
     assert default_data['response_length_preset'] == 'medium'
     assert default_data['min_output_tokens'] == 768
@@ -14,6 +53,7 @@ def test_runtime_settings_default_and_conversation_override(client):
     assert {preset['key'] for preset in default_data['response_length_presets']} == {'short', 'medium', 'long'}
     assert default_data['options'] == []
     assert default_data['compression_options'] == []
+    assert default_data['decision_options'] == []
 
     patched_default = client.patch('/runtime-settings/default', json={'model_key': 'local-gemma', 'compression_model_key': 'gemini-3-flash', 'response_length_preset': 'short', 'compression_interval_turns': 8})
     assert patched_default.status_code == 400

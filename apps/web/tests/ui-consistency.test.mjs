@@ -53,7 +53,10 @@ try{
   const fg=lum(rgb(s.color)),bg=lum(rgb(s.backgroundColor));return {label:e.textContent,fg:s.color,bg:s.backgroundColor,alpha:rgb(s.backgroundColor)[3],border:s.borderTopWidth,borderColor:s.borderTopColor,opacity:s.opacity,width:r.width,height:r.height,contrast:(Math.max(fg,bg)+.05)/(Math.min(fg,bg)+.05)};
  }));
  for(const width of [320,390,768,1280])for(const theme of ['light','dark'])await check(`${width}px ${theme}: atom and toolbar enabled/hover contrasts, neutral borders, geometry`,async()=>{
-  await page.setViewportSize({width,height:1000});await page.evaluate(theme=>document.documentElement.classList.toggle('theme-dark',theme==='dark'),theme);await page.mouse.move(0,0);await page.waitForTimeout(180);
+  await page.setViewportSize({width,height:1000});await page.evaluate(theme=>document.documentElement.classList.toggle('theme-dark',theme==='dark'),theme);await page.mouse.move(0,0);
+  // Wait for the actual theme transition, not a machine-dependent 180ms sleep.
+  const expectedBorder=theme==='light'?'rgb(225, 226, 230)':'rgba(148, 163, 184, 0.18)';
+  await expect.poll(()=>page.locator('[data-variant], .message-selection-toolbar button').evaluateAll((elements,border)=>elements.length>0&&elements.every(element=>getComputedStyle(element).borderTopColor===border),expectedBorder)).toBe(true);
   const rows=await styles('[data-variant], .message-selection-toolbar button');measurements.push({width,theme,state:'rest',rows});
   for(const row of rows){assert.equal(row.alpha,255,JSON.stringify(row));assert.equal(row.border,'1px');assert.ok(row.contrast>=4.5,JSON.stringify(row));assert.ok(row.height>=44);assert.equal(row.borderColor,theme==='light'?'rgb(225, 226, 230)':'rgba(148, 163, 184, 0.18)');}
   for(const variant of ['default','secondary','ghost','destructive']){

@@ -8,6 +8,114 @@ from app.services import runtime_settings_service
 from app.services import provider_secret_service, model_provider_service
 
 
+@pytest.mark.parametrize("model,mimes", [
+    ("typesafe/jev-1.13", ["image/png", "image/jpeg"]),
+    ("typesafe/jev-1.14", ["image/png", "image/jpeg"]),
+    ("future/vision", ["image/png", "image/jpeg", "image/webp"]),
+])
+def test_decision_modalities_derive_from_metadata_not_label(model, mimes):
+    def discover(inputs, endpoints=["/api/alpha/decisions"]):
+        return model_provider_service._provider_model(model, None, "openrouter", {
+            "architecture": {"input_modalities": inputs, "output_modalities": ["decisions"]},
+            "endpoints": endpoints,
+        })
+    vision = discover([" TEXT ", "image", "image"])
+    assert vision.input_modalities == ["text", "image"]
+    assert vision.image_mime_types == mimes
+    assert vision.capability_source == "provider_metadata"
+    for inputs in (["text"], []):
+        text = discover(inputs)
+        assert text.input_modalities == inputs
+        assert text.image_mime_types == []
+    for inputs in (None, False, ["x" * 1000], [1]):
+        unknown = discover(inputs)
+        assert unknown.input_modalities is None
+        assert unknown.image_mime_types is None
+    extraction = discover(["image"], ["/api/alpha/extract"])
+    assert not extraction.supports_decision
+    assert extraction.input_modalities is None
+
+
+@pytest.mark.parametrize("provider,model,expected,mimes", [
+    ("google", "gemini-decision-1", ["text", "image"], ["image/png", "image/jpeg", "image/webp"]),
+    ("openai", "gpt-6-luna-decisions", ["text", "image"], None),
+    ("google", "gemini-future", None, None),
+    ("openai", "gpt-future", None, None),
+])
+def test_exact_native_decision_registry(provider, model, expected, mimes):
+    result = model_provider_service._provider_model(model, None, provider)
+    assert result.input_modalities == expected
+    assert result.image_mime_types == mimes
+    assert result.capability_source == ("official_registry" if expected else "unknown")
+
+
+def test_manual_capabilities_roundtrip_null_empty_and_runtime(client):
+    account = client.post("/model-provider-accounts", json={
+        "provider_type": "openai_compatible", "alias": "Vision manual",
+        "base_url": "http://localhost:1234/v1", "preset": "custom",
+    }).json()
+    base = {"provider_account_id": account["id"], "model": "future-model", "supports_decision": True}
+    option = client.post("/model-options/manual", json=base).json()
+    assert option["input_modalities"] is None
+    assert option["capability_source"] == "unknown"
+    url = f"/model-options/{option['id']}"
+    bad = client.patch(url, json={"input_modalities": ["image"]})
+    # Existing PATCH route maps service ValueError to 404.
+    assert bad.status_code == 404
+    assert "requires accepted image MIME types" in bad.json()["detail"]
+    good = client.patch(url, json={"input_modalities": [" Text ", "IMAGE", "image"],
+        "image_mime_types": ["IMAGE/WEBP"], "capability_source": "provider_metadata"})
+    assert good.status_code == 200, good.text
+    assert good.json()["input_modalities"] == ["text", "image"]
+    assert good.json()["capability_source"] == "manual"
+    runtime = client.get("/runtime-settings/default").json()
+    active = next(row for row in runtime["decision_options"] if row["key"] == option["key"])
+    assert active["input_modalities"] == ["text", "image"]
+    assert active["image_mime_types"] == ["image/webp"]
+    assert active["capability_source"] == "manual"
+    unchanged = client.patch(url, json={"supports_decision": False, "enabled": False}).json()
+    assert unchanged["input_modalities"] == ["text", "image"]
+    assert unchanged["enabled"] is False and unchanged["supports_decision"] is False
+    for value in ([], None):
+        response = client.patch(url, json={"input_modalities": value, "image_mime_types": value})
+        assert response.status_code == 200, response.text
+        assert response.json()["input_modalities"] == value
+        assert response.json()["image_mime_types"] == value
+        assert response.json()["capability_source"] == "manual"
+    for patch in ({"input_modalities": [1]}, {"input_modalities": ["x" * 1000]},
+                  {"image_mime_types": ["image/svg+xml"]}, {"capability_source": "fake"}):
+        assert client.patch(url, json=patch).status_code == 422
+
+
+@pytest.mark.parametrize("new_inputs", [["text"], [], None, False])
+def test_sync_clears_stale_vision_and_missing_model(client, monkeypatch, tmp_path, new_inputs):
+    monkeypatch.setattr(provider_secret_service, "SECRET_ROOT", tmp_path)
+    monkeypatch.setattr(provider_secret_service, "SECRET_FILE", tmp_path / "capability-secrets.json")
+    def catalog(inputs):
+        return model_provider_service._provider_model("typesafe/jev-1.13", None, "openrouter", {
+            "architecture": {"input_modalities": inputs, "output_modalities": ["decisions"]},
+            "endpoints": ["/api/alpha/decisions"],
+        })
+    fetched = [catalog(["text", "image"])]
+    monkeypatch.setattr(model_provider_service, "fetch_provider_models", lambda account: fetched)
+    account = client.post("/model-provider-accounts", json={"provider_type": "openrouter", "alias": "Vision sync", "api_key": "synthetic"}).json()
+    option = next(row for row in client.get("/model-options").json() if row["provider_account_id"] == account["id"])
+    assert option["input_modalities"] == ["text", "image"]
+    _enable_option(client, option)
+    fetched[:] = [catalog(new_inputs)]
+    sync_url = f"/model-provider-accounts/{account['id']}/sync-models"
+    synced = client.post(sync_url)
+    assert synced.status_code == 200, synced.text
+    current = next(row for row in synced.json() if row["id"] == option["id"])
+    assert current["input_modalities"] == (new_inputs if isinstance(new_inputs, list) else None)
+    assert current["image_mime_types"] == ([] if isinstance(new_inputs, list) else None)
+    fetched[:] = [model_provider_service._provider_model("other/text", None, "openrouter")]
+    removed = next(row for row in client.post(sync_url).json() if row["id"] == option["id"])
+    assert removed["enabled"] is False and removed["supports_decision"] is False
+    assert removed["input_modalities"] is None and removed["image_mime_types"] is None
+    assert removed["capability_source"] == "unknown"
+
+
 def _fake_provider_models(account):
     if account.provider_type == "google":
         return [
@@ -257,6 +365,215 @@ def test_provider_model_fetch_uses_each_registered_provider_catalog_endpoint(
     assert [call["url"] for call in calls] == [expected_url]
     assert calls[0]["timeout"] == 30.0
     assert calls[0]["headers"]["Authorization"] == "Bearer provider-test-key"
+    if provider_type == "openrouter":
+        assert calls[0]["params"] == {"output_modalities": "all"}
+
+
+def test_openrouter_decision_models_are_classified_from_output_modality():
+    decision_model = model_provider_service._provider_model(
+        "vendor/decision-model",
+        "Vendor Decision Model",
+        "openrouter",
+        {
+            "architecture": {
+                "modality": "text->decisions",
+                "input_modalities": ["text"],
+                "output_modalities": ["decisions"],
+            },
+            "endpoints": ["/api/alpha/decisions"],
+            "context_length": 32_000,
+        },
+    )
+
+    assert decision_model.supports_chat is False
+    assert decision_model.supports_compression is False
+    assert decision_model.supports_tts is False
+    assert decision_model.supports_decision is True
+    assert decision_model.context_window_tokens == 32_000
+
+
+@pytest.mark.parametrize("endpoints", [None, [], ["/api/alpha/extractions"]])
+def test_openrouter_extraction_modality_is_not_a_decision_endpoint(endpoints):
+    model = model_provider_service._provider_model(
+        "cloudflare/clairic", None, "openrouter",
+        {"architecture": {"output_modalities": ["decisions"]}, "endpoints": endpoints},
+    )
+    assert model.supports_decision is False
+    assert model.supports_chat is False
+
+
+@pytest.mark.parametrize("methods", [[], ["generateContent"], ["embedContent"]])
+def test_google_decision_inventory_is_not_a_chat_model(methods):
+    model = model_provider_service._provider_model(
+        "gemini-decision-1", "Gemini Decision 1", "google",
+        {"supportedGenerationMethods": methods},
+    )
+    assert model.supports_decision is True
+    assert model.supports_chat is False
+    assert model.supports_compression is False
+    assert model.supports_tts is False
+    assert not model_provider_service._provider_model("gpt-4.1", None, "openai").supports_decision
+    assert not model_provider_service._provider_model("gemini-decision-unknown", None, "google").supports_decision
+
+
+def test_google_decision_sync_selectors(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(provider_secret_service, "SECRET_ROOT", tmp_path)
+    monkeypatch.setattr(provider_secret_service, "SECRET_FILE", tmp_path / "secrets.json")
+    monkeypatch.setattr(model_provider_service.httpx, "get", lambda url, **kwargs: httpx.Response(
+        200, request=httpx.Request("GET", url), json={"models": [
+            {"name": "models/gemini-decision-1", "displayName": "Gemini Decision 1"},
+        ]},
+    ))
+    account = client.post("/model-provider-accounts", json={
+        "provider_type": "google", "alias": "Decision inventory", "api_key": "synthetic-key",
+    }).json()
+    synced = client.post(f"/model-provider-accounts/{account['id']}/sync-models")
+    assert synced.status_code == 200, synced.text
+    option = synced.json()[0]
+    assert option["enabled"] is False
+    assert option["supports_decision"] is True
+    _enable_option(client, option)
+    runtime = client.get("/runtime-settings/default").json()
+    assert [row["model"] for row in runtime["decision_options"]] == ["gemini-decision-1"]
+    assert runtime["options"] == runtime["compression_options"] == []
+    assert runtime["decision_enabled"] is False
+
+
+@pytest.mark.parametrize("provider_type,expected", [
+    ("google", True), ("openrouter", True), ("openai", True),
+    ("openai_compatible", True), ("anthropic", False), ("xai", False),
+])
+def test_decision_selector_requires_implemented_route(session, monkeypatch, provider_type, expected):
+    from app.db.models import ModelOption
+    account = ModelProviderAccount(id="decision-route-account", provider_type=provider_type, alias="Synthetic")
+    option = ModelOption(id="decision-route-option", key="decision-route", provider_account_id=account.id,
+                         provider_type=provider_type, model="synthetic", label="Synthetic", enabled=True,
+                         supports_chat=False, supports_compression=False, supports_decision=True)
+    session.add(account)
+    session.add(option)
+    session.commit()
+    monkeypatch.setattr(model_provider_service, "_configured", lambda *_args, **_kwargs: True)
+    assert model_provider_service.option_is_active_for_capability(session, option, "decision") is expected
+    assert bool(model_provider_service.active_options_for_runtime(session, "decision")) is expected
+
+
+def test_manual_decision_model_can_be_selected_and_toggled(client):
+    account = client.post(
+        "/model-provider-accounts",
+        json={
+            "provider_type": "openai_compatible",
+            "alias": "Decision Provider",
+            "base_url": "http://127.0.0.1:1234/v1",
+            "preset": "custom",
+        },
+    ).json()
+    decision = client.post(
+        "/model-options/manual",
+        json={
+            "provider_account_id": account["id"],
+            "model": "generic-decision-model",
+            "label": "Generic Decision Model",
+            "supports_chat": False,
+            "supports_compression": False,
+            "supports_tts": False,
+            "supports_decision": True,
+        },
+    )
+    assert decision.status_code == 200, decision.text
+    decision_option = decision.json()
+    assert decision_option["supports_decision"] is True
+
+    enabled = client.patch(
+        "/runtime-settings/default",
+        json={
+            "decision_model_option_key": decision_option["key"],
+            "decision_enabled": True,
+        },
+    )
+    assert enabled.status_code == 200, enabled.text
+    enabled_setting = enabled.json()
+    assert enabled_setting["decision_enabled"] is True
+    assert enabled_setting["decision_model_option_key"] == decision_option["key"]
+    assert [option["key"] for option in enabled_setting["decision_options"]] == [decision_option["key"]]
+
+    character = client.post("/characters", json={"name": "Decision Room", "persona": "설정 상속 테스트"}).json()
+    conversation = client.post(
+        "/conversations",
+        json={
+            "mode": "user_character",
+            "participants": [
+                {"type": "user", "id": "user_001"},
+                {"type": "character", "id": character["id"]},
+            ],
+        },
+    ).json()
+    inherited = client.get(f"/runtime-settings/conversations/{conversation['id']}")
+    assert inherited.status_code == 200, inherited.text
+    assert inherited.json()["decision_enabled"] is True
+    assert inherited.json()["decision_model_option_key"] == decision_option["key"]
+
+    room_disabled = client.patch(
+        f"/runtime-settings/conversations/{conversation['id']}",
+        json={"decision_enabled": False},
+    )
+    assert room_disabled.status_code == 200, room_disabled.text
+    assert room_disabled.json()["decision_enabled"] is False
+    assert room_disabled.json()["decision_model_option_key"] == decision_option["key"]
+    assert client.get("/runtime-settings/default").json()["decision_enabled"] is True
+
+    option_disabled = client.patch(f"/model-options/{decision_option['id']}", json={"enabled": False})
+    assert option_disabled.status_code == 200, option_disabled.text
+    unrelated_update = client.patch("/runtime-settings/default", json={"response_length_preset": "short"})
+    assert unrelated_update.status_code == 200, unrelated_update.text
+    assert unrelated_update.json()["decision_enabled"] is False
+    assert unrelated_update.json()["decision_model_option_key"] is None
+    rejected_reenable = client.patch("/runtime-settings/default", json={"decision_enabled": True})
+    assert rejected_reenable.status_code == 400
+    option_reenabled = client.patch(f"/model-options/{decision_option['id']}", json={"enabled": True})
+    assert option_reenabled.status_code == 200, option_reenabled.text
+    assert client.get("/runtime-settings/default").json()["decision_enabled"] is True
+
+    disabled = client.patch("/runtime-settings/default", json={"decision_enabled": False})
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["decision_enabled"] is False
+    assert disabled.json()["decision_model_option_key"] == decision_option["key"]
+
+    capability_removed = client.patch(f"/model-options/{decision_option['id']}", json={"supports_decision": False})
+    assert capability_removed.status_code == 200
+    assert capability_removed.json()["supports_decision"] is False
+    assert client.get("/runtime-settings/default").json()["decision_options"] == []
+    assert client.patch("/runtime-settings/default", json={"decision_enabled": True}).status_code == 400
+
+
+def test_runtime_setting_rejects_non_decision_model_for_decision_slot(client):
+    account = client.post(
+        "/model-provider-accounts",
+        json={
+            "provider_type": "openai_compatible",
+            "alias": "Mixed Provider",
+            "base_url": "http://127.0.0.1:1234/v1",
+            "preset": "custom",
+        },
+    ).json()
+    chat_option = client.post(
+        "/model-options/manual",
+        json={
+            "provider_account_id": account["id"],
+            "model": "chat-only-model",
+            "supports_chat": True,
+            "supports_compression": True,
+            "supports_decision": False,
+        },
+    ).json()
+
+    wrong_capability = client.patch(
+        "/runtime-settings/default",
+        json={"decision_model_option_key": chat_option["key"], "decision_enabled": True},
+    )
+    assert wrong_capability.status_code == 400
+
+    missing_model = client.patch("/runtime-settings/default", json={"decision_enabled": True})
+    assert missing_model.status_code == 400
 
 
 def test_runtime_setting_accepts_only_a_distinct_active_fallback_model(client, monkeypatch):

@@ -11,10 +11,10 @@ import { Switch } from '../atoms';
 import { cn } from '../../lib/utils';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { Translator } from '../../i18n/core';
-import type { CompressionStrategy, FallbackStatus } from '../../types/domain';
-import { normalizeCompressionStrategy } from '../../utils/runtimeSettings';
+import type { CompressionStrategy, FallbackStatus, RuntimeModelOption } from '../../types/domain';
+import { hasActiveDecisionModel, normalizeCompressionStrategy } from '../../utils/runtimeSettings';
 
-type RuntimeOption = { key?: string; label?: string; provider_account_id?: string | null; provider_account_alias?: string | null; provider?: string; model?: string };
+type RuntimeOption = RuntimeModelOption;
 export type RuntimeSettingValue = {
   model_key?: string | null;
   fallback_model_key?: string | null;
@@ -25,12 +25,15 @@ export type RuntimeSettingValue = {
   effective_compression_fallback_model_key?: string | null;
   compression_fallback_source?: string;
   default_tts_model_option_key?: string | null;
+  decision_enabled?: boolean;
+  decision_model_option_key?: string | null;
   safety_preset?: 'high' | 'medium' | 'low' | string;
   response_length_preset?: string;
   compression_strategy?: CompressionStrategy;
   options?: RuntimeOption[];
   compression_options?: RuntimeOption[];
   tts_options?: RuntimeOption[];
+  decision_options?: RuntimeOption[];
   response_length_presets?: RuntimeOption[];
   [key: string]: unknown;
 };
@@ -65,6 +68,7 @@ export type ChatSettingsBubbleProps = RuntimeSettingsPanelProps & {
 function runtimeModelOptions(setting?: RuntimeSettingValue): RuntimeOption[] { return setting?.options?.length ? setting.options : []; }
 function compressionModelOptions(setting?: RuntimeSettingValue): RuntimeOption[] { return setting?.compression_options?.length ? setting.compression_options : []; }
 function ttsModelOptions(setting?: RuntimeSettingValue): RuntimeOption[] { return setting?.tts_options?.length ? setting.tts_options : []; }
+function decisionModelOptions(setting?: RuntimeSettingValue): RuntimeOption[] { return setting?.decision_options?.length ? setting.decision_options : []; }
 function responseLengthPresets(setting?: RuntimeSettingValue): RuntimeOption[] { return setting?.response_length_presets?.length ? setting.response_length_presets : FALLBACK_RESPONSE_LENGTH_PRESETS; }
 function localizedResponseLengthLabel(option: RuntimeOption, t: Translator): string {
   if (option.key === 'short') return t('짧게');
@@ -72,23 +76,38 @@ function localizedResponseLengthLabel(option: RuntimeOption, t: Translator): str
   if (option.key === 'long') return t('긴대화');
   return option.label || option.key || '';
 }
+export function DecisionCapabilityHint({ option }: { option?: RuntimeOption }) {
+  const { t } = useI18n();
+  const source = option?.capability_source;
+  return <p className="context-muted" data-decision-capability>
+    {t(option?.input_modalities == null ? '이미지 지원 미확인' : option.input_modalities.includes('image') ? '이미지 입력 지원' : '텍스트 전용')}
+    {' · '}{t('허용 이미지 형식')}: {option?.image_mime_types == null ? t('미확인') : option.image_mime_types.length ? option.image_mime_types.join(', ') : t('없음')}
+    {' · '}{t(source === 'provider_metadata' ? '제공자 메타데이터 · 형식은 공식 레지스트리' : source === 'official_registry' ? '공식 레지스트리' : source === 'manual' ? '수동 지정' : '출처 미확인')}
+    {option?.input_modalities?.includes('image') && !option.image_mime_types?.length ? ` · ${t('허용 형식 확인 전에는 텍스트만 전송합니다.')}` : ''}
+  </p>;
+}
+
 function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compact = false }: RuntimeSettingFieldsProps) {
   const { t } = useI18n();
   const compressionStrategyGroupName = useId();
   const options = runtimeModelOptions(value);
   const fallbackOptions = options.filter((option) => option.key !== value.model_key);
   const compressionOptions = compressionModelOptions(value);
+  const decisionOptions = decisionModelOptions(value);
   const compressionFallbackOptions = compressionOptions.filter((option) => option.key !== value.compression_model_key);
   const inheritedCompressionFallback = compressionOptions.find((option) => option.key === value.fallback_model_key);
   const chatAccounts = Array.from(new Map(options.map((option) => [option.provider_account_id || '', option])).entries()).filter(([id]) => id);
   const fallbackAccounts = Array.from(new Map(fallbackOptions.map((option) => [option.provider_account_id || '', option])).entries()).filter(([id]) => id);
   const compressionAccounts = Array.from(new Map(compressionOptions.map((option) => [option.provider_account_id || '', option])).entries()).filter(([id]) => id);
+  const decisionAccounts = Array.from(new Map(decisionOptions.map((option) => [option.provider_account_id || '', option])).entries()).filter(([id]) => id);
   const selectedChatAccountId = options.find((option) => option.key === value.model_key)?.provider_account_id || '';
   const selectedFallbackAccountId = fallbackOptions.find((option) => option.key === value.fallback_model_key)?.provider_account_id || '';
   const selectedCompressionAccountId = compressionOptions.find((option) => option.key === value.compression_model_key)?.provider_account_id || '';
+  const selectedDecisionAccountId = decisionOptions.find((option) => option.key === value.decision_model_option_key)?.provider_account_id || '';
   const chatOptionsForAccount = selectedChatAccountId ? options.filter((option) => option.provider_account_id === selectedChatAccountId) : [];
   const fallbackOptionsForAccount = selectedFallbackAccountId ? fallbackOptions.filter((option) => option.provider_account_id === selectedFallbackAccountId) : [];
   const compressionOptionsForAccount = selectedCompressionAccountId ? compressionOptions.filter((option) => option.provider_account_id === selectedCompressionAccountId) : [];
+  const decisionOptionsForAccount = selectedDecisionAccountId ? decisionOptions.filter((option) => option.provider_account_id === selectedDecisionAccountId) : [];
   const normalizedCompressionStrategy = normalizeCompressionStrategy(value.compression_strategy);
   const update = (patch: Partial<RuntimeSettingValue>) => onChange?.({ ...DEFAULT_RUNTIME_SETTING, ...(value || {}), ...patch });
   return <div className={cn('grid grid-cols-1 gap-2.5 min-[720px]:grid-cols-[minmax(0,1.25fr)_minmax(160px,.75fr)]', compact && 'gap-2')}>
@@ -149,13 +168,28 @@ function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compa
       </div>
     </fieldset>
     <Field label={t('TTS 모델')}><Select value={String(value.default_tts_model_option_key || '')} onChange={(e) => update({ default_tts_model_option_key: e.target.value || null })}><option value="">{t('TTS 모델 미설정')}</option>{ttsModelOptions(value).map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
+    <div className="grid gap-1 min-[720px]:col-span-2">
+      <Switch
+        checked={!!value.decision_enabled}
+        disabled={!value.decision_enabled && !hasActiveDecisionModel(value)}
+        onChange={(event) => update({ decision_enabled: event.target.checked })}
+        label={t('의사결정 모델 사용')}
+      />
+      <p className="context-muted">{t('에셋 추천은 별도 모델 호출을 사용하는 선택 기능입니다. 끄면 기존 방식이 유지되며, 제공자 오류나 시간 초과 시에도 기존 방식으로 처리합니다.')}</p>
+    </div>
+    <Field label={t('의사결정 Provider')}><Select value={selectedDecisionAccountId} disabled={!decisionAccounts.length} onChange={(e) => {
+      const accountOptions = decisionOptions.filter((option) => option.provider_account_id === e.target.value);
+      update({ decision_model_option_key: accountOptions[0]?.key || null });
+    }}><option value="">{decisionAccounts.length ? t('Provider 계정 선택') : t('선택 가능한 모델 없음')}</option>{decisionAccounts.map(([id, option]) => <option key={id} value={id}>{option.provider_account_alias || option.provider || id}</option>)}</Select></Field>
+    <Field label={t('의사결정 모델')}><Select value={String(value.decision_model_option_key || '')} disabled={!decisionOptionsForAccount.length} onChange={(e) => update({ decision_model_option_key: e.target.value || null })}><option value="">{decisionOptionsForAccount.length ? t('의사결정 모델 선택') : t('선택 가능한 모델 없음')}</option>{decisionOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
+    <div className="min-[720px]:col-span-2"><DecisionCapabilityHint option={decisionOptions.find((option) => option.key === value.decision_model_option_key)} /></div>
     <Field label={t('대화 길이')}><Select value={String(value.response_length_preset || DEFAULT_RUNTIME_SETTING.response_length_preset)} onChange={(e) => update({ response_length_preset: e.target.value })}>{responseLengthPresets(value).map((preset) => <option key={preset.key} value={preset.key}>{localizedResponseLengthLabel(preset, t)}</option>)}</Select></Field>
     <Field label={t('민감 콘텐츠 필터')}><Select value={String(value.safety_preset || 'medium')} onChange={(e) => update({ safety_preset: e.target.value })}><option value="high">{t('높음 · 제한 강함')}</option><option value="medium">{t('보통 · 기본 RP')}</option><option value="low">{t('낮음 · provider 허용 범위')}</option></Select><p className="context-muted">{t('개인 로컬 채팅의 모델 응답 필터에만 적용됩니다. 마켓 검수 기준과는 별개입니다.')}</p></Field>
   </div>;
 }
 function RuntimeSettingsPanel({ setting, onChange, onSave, saving, title }: RuntimeSettingsPanelProps) {
   const { t } = useI18n();
-  const canSave = !!runtimeModelOptions(setting).length && !!compressionModelOptions(setting).length && !!setting?.model_key && !!setting?.compression_model_key;
+  const canSave = !!runtimeModelOptions(setting).length && !!compressionModelOptions(setting).length && !!setting?.model_key && !!setting?.compression_model_key && (!setting?.decision_enabled || hasActiveDecisionModel(setting));
   return <FormSection
     className="my-3"
     title={title || t('채팅 기본 설정')}
@@ -180,7 +214,7 @@ function ChatSettingsBubble({ open, setting, onChange, onSave, saving, onClose, 
       <RuntimeSettingFields value={setting} onChange={onChange} compact />
       <Switch checked={imagesEnabled} onChange={(e) => onRenderImagesChange?.(e.target.checked)} label={t('대화 이미지 표시')} />
       <Switch checked={!!ttsEnabled} onChange={(e) => onTtsEnabledChange?.(e.target.checked)} label={t('캐릭터 TTS 자동 생성')} />
-      <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(0,1fr))] gap-2.5 [&>button]:w-full [&>button]:min-w-0 [&>button]:justify-self-stretch"><Button type="button" disabled={saving} onClick={onSave}>{saving ? t('저장 중…') : t('이 방 설정 저장')}</Button><Button type="button" variant="ghost" disabled={saving} onClick={onCompressNow}>{t('지금 압축')}</Button></div>
+      <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(0,1fr))] gap-2.5 [&>button]:w-full [&>button]:min-w-0 [&>button]:justify-self-stretch"><Button type="button" disabled={saving || (!!setting?.decision_enabled && !hasActiveDecisionModel(setting))} onClick={onSave}>{saving ? t('저장 중…') : t('이 방 설정 저장')}</Button><Button type="button" variant="ghost" disabled={saving} onClick={onCompressNow}>{t('지금 압축')}</Button></div>
     </CardContent>
   </Card>;
 }

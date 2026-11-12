@@ -356,6 +356,9 @@ def test_failed_registration_keeps_existing_shared_references(client, session, m
     first = client.post('/characters/shared-character/assets/upload', files={'file': ('synthetic', data, 'image/png')})
     assert first.status_code == 200
     url = first.json()['image_url']
+    original_bytes = client.get(url).content
+    with Image.open(io.BytesIO(original_bytes)) as stored:
+        assert stored.format == 'WEBP' and stored.size == (12, 9)
     second = client.post('/characters/shared-character/assets', json={'label': 'shared', 'image_url': url})
     assert second.status_code == 200
     before = set(assets.UPLOAD_ROOT.rglob('*'))
@@ -366,7 +369,7 @@ def test_failed_registration_keeps_existing_shared_references(client, session, m
         client.post('/characters/shared-character/assets/upload', files={'file': ('synthetic', data, 'image/png')})
     assert set(assets.UPLOAD_ROOT.rglob('*')) == before
     assert len(session.exec(select(CharacterAsset)).all()) == 2
-    assert client.get(url).content == data
+    assert client.get(url).content == original_bytes
 
 
 def test_postcommit_registration_failure_does_not_delete_committed_bytes(client, session, monkeypatch):
@@ -375,8 +378,10 @@ def test_postcommit_registration_failure_does_not_delete_committed_bytes(client,
     from sqlmodel import select
     session.add(Character(id='committed-character', name='Synthetic', persona='Synthetic')); session.commit()
     original = assets.asset_service.create_asset
+    committed_bytes = []
     def commit_then_fail(*args, **kwargs):
-        original(*args, **kwargs)
+        row = original(*args, **kwargs)
+        committed_bytes.append((assets.UPLOAD_ROOT / row.image_url.removeprefix('/uploads/')).read_bytes())
         raise RuntimeError('synthetic postcommit failure')
     monkeypatch.setattr(assets.asset_service, 'create_asset', commit_then_fail)
     data = encoded('PNG')
@@ -384,4 +389,7 @@ def test_postcommit_registration_failure_does_not_delete_committed_bytes(client,
         client.post('/characters/committed-character/assets/upload', files={'file': ('synthetic', data, 'image/png')})
     rows = session.exec(select(CharacterAsset)).all()
     assert len(rows) == 1
-    assert client.get(rows[0].image_url).content == data
+    response = client.get(rows[0].image_url)
+    assert response.status_code == 200 and response.content == committed_bytes[0]
+    with Image.open(io.BytesIO(response.content)) as stored:
+        assert stored.format == 'WEBP' and stored.size == (12, 9)

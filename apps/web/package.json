@@ -7,8 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node tests/dev-server-config.test.mjs && node tests/chat-lifecycle-regression.test.mjs && node tests/chat-window-regression.test.mjs && node tests/frontend-contract.test.mjs && node tests/generation-job-events.test.mjs && node tests/i18n-contract.test.mjs && node tests/design-system-contract.test.mjs && node tests/freebody-regression.test.mjs && node tests/command-output-state.test.mjs && node tests/command-output.test.mjs && node tests/message-selection.test.mjs && node tests/ui-consistency.test.mjs && node tests/message-actions.test.mjs && node tests/conversation-presentation.test.mjs && node tests/hardening-client.test.mjs && node tests/hardening-browser.test.mjs",
+    "test": "node tests/dev-server-config.test.mjs && node tests/asset-decision-refresh.test.mjs && node tests/chat-lifecycle-regression.test.mjs && node tests/chat-window-regression.test.mjs && node tests/frontend-contract.test.mjs && node tests/generation-job-events.test.mjs && node tests/i18n-contract.test.mjs && node tests/design-system-contract.test.mjs && node tests/freebody-regression.test.mjs && node tests/command-output-state.test.mjs && node tests/command-output.test.mjs && node tests/message-selection.test.mjs && node tests/ui-consistency.test.mjs && node tests/message-actions.test.mjs && node tests/conversation-presentation.test.mjs && node tests/hardening-client.test.mjs && node tests/hardening-browser.test.mjs",
     "test:freebody": "node tests/freebody-regression.test.mjs",
+    "test:asset-decision-refresh": "node tests/asset-decision-refresh.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

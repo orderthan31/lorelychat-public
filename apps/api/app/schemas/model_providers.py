@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 
 from app.schemas.input_policy import RequestModel
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 ProviderType = Literal["openai", "google", "anthropic", "openrouter", "xai", "openai_compatible"]
 ApiKeyStatus = Literal["missing", "set"]
@@ -54,7 +54,34 @@ class ProviderAccountTestRead(BaseModel):
     tested_at: datetime
 
 
-class ModelOptionManualCreate(RequestModel):
+CapabilitySource = Literal["provider_metadata", "official_registry", "manual", "unknown"]
+
+
+class ModelInputCapabilities(BaseModel):
+    input_modalities: list[str] | None = Field(default=None, max_length=16)
+    image_mime_types: list[str] | None = Field(default=None, max_length=16)
+    capability_source: CapabilitySource = "unknown"
+
+    @field_validator("input_modalities", "image_mime_types", mode="before")
+    @classmethod
+    def normalize_capabilities(cls, value, info):
+        if value is None:
+            return None
+        allowed = ({"text", "image", "audio", "video", "file"} if info.field_name == "input_modalities"
+                   else {"image/png", "image/jpeg", "image/webp", "image/gif"})
+        if not isinstance(value, list) or len(value) > 16:
+            raise ValueError("Capabilities must be a bounded list")
+        result = []
+        for item in value:
+            if not isinstance(item, str) or len(item) > 32 or item.strip().lower() not in allowed:
+                raise ValueError("Unsupported capability value")
+            item = item.strip().lower()
+            if item not in result:
+                result.append(item)
+        return result
+
+
+class ModelOptionManualCreate(RequestModel, ModelInputCapabilities):
     provider_account_id: str
     model: str = Field(min_length=1)
     label: str | None = None
@@ -62,13 +89,14 @@ class ModelOptionManualCreate(RequestModel):
     supports_chat: bool = True
     supports_compression: bool = True
     supports_tts: bool = False
+    supports_decision: bool = False
     model_family: ModelFamily = "custom"
     supports_json: bool = True
     context_window_tokens: int | None = Field(default=None, ge=1)
     max_output_tokens: int | None = Field(default=None, ge=1)
 
 
-class ModelOptionUpdate(RequestModel):
+class ModelOptionUpdate(RequestModel, ModelInputCapabilities):
     nonnull_fields = frozenset(['label', 'enabled', 'supports_chat', 'supports_compression', 'supports_tts', 'model_family', 'supports_json'])
     nonblank_fields = frozenset(['label'])
     label: str | None = None
@@ -76,13 +104,14 @@ class ModelOptionUpdate(RequestModel):
     supports_chat: bool | None = None
     supports_compression: bool | None = None
     supports_tts: bool | None = None
+    supports_decision: bool | None = None
     model_family: ModelFamily | None = None
     supports_json: bool | None = None
     context_window_tokens: int | None = Field(default=None, ge=1)
     max_output_tokens: int | None = Field(default=None, ge=1)
 
 
-class ModelOptionRead(BaseModel):
+class ModelOptionRead(ModelInputCapabilities):
     id: str
     key: str
     provider_account_id: str
@@ -95,6 +124,7 @@ class ModelOptionRead(BaseModel):
     supports_chat: bool
     supports_compression: bool
     supports_tts: bool
+    supports_decision: bool
     model_family: ModelFamily
     supports_json: bool
     context_window_tokens: int | None = None

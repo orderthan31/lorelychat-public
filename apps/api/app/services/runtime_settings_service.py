@@ -135,6 +135,9 @@ def _runtime_read_from_model_option(option) -> RuntimeModelOptionRead:
         provider_account_id=option.provider_account_id,
         provider_account_alias=option.provider_account_alias,
         description=None,
+        input_modalities=option.input_modalities,
+        image_mime_types=option.image_mime_types,
+        capability_source=option.capability_source,
     )
 
 
@@ -212,6 +215,8 @@ def get_global_setting(session: Session) -> RuntimeSetting:
         min_output_tokens=DEFAULT_MIN_OUTPUT_TOKENS,
         compression_interval_turns=DEFAULT_COMPRESSION_INTERVAL_TURNS,
         safety_preset="medium",
+        decision_enabled=False,
+        decision_model_option_key=None,
     )
     session.add(setting)
     session.commit()
@@ -231,11 +236,14 @@ def serialize_setting(setting: RuntimeSetting, *, scope: str, options: bool = Tr
     chat_options = active_option_reads(session, "chat") if session else []
     compression_options = active_option_reads(session, "compression") if session else []
     tts_options = active_option_reads(session, "tts") if options and session else []
+    # Validate the selected model even when callers omit selector inventories.
+    decision_options = active_option_reads(session, "decision") if session else []
     returned_chat_options = chat_options
     returned_compression_options = compression_options
     valid_option = next((option for option in returned_chat_options if option.key == setting.model_key), None)
     fallback_option = next((option for option in returned_chat_options if option.key == getattr(setting, "fallback_model_key", None)), None)
     compression_option = next((option for option in returned_compression_options if option.key == getattr(setting, "compression_model_key", None)), None)
+    decision_option = next((option for option in decision_options if option.key == getattr(setting, "decision_model_option_key", None)), None)
     dedicated_compression_fallback_option = next((
         option for option in returned_compression_options
         if option.key == getattr(setting, "compression_fallback_model_key", None)
@@ -277,12 +285,15 @@ def serialize_setting(setting: RuntimeSetting, *, scope: str, options: bool = Tr
         ),
         response_length_preset=preset.key,
         default_tts_model_option_key=getattr(setting, "default_tts_model_option_key", None),
+        decision_enabled=bool(getattr(setting, "decision_enabled", False) and decision_option),
+        decision_model_option_key=decision_option.key if decision_option else None,
         safety_preset=getattr(setting, "safety_preset", "medium") or "medium",
         min_output_tokens=preset.target_output_tokens,
         compression_interval_turns=clamp_compression_interval_turns(getattr(setting, "compression_interval_turns", DEFAULT_COMPRESSION_INTERVAL_TURNS)),
         options=returned_chat_options if options else [],
         compression_options=returned_compression_options if options else [],
         tts_options=tts_options if options else [],
+        decision_options=decision_options if options else [],
         response_length_presets=response_length_preset_reads() if options else [],
         compression_interval_options=compression_interval_option_reads() if options else [],
     )
@@ -313,6 +324,8 @@ def update_conversation_setting(session: Session, conversation_id: str, payload:
             min_output_tokens=global_setting.min_output_tokens,
             compression_interval_turns=clamp_compression_interval_turns(getattr(global_setting, "compression_interval_turns", DEFAULT_COMPRESSION_INTERVAL_TURNS)),
             default_tts_model_option_key=getattr(global_setting, "default_tts_model_option_key", None),
+            decision_enabled=bool(getattr(global_setting, "decision_enabled", False)),
+            decision_model_option_key=getattr(global_setting, "decision_model_option_key", None),
             safety_preset=getattr(global_setting, "safety_preset", "medium") or "medium",
         )
     apply_update(setting, payload, session=session)
@@ -367,6 +380,25 @@ def apply_update(setting: RuntimeSetting, payload: RuntimeSettingUpdate, *, sess
         setting.compression_interval_turns = DEFAULT_COMPRESSION_INTERVAL_TURNS
     if _field_was_set(payload, "default_tts_model_option_key"):
         setting.default_tts_model_option_key = _validate_tts_model_key(session, payload.default_tts_model_option_key)
+    decision_model_was_set = _field_was_set(payload, "decision_model_option_key")
+    if decision_model_was_set:
+        setting.decision_model_option_key = (
+            _validate_runtime_model_key(session, payload.decision_model_option_key, "decision")
+            if payload.decision_model_option_key
+            else None
+        )
+    if payload.decision_enabled is not None:
+        setting.decision_enabled = payload.decision_enabled
+    should_validate_decision = decision_model_was_set or payload.decision_enabled is True
+    if getattr(setting, "decision_enabled", False) and should_validate_decision:
+        decision_key = getattr(setting, "decision_model_option_key", None)
+        if not decision_key:
+            raise ValueError("Decision model is required when decision mode is enabled")
+        setting.decision_model_option_key = _validate_runtime_model_key(
+            session,
+            decision_key,
+            "decision",
+        )
     if payload.safety_preset is not None:
         setting.safety_preset = payload.safety_preset
     setting.updated_at = datetime.now(timezone.utc)

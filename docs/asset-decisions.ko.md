@@ -1,0 +1,77 @@
+# 선택적 Decision 에셋 추천
+
+Decision은 대화 생성 모델과 별도로 **등록된 이미지 에셋을 가끔 추천하는 선택적 기능**입니다. 이미지를 새로 생성하지 않습니다. 모델·연결 경로에서 확인된 입력 능력에 따라 텍스트 설명만 보내거나 작은 후보 이미지를 함께 보냅니다.
+
+## 사용
+
+1. provider 계정을 연결하고 모델을 동기화합니다. Google의 알려진 모델 ID는 `gemini-decision-1`입니다. 카탈로그에 없으면 해당 계정에 수동 등록할 수 있습니다.
+2. 모델 설정에서 Decision capability를 활성화하고 입력 모달리티·허용 이미지 형식·정보 출처를 확인합니다. 이미지 지원과 MIME이 확인되지 않은 연결은 텍스트 전용으로 동작합니다.
+3. 전역 또는 방별 런타임 설정에서 **의사결정 모델**을 고르고 **의사결정 모델로 에셋 추천**을 명시적으로 켜고 저장합니다. 모델 선택만으로 켜지지 않으며 기본은 OFF입니다.
+4. OFF는 기존 태그·점수·최근 사용·사용량 균형 기반 선택을 그대로 사용합니다. 방별 설정이 없을 때만 전역 설정을 사용하며, 처음 방별 설정을 만들 때 현재 전역 값을 복사합니다.
+
+유효한 활성 모델 없이 ON을 저장할 수 없습니다. 계정/모델/키를 사용할 수 없게 되면 추가 호출 없이 기존 추천으로 돌아갑니다. OpenAI-compatible은 단순 `/chat/completions`가 아니라 **OpenAI Decisions `/decisions` 계약**을 구현한 서버여야 합니다.
+
+## 이미지가 매번 붙지 않는 정책
+
+- ON에서는 생성 턴의 마지막 캐릭터 버블을 대상으로 **최대 한 장**만 추천합니다. 모든 버블에 사진을 붙이지 않습니다.
+- 한 번 판단 작업을 예약하면 결과가 `none`이어도 **그다음 두 생성 턴은 새 판단을 예약하지 않습니다.** 최근 두 생성 턴에 붙은 수동/자동 이미지도 새 판단을 억제합니다. 이 빈도 정책은 OFF의 기존 동작에는 적용하지 않습니다.
+- 후보가 없으면 provider 요청도 없습니다. 정상 `none`, typed refusal, 선택 확률 0.5 미만은 이미지 없음으로 처리합니다. 설명이 맞더라도 일상적인 대화나 변하지 않은 장면에는 `none`을 선택할 수 있습니다.
+- HTTP 오류·시간 초과·불완전한 응답은 기존 선택기로 처리하지만, Decision 후처리의 한 턴 최대 한 장 제한은 유지합니다. 명시적인 `none`을 기존 이미지로 덮지 않습니다.
+- 공급자마다 의미가 다른 `confidence`는 공통 임계값으로 사용하지 않습니다. 선택된 후보의 확률을 기준으로 하는 0.5는 애플리케이션 정책이며 실제 품질 보장이나 교정된 임계값이 아닙니다.
+
+## 새 에셋 저장과 외부 URL
+
+- 새 파일 업로드, URL 등록, 이미지 URL 교체는 실제 이미지를 검증한 후 **자체 저장소의 WebP `quality=80`**으로 정규화합니다. 원본 URL을 활성 이미지 주소로 그대로 저장하지 않습니다.
+- 저장본의 긴 변은 최대 2048px, 별도의 정적 WebP 썸네일은 최대 512px입니다. 작은 이미지는 불필요하게 확대하지 않습니다. EXIF 방향을 픽셀에 적용하고 EXIF/ICC/XMP 등 메타데이터는 제거합니다. 안전한 범위의 애니메이션은 canonical WebP에서 보존하고 판단용 파생본은 명시적으로 정적 프레임을 사용합니다.
+- 입력은 최대 8MiB이며 디코딩된 픽셀·프레임·CPU·메모리·시간도 제한합니다. 코덱은 API 프로세스가 아니라 제한된 별도 프로세스에서 실행합니다. 이미 사용 중인 Pillow 의존성을 사용합니다.
+- 외부 URL은 전역 주소만 허용하는 DNS 검증과 실제 접속 IP 고정, 원래 Host/TLS SNI 유지, redirect 재검증, 스트리밍 크기 상한과 10초 전체 제한을 거칩니다. 인증정보가 포함된 URL·내부 주소·환경 프록시·자동 redirect는 허용하지 않습니다. 내려받기/변환 실패는 등록 실패이며 URL만 저장하는 성공으로 바꾸지 않습니다.
+- `/uploads/` 입력은 소유 저장소의 실제 파일을 읽어 정규화합니다. 디렉터리 FD와 `O_NOFOLLOW`로 경로 이탈·심볼릭 링크를 거절하며, 공유 root에는 쓰지 않습니다.
+- DB 반영이 실패한 경우 이 요청이 만든 파일만 정리합니다. commit 성공 여부가 불명확하면 파일을 보존하며 기존 원본은 삭제하지 않습니다. 이미지 처리 중 대상이 삭제되거나 변경되면 새 파일을 정리하고 오래된 저장을 거절합니다.
+- **기존 에셋의 일괄 변환은 하지 않습니다.** 기존 URL의 설명·태그만 수정하는 작업도 암묵적으로 다운로드하지 않습니다. avatar/world thumbnail 등 다른 업로드 표면도 이번 에셋 정규화와 별개입니다.
+
+`quality=80`은 코덱 설정이며 용량이나 이미지 토큰의 80%를 보장하지 않습니다. 이미지 토큰은 모델의 해상도·detail·resolution 처리에도 좌우됩니다. 저장 압축과 provider 입력 토큰 제한을 구분해야 합니다.
+
+## 비전/텍스트 capability와 전송
+
+- `input_modalities`, `image_mime_types`, `capability_source`를 모델 옵션과 런타임 선택 응답에 보존합니다. `null`은 미확인, 명시적인 빈 배열은 알려진 입력/형식 없음입니다. 수동 변경은 manual 출처로 구분합니다.
+- OpenRouter의 `architecture.input_modalities`에서 `image`를 확인할 수 있지만 MIME 지원은 별도 문서 정책입니다. 공급자 모두가 공통 비전/MIME 필드를 제공하지 않습니다. Google의 `generateContent`나 OpenAI `/models`의 기본 식별정보만으로 비전을 추측하지 않습니다.
+- Google `gemini-decision-1`은 공식 문서상 WebP 이미지 입력이 가능합니다. OpenRouter에서 확인된 이미지 모델은 해당 경로의 정책을 사용합니다. TypeSafe Jev는 PNG/JPEG만 허용하므로 canonical WebP는 유지하고 **전송 파생본만 baseline JPEG/PNG**로 변환합니다. Jev의 최소 변 길이는 padding으로 충족하며 자르지 않습니다.
+- 현재 공개 목록에서는 Jev 1.13과 1.14 모두 image 입력이 표시됩니다. 모든 구형 Jev를 텍스트 전용으로 묶지 않으며, 확인되지 않은 버전/연결은 텍스트로 처리합니다.
+- OpenAI의 일반 비전 문서는 WebP를 명시하지만 직결 Decisions 문서는 MIME 전체를 따로 열거하지 않습니다. 이 경우 이미지 능력과 포맷 증거를 구분하고, 허용 형식이 명확해지기 전에는 텍스트만 전송합니다. 수동 형식 지정은 운영자의 명시적 capability 선언이지 실호출 검증이 아닙니다.
+- 이미지 지원과 허용 형식, 어댑터 지원이 갖춰지면 **소유 저장소의 제한된 파생본**만 보냅니다. 최대 8개, 각 256KiB, 원시 합계 1MiB, 긴 변 512px이며 Google `resolution=low`/OpenAI·OpenRouter `detail=low`를 사용합니다. 전처리는 3초로 제한합니다.
+- 텍스트 후보는 최대 23개, 비전 후보는 최대 8개와 `none`입니다. 소유 이미지가 없거나 원격 URL뿐인 경우, 파생본 준비가 실패하거나 상한을 넘으면 같은 모델의 텍스트 선택으로 처리합니다. Decision 실행 중 외부 이미지 URL을 내려받거나 공급자에게 원본 URL을 넘기지 않습니다.
+- 대사·행동·감정·위치·분위기와 설명·태그만 한정합니다. 생성 프롬프트·전체 캐릭터 카드·전체 대화 이력은 보내지 않습니다. 설명은 생성 지시가 아니라 완성된 이미지에서 실제로 관찰되는 복장·장소·자세·구도·표정을 적는 것이 좋습니다.
+
+## 저장 안전성·지연 결과
+
+정상 대화 버블·job 완료·후처리 task를 먼저 한 트랜잭션으로 저장합니다. provider 요청은 별도 post-commit task에서 한 번만 실행하며 8초 전체 제한, 재시도 없음, 다른 모델/계정 자동 우회 없음, 환경 credential/redirect 사용 없음이 적용됩니다. 이미지 전처리와 provider 대기 동안 DB 쓰기 트랜잭션을 유지하지 않습니다.
+
+provider 결과가 돌아오면 task의 lease/attempt를 조건으로 하는 실제 SQLite 쓰기 경계를 먼저 얻고, 그 안에서 캐시를 버린 뒤 대상 버블·소비한 장면·설정·모델·계정·에셋·수동 첨부를 재검증합니다. 이 경계를 이미지 첨부와 task 완료 commit까지 유지합니다. 단순 SELECT 재조회나 프로세스 내부 lock만으로 저장 경쟁조건을 해결했다고 간주하지 않습니다. 단순 다음 메시지 추가나 Arc만 압축된 것은 기존 버블의 결과를 무효화하지 않습니다.
+
+잘못된 질문/후보, 중복 JSON 키, 유한하지 않은 확률, 불완전한 분포는 전체 결과를 거절합니다. 반올림된 합에는 1% 오차만 허용합니다. 원본 대사와 수동 이미지는 덮지 않습니다. 완료 task는 다시 호출하지 않지만, 외부 호출 후 DB 기록 전에 프로세스가 종료되면 재호출할 가능성이 있어 외부 API exactly-once는 보장하지 않습니다. Mock 모드/Mock으로 접수된 generation은 유료 Decision task를 만들지 않습니다.
+
+주 응답이 먼저 보일 수 있습니다. `asset_decision_pending`은 저장된 대사가 아닌 GET 시점의 보조 상태입니다. 웹은 현재 방 방문의 대상 ID만 최대 15초/30회 다시 읽어 이미지 필드만 갱신하며, 방 이동·수정·삭제·실패 행을 복원하지 않습니다. 기한 밖에 끝난 작업은 재입장/새로고침으로 DB 결과를 읽을 수 있습니다.
+
+## 프로토콜과 검증 한계
+
+2026-11-12 공식 문서·설치 소스 확인 기준입니다.
+
+- Google: `/v1beta/decisions`, Google 키 헤더, `input`/질문 map, 이미지 native base64 block.
+- OpenRouter: `/api/alpha/decisions`, Bearer 키, `state`/질문 map. 이미지는 최상위 state 배열의 image_url data URL이며 중첩 객체나 Google text block을 그대로 쓰지 않습니다. 카탈로그는 `output_modalities=all`과 실제 Decisions endpoint를 확인하여 extraction-only 모델을 제외합니다.
+- OpenAI/호환 서버: v1 `/decisions`, Bearer 키, `input`/질문 list, 이미지 input_image block. 원시 JSON이 Google/TypeSafe와 같다는 뜻은 아닙니다.
+- 고정 `litellm-core==1.106.6`은 OpenAI/OpenRouter Decision 경로가 있지만 Google 직결 adapter는 없습니다. 이 기능은 기존 SDK 버전이나 채팅/압축 경로를 바꾸지 않고 native HTTPX 단일-send adapter로 처리합니다.
+
+로컬 합성 DB·MockTransport·브라우저 검증은 실제 계정 접근 권한, 모델 품질·과금·지연을 증명하지 않습니다. 유료 provider POST와 운영 활성화는 별도 확인 대상입니다. **Decision 토큰/과금은 아직 기존 대화 사용량 통계에 합산하지 않습니다.**
+
+## 공식 근거
+
+- https://aistudio.google.com/docs/decisions-api
+- https://aistudio.google.com/api-reference/decisions/create-decision
+- https://developers.openai.com/api/docs/guides/decisions
+- https://developers.openai.com/api/docs/guides/images-vision
+- https://openrouter.ai/docs/guides/community/multimodal-decisions
+- https://openrouter.ai/docs/guides/overview/models
+- https://docs.typesafe.ai/images
+- https://docs.typesafe.ai/confidence
+- https://docs.litellm.ai/docs/decisions/
+- https://docs.litellm.ai/docs/decisions/providers

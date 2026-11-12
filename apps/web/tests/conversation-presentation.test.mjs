@@ -52,9 +52,11 @@ try {
   await expect(expanded).toHaveCount(0);
   await page.evaluate(() => window.presentation.setBusy(true));
   await expect(page.locator('.message-selection-toolbar button').last()).toBeDisabled();
+  await page.waitForFunction(() => window.presentationBusyEffectsCommitted === true);
   await page.keyboard.press('Escape'); await expect(page.locator('.message-selection-toolbar')).toBeVisible();
   await page.evaluate(() => window.presentation.setBusy(false));
   await expect(page.locator('.message-selection-toolbar button').last()).toBeEnabled();
+  await page.waitForFunction(() => window.presentationBusyEffectsCommitted === false);
   await page.keyboard.press('Escape'); await expect(expanded).toHaveValue('Expanded\nretained');
   await page.getByRole('button', { name: '접기', exact: true }).click();
   await input.fill('!lo'); await page.locator('.command-autocomplete-item').click(); await expect(input).toHaveValue('!look ');

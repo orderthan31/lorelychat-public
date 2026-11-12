@@ -5,6 +5,7 @@ import { modelProviderApi, type ModelOption, type ProviderAccount, type Provider
 import { Badge, Button, Input, Select, Switch, Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/atoms';
 import { Field } from '../../components/molecules';
 import { RuntimeSettingsPanel, type RuntimeSettingValue } from '../../components/organisms';
+import { DecisionCapabilityHint } from '../../components/organisms/RuntimeSettings';
 import { useI18n } from '../../i18n/I18nProvider';
 import { formatUiCount } from '../../i18n/core';
 import type { Translator, UiMessageKey } from '../../i18n/core';
@@ -80,6 +81,37 @@ function statusBadge(t: Translator, account?: ProviderAccount) {
   return <Badge variant="outline">{t('연결 정보 필요')}</Badge>;
 }
 
+function CapabilityEditor({ modalities, mimes, onChange, disabled = false }: {
+  modalities: string[] | null; mimes: string[] | null; disabled?: boolean;
+  onChange: (modalities: string[] | null, mimes: string[] | null) => void;
+}) {
+  const { t } = useI18n();
+  return <div className="grid gap-2">
+    <Field label={t('이미지 입력 지원')}><Select disabled={disabled} value={modalities == null ? 'unknown' : modalities.includes('image') ? 'image' : 'text'} onChange={(event) => {
+      const mode = event.target.value;
+      onChange(mode === 'unknown' ? null : mode === 'image' ? ['text', 'image'] : ['text'], mode === 'image' ? mimes : mode === 'text' ? [] : null);
+    }}><option value="unknown">{t('이미지 지원 미확인')}</option><option value="text">{t('텍스트 전용')}</option><option value="image">{t('이미지 입력 지원')}</option></Select></Field>
+    {modalities?.includes('image') && <Field label={t('허용 이미지 형식')}><Select disabled={disabled} value={mimes == null ? 'unknown' : mimes.join(',')} onChange={(event) => onChange(modalities, event.target.value === 'unknown' ? null : event.target.value.split(','))}>
+      <option value="unknown">{t('미확인')}</option>
+      <option value="image/png,image/jpeg">PNG / JPEG</option>
+      <option value="image/png,image/jpeg,image/webp">PNG / JPEG / WebP</option>
+      {mimes && !['image/png,image/jpeg', 'image/png,image/jpeg,image/webp'].includes(mimes.join(',')) && <option value={mimes.join(',')}>{mimes.join(', ') || t('없음')}</option>}
+    </Select></Field>}
+    <p className="context-muted">{t('수동 지정은 공식 문서로 확인하세요. 네이티브 이미지 입력에는 허용 형식이 필요합니다.')}</p>
+  </div>;
+}
+
+function ManualCapabilityEditor({ option, disabled, save }: { option: ModelOption; disabled: boolean; save: (modalities: string[] | null, mimes: string[] | null) => Promise<void> }) {
+  const { t } = useI18n();
+  const [modalities, setModalities] = useState(option.input_modalities);
+  const [mimes, setMimes] = useState(option.image_mime_types);
+  useEffect(() => { setModalities(option.input_modalities); setMimes(option.image_mime_types); }, [option]);
+  return <details><summary className="min-h-11 cursor-pointer">{t('이미지 기능 수동 편집')}</summary>
+    <CapabilityEditor modalities={modalities} mimes={mimes} disabled={disabled} onChange={(m, f) => { setModalities(m); setMimes(f); }} />
+    <Button type="button" disabled={disabled || (option.provider_type !== 'openrouter' && !!modalities?.includes('image') && !mimes?.length)} onClick={() => save(modalities, mimes)}>{t('저장')}</Button>
+  </details>;
+}
+
 export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSetting, saveRuntimeDefaultSetting, refetchRuntimeDefaultSetting, busy = false }: ModelSettingsViewProps) {
   const { locale, t } = useI18n();
   const [accounts, setAccounts] = useState<ProviderAccount[]>([]);
@@ -88,10 +120,14 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [manualModel, setManualModel] = useState('');
   const [manualLabel, setManualLabel] = useState('');
+  const [manualInputs, setManualInputs] = useState<string[] | null>(null);
+  const [manualMimes, setManualMimes] = useState<string[] | null>(null);
+  const [manualInputsEdited, setManualInputsEdited] = useState(false);
+  const [manualCapability, setManualCapability] = useState<'chat' | 'decision'>('chat');
   const [accountApiKeys, setAccountApiKeys] = useState<Record<string, string>>({});
   const [modelQuery, setModelQuery] = useState('');
   const [modelProviderFilter, setModelProviderFilter] = useState('');
-  const [modelCapabilityFilter, setModelCapabilityFilter] = useState<'runtime' | 'chat' | 'compression' | 'tts' | 'none' | 'all'>('runtime');
+  const [modelCapabilityFilter, setModelCapabilityFilter] = useState<'runtime' | 'chat' | 'compression' | 'tts' | 'decision' | 'none' | 'all'>('runtime');
   const [modelStatusFilter, setModelStatusFilter] = useState<'all' | 'enabled' | 'disabled'>('all');
   const [modelPage, setModelPage] = useState(1);
   const [modelPageSize, setModelPageSize] = useState(10);
@@ -117,7 +153,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
   const filteredModelOptions = useMemo(() => {
     const query = modelQuery.trim().toLowerCase();
     return modelOptions.filter((option) => {
-      const runtimeCapable = option.supports_chat || option.supports_compression || option.supports_tts;
+      const runtimeCapable = option.supports_chat || option.supports_compression || option.supports_tts || option.supports_decision;
       if (modelProviderFilter && option.provider_account_id !== modelProviderFilter) return false;
       if (modelStatusFilter === 'enabled' && !option.enabled) return false;
       if (modelStatusFilter === 'disabled' && option.enabled) return false;
@@ -125,6 +161,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
       if (modelCapabilityFilter === 'chat' && !option.supports_chat) return false;
       if (modelCapabilityFilter === 'compression' && !option.supports_compression) return false;
       if (modelCapabilityFilter === 'tts' && !option.supports_tts) return false;
+      if (modelCapabilityFilter === 'decision' && !option.supports_decision) return false;
       if (modelCapabilityFilter === 'none' && runtimeCapable) return false;
       if (!query) return true;
       const haystack = [
@@ -309,16 +346,27 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
     }
   }
 
-  async function toggleModelOption(option: ModelOption) {
+  async function toggleModelOption(option: ModelOption, decisionCapability = false) {
     setLoading(true);
     try {
-      await modelProviderApi.updateOption(option.id, { enabled: !option.enabled });
+      await modelProviderApi.updateOption(option.id, decisionCapability
+        ? { supports_decision: !option.supports_decision }
+        : { enabled: !option.enabled });
       await refreshModelProviderAndRuntimeState();
     } catch (error: any) {
       setMessage(`${t('모델 활성화 변경 실패 ·')} ${error.message}`);
     } finally {
       setLoading(false);
     }
+  }
+
+  async function saveCapabilities(option: ModelOption, modalities: string[] | null, mimes: string[] | null) {
+    setLoading(true);
+    try {
+      await modelProviderApi.updateOption(option.id, { input_modalities: modalities, image_mime_types: mimes, capability_source: 'manual' });
+      await refreshModelProviderAndRuntimeState();
+    } catch (error: any) { setMessage(error.message); }
+    finally { setLoading(false); }
   }
 
   async function createManualModel() {
@@ -334,9 +382,15 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
         model: manualModel.trim(),
         label: manualLabel.trim() || manualModel.trim(),
         model_family: providerType === 'openai_compatible' ? 'local' : providerType === 'xai' ? 'grok' : 'custom',
+        supports_chat: manualCapability === 'chat',
+        supports_compression: manualCapability === 'chat',
+        supports_tts: false,
+        supports_decision: manualCapability === 'decision',
+        ...(manualCapability === 'decision' && manualInputsEdited ? { input_modalities: manualInputs, image_mime_types: manualMimes, capability_source: 'manual' } : {}),
       });
       setManualModel('');
       setManualLabel('');
+      setManualInputs(null); setManualMimes(null); setManualInputsEdited(false);
       setMessage(t('수동 모델이 추가되었습니다.'));
       await refreshModelProviderAndRuntimeState();
     } catch (error: any) {
@@ -456,7 +510,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
         <div className="grid gap-2 border-b border-border pb-3 min-[520px]:grid-cols-2 min-[920px]:grid-cols-[minmax(220px,1fr)_minmax(160px,.7fr)_minmax(150px,.6fr)_minmax(150px,.6fr)_100px]">
           <Field className="min-[520px]:col-span-2 min-[920px]:col-span-1" label={t('검색')}><Input value={modelQuery} placeholder={t('모델명, provider, 계정')} onChange={(e) => setModelQuery(e.target.value)} /></Field>
           <Field label={t('Provider 계정')}><Select value={modelProviderFilter} onChange={(e) => setModelProviderFilter(e.target.value)}><option value="">{t('전체 계정')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.alias}</option>)}</Select></Field>
-          <Field label={t('용도')}><Select value={modelCapabilityFilter} onChange={(e) => setModelCapabilityFilter(e.target.value as typeof modelCapabilityFilter)}><option value="runtime">{t('런타임 가능')}</option><option value="chat">{t('채팅')}</option><option value="compression">{t('압축')}</option><option value="tts">{t('TTS')}</option><option value="none">{t('런타임 제외')}</option><option value="all">{t('전체')}</option></Select></Field>
+          <Field label={t('용도')}><Select value={modelCapabilityFilter} onChange={(e) => setModelCapabilityFilter(e.target.value as typeof modelCapabilityFilter)}><option value="runtime">{t('런타임 가능')}</option><option value="chat">{t('채팅')}</option><option value="compression">{t('압축')}</option><option value="tts">{t('TTS')}</option><option value="decision">{t('의사결정')}</option><option value="none">{t('런타임 제외')}</option><option value="all">{t('전체')}</option></Select></Field>
           <Field label={t('상태')}><Select value={modelStatusFilter} onChange={(e) => setModelStatusFilter(e.target.value as typeof modelStatusFilter)}><option value="all">{t('전체')}</option><option value="enabled">{t('활성')}</option><option value="disabled">{t('비활성')}</option></Select></Field>
           <Field label={t('페이지')}><Select value={String(modelPageSize)} onChange={(e) => setModelPageSize(Number(e.target.value))}>{MODEL_PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{formatUiCount(size, 'items', locale)}</option>)}</Select></Field>
         </div>
@@ -466,9 +520,12 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
               <div className="grid min-w-0 gap-0.5">
                 <h3 className="m-0 min-w-0 truncate text-sm font-bold leading-5 text-foreground" title={option.display_label}>{option.display_label}</h3>
                 <p className="m-0 truncate font-mono text-[11px] leading-4 text-muted-foreground" title={option.model}>{option.model}</p>
-                <p className="m-0 truncate text-[11px] leading-4 text-muted-foreground">{[option.supports_chat ? t('채팅') : '', option.supports_compression ? t('압축') : '', option.supports_tts ? t('TTS') : '', !option.supports_chat && !option.supports_compression && !option.supports_tts ? t('런타임 제외') : '', option.model_family, option.source].filter(Boolean).join(' · ')}</p>
+                <p className="m-0 truncate text-[11px] leading-4 text-muted-foreground">{[option.supports_chat ? t('채팅') : '', option.supports_compression ? t('압축') : '', option.supports_tts ? t('TTS') : '', option.supports_decision ? t('의사결정') : '', !option.supports_chat && !option.supports_compression && !option.supports_tts && !option.supports_decision ? t('런타임 제외') : '', option.model_family, option.source].filter(Boolean).join(' · ')}</p>
+                {option.supports_decision && <DecisionCapabilityHint option={option} />}
+                {option.supports_decision && <ManualCapabilityEditor option={option} disabled={loading} save={(m, f) => saveCapabilities(option, m, f)} />}
               </div>
             </div>
+            {option.source === 'manual' && ['google', 'openrouter', 'openai', 'openai_compatible'].includes(option.provider_type) ? <Switch compact checked={!!option.supports_decision} disabled={loading} label={t('의사결정')} onChange={() => toggleModelOption(option, true)} /> : null}
             <Switch compact checked={!!option.enabled} disabled={loading} aria-label={`${option.display_label} ${t(option.enabled ? '비활성화' : '활성화')}`} title={t(option.enabled ? '비활성화' : '활성화')} onChange={() => toggleModelOption(option)} />
           </div>) : <div className="py-8 text-center text-sm text-muted-foreground">{t(modelOptions.length ? '조건에 맞는 모델이 없습니다.' : 'Provider 계정을 저장한 뒤 모델 목록을 불러오면 여기에 표시됩니다.')}</div>}
         </div>
@@ -483,11 +540,13 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
 
         <details className="group mt-1 border-t border-border pt-2">
           <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('수동 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
-          <div className="mt-2 grid gap-2.5 min-[760px]:grid-cols-[minmax(180px,.8fr)_minmax(0,1fr)_minmax(0,1fr)_auto] min-[760px]:items-end">
+          <div className="mt-2 grid gap-2.5 min-[760px]:grid-cols-[minmax(160px,.7fr)_minmax(130px,.55fr)_minmax(0,1fr)_minmax(0,1fr)_auto] min-[760px]:items-end">
             <Field label={t('Provider 계정')}><Select value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)}><option value="">{t('계정 선택')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.alias}</option>)}</Select></Field>
+            <Field label={t('용도')}><Select value={manualCapability} onChange={(e) => setManualCapability(e.target.value as typeof manualCapability)}><option value="chat">{t('채팅')} · {t('압축')}</option><option value="decision">{t('의사결정')}</option></Select></Field>
+            {manualCapability === 'decision' && <CapabilityEditor modalities={manualInputs} mimes={manualMimes} disabled={loading} onChange={(m, f) => { setManualInputs(m); setManualMimes(f); setManualInputsEdited(true); }} />}
             <Field label={t('모델 ID')}><Input value={manualModel} placeholder="gemma-local" onChange={(e) => setManualModel(e.target.value)} /></Field>
             <Field label={t('표시명')}><Input value={manualLabel} placeholder="Local Gemma" onChange={(e) => setManualLabel(e.target.value)} /></Field>
-            <Button type="button" variant="secondary" disabled={loading} onClick={createManualModel}><Plus className="size-4" aria-hidden="true" />{t('수동 추가')}</Button>
+            <Button type="button" variant="secondary" disabled={loading || (manualCapability === 'decision' && manualInputsEdited && accounts.find((account) => account.id === selectedAccountId)?.provider_type !== 'openrouter' && !!manualInputs?.includes('image') && !manualMimes?.length)} onClick={createManualModel}><Plus className="size-4" aria-hidden="true" />{t('수동 추가')}</Button>
           </div>
         </details>
     </section>

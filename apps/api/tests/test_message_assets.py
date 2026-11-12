@@ -4,14 +4,20 @@ from app.db.models import CharacterAsset, MessageAsset
 from app.schemas.dialogue import CharacterReply
 
 
-def test_character_reply_auto_attaches_matching_asset(client, monkeypatch):
+def test_character_reply_auto_attaches_matching_asset(client, monkeypatch, tmp_path):
+    from PIL import Image
+    from app.api import assets as assets_api
+    monkeypatch.setattr(assets_api, "UPLOAD_ROOT", tmp_path)
+    directory = tmp_path / "character-assets"
+    directory.mkdir()
+    Image.new("RGB", (320, 320), "skyblue").save(directory / "smile.png")
     character = client.post("/characters", json={"name": "미소", "persona": "밝은 캐릭터"}).json()
     conversation = client.post("/conversations", json={
         "mode": "user_character",
         "participants": [{"type": "user", "id": "user_001", "order_index": 0}, {"type": "character", "id": character["id"], "order_index": 1}],
         "scene": {"location": "카페", "mood": "일상"},
     }).json()
-    asset = client.post(f"/characters/{character['id']}/assets", json={
+    asset_response = client.post(f"/characters/{character['id']}/assets", json={
         "label": "웃는 얼굴",
         "image_url": "/uploads/character-assets/smile.png",
         "mood_tags": ["happy"],
@@ -21,7 +27,9 @@ def test_character_reply_auto_attaches_matching_asset(client, monkeypatch):
         "pose_tags": ["upper_body"],
         "priority": 90,
         "enabled": True,
-    }).json()
+    })
+    assert asset_response.status_code == 200, asset_response.text
+    asset = asset_response.json()
 
     async def fake_generate_replies(self, **kwargs):
         return [
@@ -35,7 +43,8 @@ def test_character_reply_auto_attaches_matching_asset(client, monkeypatch):
     messages = response.json()
     generated = messages[1]
     assert generated["assets"][0]["id"] == asset["id"]
-    assert generated["assets"][0]["image_url"] == "/uploads/character-assets/smile.png"
+    assert generated["assets"][0]["image_url"] == asset["image_url"]
+    assert asset["image_url"].endswith(".webp")
     assert generated["assets"][0]["outfit_tags"] == ["casual"]
     assert generated["assets"][0]["pose_tags"] == ["upper_body"]
 

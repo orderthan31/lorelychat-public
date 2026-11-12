@@ -155,8 +155,10 @@ def test_runtime_setting_compression_strategy_migration_defaults_to_quality_and_
 
     columns = {column["name"] for column in inspect(test_engine).get_columns("runtime_settings")}
     assert "compression_strategy" in columns
+    assert {"decision_enabled", "decision_model_option_key"}.issubset(columns)
     with test_engine.connect() as connection:
         row = connection.execute(text(
-            "SELECT model_key, compression_strategy FROM runtime_settings WHERE id = 'global'"
+            "SELECT model_key, compression_strategy, decision_enabled, decision_model_option_key "
+            "FROM runtime_settings WHERE id = 'global'"
         )).one()
-    assert tuple(row) == ("keep-model", "quality")
+    assert tuple(row) == ("keep-model", "quality", 0, None)

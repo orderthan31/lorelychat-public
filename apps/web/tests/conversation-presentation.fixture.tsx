@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ConversationDetailView } from '../src/views/ConversationDetail';
 import { useConversationComposer } from '../src/views/ConversationDetail/hooks/useConversationComposer';
@@ -43,6 +43,9 @@ function Fixture() {
     deleteMessage: async () => {}, bulkDeleteMessages: async () => {},
   });
   Object.assign(window, { presentation: { ...actions, events, setBusy, compose, composeExpanded, battleControlDraft, conversation, setMessages } });
+  // Parent passive effects run after the child's Escape-listener replacement.
+  // A disabled DOM control alone does not prove that listener has committed.
+  useEffect(() => { Object.assign(window, { presentationBusyEffectsCommitted: busy }); }, [busy]);
   return <ConversationDetailView
     {...actions} {...composer}
     conversation={conversation} setConversation={setConversation} selectedConversationId="fixture" status={status}

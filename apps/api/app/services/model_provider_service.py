@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 
 from app.db.models import ModelOption, ModelProviderAccount, utc_now
 from app.schemas.model_providers import (
+    ModelInputCapabilities,
     ModelOptionManualCreate,
     ModelOptionRead,
     ModelOptionTestRead,
@@ -103,7 +104,11 @@ class ProviderModel:
     supports_chat: bool = True
     supports_compression: bool = True
     supports_tts: bool = False
+    supports_decision: bool = False
     supports_json: bool = True
+    input_modalities: list[str] | None = None
+    image_mime_types: list[str] | None = None
+    capability_source: str = "unknown"
     context_window_tokens: int | None = None
     max_output_tokens: int | None = None
 
@@ -215,51 +220,107 @@ def _family_for_provider(provider_type: str, model: str) -> str:
     return "custom"
 
 
-def _capabilities_for_model(provider_type: str, model: str, metadata: dict | None = None) -> tuple[bool, bool, bool, bool]:
+def _capabilities_for_model(
+    provider_type: str,
+    model: str,
+    metadata: dict | None = None,
+) -> tuple[bool, bool, bool, bool, bool]:
     metadata = metadata or {}
     lowered = model.lower()
     if provider_type == "google":
+        # Decisions uses /decisions, not generateContent. Until the catalog
+        # documents a decision capability field, recognize only the known ID.
+        if model == "gemini-decision-1":
+            return False, False, False, True, True
         methods = set(metadata.get("supportedGenerationMethods") or metadata.get("supported_generation_methods") or [])
         text = _metadata_text(model, metadata)
         is_tts = "tts" in text or "text-to-speech" in text
         if is_tts:
-            return False, False, True, True
+            return False, False, True, False, True
         excluded = _contains_any(text, GOOGLE_EXCLUDED_MODEL_PATTERNS)
         supports_chat = "generateContent" in methods and not excluded
-        return supports_chat, supports_chat, is_tts, True
+        return supports_chat, supports_chat, is_tts, False, True
     if provider_type == "openai":
+        if model == "gpt-6-luna-decisions":
+            return False, False, False, True, True
         is_tts = lowered.startswith("tts-") or "tts" in lowered or lowered.startswith(("gpt-4o-mini-tts", "audio"))
         if is_tts:
-            return False, False, True, True
+            return False, False, True, False, True
         excluded = _contains_any(lowered, OPENAI_EXCLUDED_MODEL_PATTERNS)
         supports_chat = lowered.startswith(("gpt-", "o", "chatgpt-")) and not excluded
-        return supports_chat, supports_chat, is_tts, True
+        return supports_chat, supports_chat, is_tts, False, True
     if provider_type == "anthropic":
         supports_chat = lowered.startswith("claude-")
-        return supports_chat, supports_chat, False, True
+        return supports_chat, supports_chat, False, False, True
     if provider_type == "xai":
         supports_chat = lowered.startswith("grok-") and not _contains_any(lowered, XAI_EXCLUDED_MODEL_PATTERNS)
-        return supports_chat, supports_chat, False, supports_chat
+        return supports_chat, supports_chat, False, False, supports_chat
     if provider_type == "openrouter":
         architecture = metadata.get("architecture") or {}
         output_modalities = architecture.get("output_modalities")
         if isinstance(output_modalities, list):
-            supports_chat = "text" in {str(item).lower() for item in output_modalities}
+            normalized_output_modalities = {str(item).lower() for item in output_modalities}
+            supports_chat = "text" in normalized_output_modalities
+            supports_decision = "decisions" in normalized_output_modalities
         else:
             modality = str(architecture.get("modality") or "").lower()
             supports_chat = modality.endswith("->text") or "->text" in modality or not modality
+            supports_decision = "->decisions" in modality
+        # An extraction-only model can also advertise the decisions modality.
+        # Admit synchronized entries only with the actual Decisions endpoint.
+        endpoints = metadata.get("endpoints")
+        supports_decision = supports_decision and isinstance(endpoints, list) and "/api/alpha/decisions" in endpoints
         supports_chat = supports_chat and not _contains_any(lowered, OPENROUTER_EXCLUDED_MODEL_PATTERNS)
-        return supports_chat, supports_chat, False, True
+        return supports_chat, supports_chat, False, supports_decision, True
     if provider_type == "openai_compatible":
         excluded = _contains_any(lowered, OPENAI_COMPATIBLE_EXCLUDED_MODEL_PATTERNS)
         allowed = _contains_any(lowered, OPENAI_COMPATIBLE_ALLOWED_LLM_PATTERNS)
         supports_chat = allowed and not excluded
-        return supports_chat, supports_chat, False, True
-    return False, False, False, True
+        return supports_chat, supports_chat, False, False, True
+    return False, False, False, False, True
+
+
+def _decision_input_capabilities(provider_type: str, model: str, metadata: dict | None,
+                                 supports_decision: bool) -> ModelInputCapabilities:
+    if not supports_decision:
+        return ModelInputCapabilities()
+    # Exact reviewed native registry. OpenAI general vision supports WebP, but
+    # its Decisions guide does not enumerate MIME types: leave native MIME unknown.
+    if (provider_type, model) == ("google", "gemini-decision-1"):
+        return ModelInputCapabilities(input_modalities=["text", "image"],
+            image_mime_types=["image/png", "image/jpeg", "image/webp"], capability_source="official_registry")
+    if (provider_type, model) == ("openai", "gpt-6-luna-decisions"):
+        return ModelInputCapabilities(input_modalities=["text", "image"], capability_source="official_registry")
+    if provider_type != "openrouter":
+        return ModelInputCapabilities()
+    architecture = (metadata or {}).get("architecture")
+    if not isinstance(architecture, dict) or "input_modalities" not in architecture:
+        return ModelInputCapabilities()
+    try:
+        capabilities = ModelInputCapabilities(input_modalities=architecture["input_modalities"])
+    except ValueError:
+        return ModelInputCapabilities()
+    if capabilities.input_modalities is None:
+        return capabilities
+    capabilities.capability_source = "provider_metadata"
+    # MIME policy is NOT catalog metadata: reviewed OpenRouter multimodal
+    # Decisions registry permits PNG/JPEG/WebP, with Jev's PNG/JPEG restriction.
+    # https://openrouter.ai/docs/guides/community/multimodal-decisions
+    capabilities.image_mime_types = []
+    if "image" in capabilities.input_modalities:
+        capabilities.image_mime_types = ["image/png", "image/jpeg"]
+        if not model.startswith("typesafe/jev-"):
+            capabilities.image_mime_types.append("image/webp")
+    return capabilities
+
+
+def _validate_manual_image_capabilities(provider_type: str, modalities, mimes):
+    if provider_type != "openrouter" and "image" in (modalities or []) and not mimes:
+        raise ValueError("Manual native image capability requires accepted image MIME types")
 
 
 def _provider_model(model: str, label: str | None, provider_type: str, metadata: dict | None = None) -> ProviderModel:
-    supports_chat, supports_compression, supports_tts, supports_json = _capabilities_for_model(provider_type, model, metadata)
+    supports_chat, supports_compression, supports_tts, supports_decision, supports_json = _capabilities_for_model(provider_type, model, metadata)
     context_window_tokens, max_output_tokens = _context_metadata(metadata)
     return ProviderModel(
         model=model,
@@ -268,9 +329,11 @@ def _provider_model(model: str, label: str | None, provider_type: str, metadata:
         supports_chat=supports_chat,
         supports_compression=supports_compression,
         supports_tts=supports_tts,
+        supports_decision=supports_decision,
         supports_json=supports_json,
         context_window_tokens=context_window_tokens,
         max_output_tokens=max_output_tokens,
+        **_decision_input_capabilities(provider_type, model, metadata, supports_decision).model_dump(),
     )
 
 
@@ -350,6 +413,7 @@ def fetch_provider_models(account: ModelProviderAccount) -> list[ProviderModel]:
             response = httpx.get(
                 "https://openrouter.ai/api/v1/models",
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
+                params={"output_modalities": "all"},
                 timeout=timeout,
             )
             response.raise_for_status()
@@ -564,13 +628,17 @@ def sync_models(session: Session, account_id: str) -> list[ModelOptionRead]:
         option.supports_chat = fetched.supports_chat
         option.supports_compression = fetched.supports_compression
         option.supports_tts = fetched.supports_tts
+        option.supports_decision = fetched.supports_decision
+        option.input_modalities = fetched.input_modalities
+        option.image_mime_types = fetched.image_mime_types
+        option.capability_source = fetched.capability_source
         option.supports_json = fetched.supports_json
         option.model_family = fetched.family
         if fetched.context_window_tokens is not None:
             option.context_window_tokens = fetched.context_window_tokens
         if fetched.max_output_tokens is not None:
             option.max_output_tokens = fetched.max_output_tokens
-        if not (option.supports_chat or option.supports_compression or option.supports_tts):
+        if not (option.supports_chat or option.supports_compression or option.supports_tts or option.supports_decision):
             option.enabled = False
         option.updated_at = refreshed_at
         session.add(option)
@@ -581,6 +649,10 @@ def sync_models(session: Session, account_id: str) -> list[ModelOptionRead]:
         option.supports_chat = False
         option.supports_compression = False
         option.supports_tts = False
+        option.supports_decision = False
+        option.input_modalities = None
+        option.image_mime_types = None
+        option.capability_source = "unknown"
         option.updated_at = refreshed_at
         session.add(option)
     account.configured = _configured(account)
@@ -601,6 +673,12 @@ def list_options(session: Session, *, provider_account_id: str | None = None) ->
 
 def create_manual_option(session: Session, payload: ModelOptionManualCreate) -> ModelOption:
     account = _account_by_id(session, payload.provider_account_id)
+    explicit = bool({"input_modalities", "image_mime_types"} & payload.model_fields_set)
+    capabilities = (ModelInputCapabilities(input_modalities=payload.input_modalities,
+        image_mime_types=payload.image_mime_types, capability_source="manual") if explicit else
+        _decision_input_capabilities(account.provider_type, payload.model.strip(), None, payload.supports_decision))
+    if explicit:
+        _validate_manual_image_capabilities(account.provider_type, capabilities.input_modalities, capabilities.image_mime_types)
     option = ModelOption(
         id=_id("model_option"),
         key=_model_key(account, payload.model),
@@ -612,11 +690,13 @@ def create_manual_option(session: Session, payload: ModelOptionManualCreate) -> 
         supports_chat=payload.supports_chat,
         supports_compression=payload.supports_compression,
         supports_tts=payload.supports_tts,
+        supports_decision=payload.supports_decision,
         model_family=payload.model_family,
         supports_json=payload.supports_json,
         context_window_tokens=payload.context_window_tokens,
         max_output_tokens=payload.max_output_tokens,
         source="manual",
+        **capabilities.model_dump(),
     )
     session.add(option)
     session.commit()
@@ -626,7 +706,15 @@ def create_manual_option(session: Session, payload: ModelOptionManualCreate) -> 
 
 def update_option(session: Session, option_id: str, payload: ModelOptionUpdate) -> ModelOption:
     option = _option_by_id(session, option_id)
-    for field in ("label", "enabled", "supports_chat", "supports_compression", "supports_tts", "model_family", "supports_json"):
+    capability_fields = {"input_modalities", "image_mime_types"} & payload.model_fields_set
+    if capability_fields:
+        modalities = payload.input_modalities if "input_modalities" in capability_fields else option.input_modalities
+        mimes = payload.image_mime_types if "image_mime_types" in capability_fields else option.image_mime_types
+        _validate_manual_image_capabilities(option.provider_type, modalities, mimes)
+        for field in capability_fields:
+            setattr(option, field, getattr(payload, field))
+        option.capability_source = "manual"
+    for field in ("label", "enabled", "supports_chat", "supports_compression", "supports_tts", "supports_decision", "model_family", "supports_json"):
         value = getattr(payload, field)
         if value is not None:
             setattr(option, field, value)
@@ -671,6 +759,8 @@ def active_options_for_runtime(session: Session, capability: str) -> list[ModelO
             result.append(option)
         elif capability == "tts" and option.supports_tts and option.provider_type == "google" and option.model_family == "gemini":
             result.append(option)
+        elif capability == "decision" and option.supports_decision and option.provider_type in {"google", "openrouter", "openai", "openai_compatible"}:
+            result.append(option)
     return result
 
 
@@ -690,6 +780,8 @@ def option_is_active_for_capability(session: Session, option: ModelOption, capab
         return option.supports_compression
     if capability == "tts":
         return option.supports_tts and option.provider_type == "google" and option.model_family == "gemini"
+    if capability == "decision":
+        return option.supports_decision and option.provider_type in {"google", "openrouter", "openai", "openai_compatible"}
     return False
 
 
@@ -727,6 +819,10 @@ def serialize_option(option: ModelOption, account: ModelProviderAccount | None =
         supports_chat=option.supports_chat,
         supports_compression=option.supports_compression,
         supports_tts=option.supports_tts,
+        supports_decision=option.supports_decision,
+        input_modalities=option.input_modalities,
+        image_mime_types=option.image_mime_types,
+        capability_source=option.capability_source,
         model_family=option.model_family,
         supports_json=option.supports_json,
         context_window_tokens=option.context_window_tokens,

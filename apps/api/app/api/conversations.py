@@ -53,7 +53,7 @@ from app.schemas.conversations import (
     SceneSummaryUpdate,
 )
 from app.core.config import get_settings
-from app.services import asset_service, battle_ledger_service, character_service, chat_command_service, context_preview_service, conversation_service, domain_actor_service, genre_domain_service, model_provider_service, prompt_snapshot_service, runtime_settings_service, system_prompt_service, tts_service, usage_service
+from app.services import asset_decision_service, asset_service, battle_ledger_service, character_service, chat_command_service, context_preview_service, conversation_service, domain_actor_service, genre_domain_service, model_provider_service, prompt_snapshot_service, runtime_settings_service, system_prompt_service, tts_service, usage_service
 from app.services.context_management_service import AutomaticContextPlan, ContextCapacity, ContextMaintenanceRequired, resolve_safe_model_context_capacity, sync_turn_group_id
 from app.engine.harness_comparison import HistoryAccounting, ComparisonOptions, generation_input_estimate, source_role_overhead
 from app.services.generation_dispatcher import generation_dispatcher
@@ -312,18 +312,28 @@ def list_messages(
     limit: int | None = Query(default=None, ge=1, le=200),
     before_id: str | None = None,
     recent_turns: int | None = Query(default=None, ge=1, le=50),
+    message_ids: list[str] | None = Query(default=None, min_length=1, max_length=100),
     session: Session = Depends(get_session),
 ):
     if not conversation_service.get_conversation(session, conversation_id):
         raise HTTPException(status_code=404, detail="Conversation not found")
-    messages = conversation_service.list_messages(
-        session,
-        conversation_id,
-        limit=limit,
-        before_id=before_id,
-        recent_turns=recent_turns,
-    )
-    return [asset_service.serialize_message(session, message) for message in messages]
+    if message_ids is not None:
+        # Bounded late-asset hydration cannot fetch another room's messages or
+        # resurrect deleted rows. It is independent of the paginated tail.
+        messages = list(session.exec(select(Message).where(
+            Message.conversation_id == conversation_id,
+            Message.id.in_(message_ids),
+        ).order_by(Message.created_at, Message.id)).all())
+    else:
+        messages = conversation_service.list_messages(
+            session,
+            conversation_id,
+            limit=limit,
+            before_id=before_id,
+            recent_turns=recent_turns,
+        )
+    pending_ids = asset_service.pending_asset_decision_message_ids(session, conversation_id)
+    return [asset_service.serialize_message(session, message, pending_decision_ids=pending_ids) for message in messages]
 
 
 @router.patch("/{conversation_id}/messages/{message_id}", response_model=MessageRead)
@@ -846,23 +856,43 @@ def build_generated_turn_post_commit_tasks(
     else:
         raise ValueError("generation attempt identity is required")
     tasks: list[dict] = []
+    # Decision work is opt-in and post-commit: no provider await may occur in
+    # the primary reply-set finalizer. Mock jobs never create paid work.
+    decision_key = None
+    if not isolated_mock_execution.get() and not get_settings().llm_mock:
+        try:
+            with session.no_autoflush:
+                decision_key = asset_decision_service.decision_model_key_for_turn(session, conversation.id)
+        except SQLAlchemyError:
+            raise
+        except Exception:
+            logger.warning("Optional asset decision configuration unavailable; using legacy selection")
+    decision_message_ids: list[str] = []
+    decision_target = next((m.id for m in reversed(generated_messages)
+                            if m.speaker_type == "character" and m.speaker_id), None)
+    decision_allowed = bool(decision_key and asset_decision_service.decision_turn_allowed(session, conversation.id))
     reserved_asset_ids: dict[str, set[str]] = {}
     for reply_index, message in enumerate(generated_messages):
         if message.speaker_type != "character" or not message.speaker_id:
             continue
         task_prefix = f"{identity}:reply:{reply_index}"
         try:
-            selected_asset = asset_service.select_asset_for_message(
-                session,
-                conversation_id=conversation.id,
-                character_id=message.speaker_id,
-                emotion=message.emotion,
-                action=message.action,
-                content=message.content,
-                scene_state=scene_state,
-                excluded_asset_ids=reserved_asset_ids.setdefault(message.speaker_id, set()),
-                selection_seed=message.id,
-            )
+            if decision_key:
+                if decision_allowed and message.id == decision_target:
+                    decision_message_ids.append(message.id)
+                selected_asset = None
+            else:
+                selected_asset = asset_service.select_asset_for_message(
+                    session,
+                    conversation_id=conversation.id,
+                    character_id=message.speaker_id,
+                    emotion=message.emotion,
+                    action=message.action,
+                    content=message.content,
+                    scene_state=scene_state,
+                    excluded_asset_ids=reserved_asset_ids.setdefault(message.speaker_id, set()),
+                    selection_seed=message.id,
+                )
         except SQLAlchemyError:
             # A broken persistence session is not an optional policy failure.
             raise
@@ -889,6 +919,17 @@ def build_generated_turn_post_commit_tasks(
                 "payload": {"conversation_id": conversation.id, "message_id": message.id},
             })
 
+    if decision_message_ids:
+        tasks.append({
+            "unique_key": f"{identity}:asset_decision",
+            "task_type": "asset_decision",
+            "payload": {
+                "conversation_id": conversation.id,
+                "message_ids": decision_message_ids,
+                "decision_model_option_key": decision_key,
+                "turn_id": generation_job_id or generation_attempt_id,
+            },
+        })
     if not isolated_mock_execution.get() and enqueue_compression and comparison.context_policy != "full_history":
         tasks.append({
             "unique_key": f"{identity}:compression",
@@ -1072,8 +1113,45 @@ async def _execute_claimed_post_commit_task(
     if task.status != "processing" or task.lease_owner != lease_owner:
         raise RuntimeError("Post-commit task lease is not owned by this worker")
     claimed_attempt = task.attempt_count
+    task_id = task.id
     payload = dict(task.payload_ or {})
-    if task.task_type == "asset":
+    if task.task_type == "asset_decision":
+        conversation_id = payload.get("conversation_id")
+        message_ids = payload.get("message_ids")
+        model_key = payload.get("decision_model_option_key")
+        if (not isinstance(conversation_id, str) or not isinstance(model_key, str)
+                or not isinstance(message_ids, list)
+                or any(not isinstance(item, str) for item in message_ids)):
+            raise ValueError("Invalid asset decision task payload")
+        def apply_fence():
+            # This no-op UPDATE starts a real SQLite write transaction, unlike
+            # SELECT/autobegin. Keep it through authoritative source validation,
+            # attachments and the final task acknowledgement below.
+            with session.no_autoflush:
+                result = session.exec(sa_update(PostCommitTask).where(
+                    PostCommitTask.id == task_id,
+                    PostCommitTask.status == "processing",
+                    PostCommitTask.lease_owner == lease_owner,
+                    PostCommitTask.attempt_count == claimed_attempt,
+                ).values(updated_at=PostCommitTask.updated_at)
+                  .execution_options(synchronize_session=False))
+            return result.rowcount == 1
+        selections = await asset_decision_service.select_turn_assets(
+            session,
+            conversation_id=conversation_id,
+            message_ids=message_ids,
+            model_option_key=model_key,
+            apply_fence=apply_fence,
+        )
+        # The selector ends its read transaction before provider I/O and
+        # revalidates source/settings/assets afterwards. Final links and the
+        # lease-fenced acknowledgement still commit in one transaction.
+        task = session.get(PostCommitTask, task_id)
+        if task is None:
+            raise RuntimeError("Post-commit task disappeared during asset decision")
+        for message_id, asset_id in selections[:1]:
+            asset_service.attach_asset_to_message(session, message_id, asset_id, commit=False)
+    elif task.task_type == "asset":
         message = session.get(Message, payload.get("message_id"))
         asset_id = payload.get("asset_id")
         if message is not None and asset_id:
@@ -1146,7 +1224,7 @@ def _run_post_commit_task_sync(task_id: str, lease_owner: str) -> None:
 
 
 async def _process_inline_post_commit_tasks(bind, task_specs: list[dict]) -> None:
-    inline_types = {"asset"}
+    inline_types = {"asset", "asset_decision"}
     for task_spec in task_specs:
         if task_spec.get("task_type") not in inline_types:
             continue

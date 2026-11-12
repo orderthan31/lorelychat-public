@@ -291,6 +291,10 @@ def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
                 connection.execute(text("UPDATE runtime_settings SET compression_interval_turns = 5 WHERE compression_interval_turns IS NULL OR compression_interval_turns < 1"))
             if "default_tts_model_option_key" not in columns:
                 connection.execute(text("ALTER TABLE runtime_settings ADD COLUMN default_tts_model_option_key VARCHAR"))
+            if "decision_enabled" not in columns:
+                connection.execute(text("ALTER TABLE runtime_settings ADD COLUMN decision_enabled BOOLEAN NOT NULL DEFAULT 0"))
+            if "decision_model_option_key" not in columns:
+                connection.execute(text("ALTER TABLE runtime_settings ADD COLUMN decision_model_option_key VARCHAR"))
             if "safety_preset" not in columns:
                 connection.execute(text("ALTER TABLE runtime_settings ADD COLUMN safety_preset VARCHAR NOT NULL DEFAULT 'medium'"))
                 connection.execute(text("UPDATE runtime_settings SET safety_preset = 'medium' WHERE safety_preset IS NULL OR safety_preset = ''"))
@@ -301,6 +305,14 @@ def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
                 connection.execute(text("ALTER TABLE model_options ADD COLUMN context_window_tokens INTEGER"))
             if "max_output_tokens" not in columns:
                 connection.execute(text("ALTER TABLE model_options ADD COLUMN max_output_tokens INTEGER"))
+            if "supports_decision" not in columns:
+                connection.execute(text("ALTER TABLE model_options ADD COLUMN supports_decision BOOLEAN NOT NULL DEFAULT 0"))
+            if "input_modalities" not in columns:
+                connection.execute(text("ALTER TABLE model_options ADD COLUMN input_modalities JSON"))
+            if "image_mime_types" not in columns:
+                connection.execute(text("ALTER TABLE model_options ADD COLUMN image_mime_types JSON"))
+            if "capability_source" not in columns:
+                connection.execute(text("ALTER TABLE model_options ADD COLUMN capability_source VARCHAR NOT NULL DEFAULT 'unknown'"))
     if "conversation_relationship_states" in table_names:
         pk_columns = {column["name"] for column in inspector.get_columns("conversation_relationship_states") if column.get("primary_key")}
         if not {"counterpart_type", "counterpart_id"}.issubset(pk_columns):

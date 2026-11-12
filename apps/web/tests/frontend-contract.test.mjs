@@ -1,18 +1,27 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import assert from 'node:assert/strict';
-import { normalizeCompressionStrategy, normalizeRuntimeSetting, normalizeRuntimeSettingUpdatePayload } from '../src/utils/runtimeSettings.ts';
+import { hasActiveDecisionModel, normalizeCompressionStrategy, normalizeRuntimeSetting, normalizeRuntimeSettingUpdatePayload } from '../src/utils/runtimeSettings.ts';
 
 assert.equal(normalizeCompressionStrategy(undefined), 'quality');
 assert.equal(normalizeCompressionStrategy('legacy-unknown'), 'quality');
 assert.equal(normalizeCompressionStrategy('fast'), 'fast');
 assert.deepEqual(normalizeRuntimeSetting({ scope: 'conversation' }), { scope: 'conversation', compression_strategy: 'quality' });
 const runtimePayloadDefaults = { response_length_preset: 'medium' };
+assert.equal(hasActiveDecisionModel(), false);
+assert.equal(hasActiveDecisionModel({ decision_model_option_key: 'inactive', decision_options: [{ key: 'active' }] }), false);
+assert.equal(hasActiveDecisionModel({ decision_model_option_key: 'active', decision_options: [{ key: 'active' }] }), true);
+assert.equal(hasActiveDecisionModel({ decision_model_option_key: 'active' }), false);
+assert.equal(normalizeRuntimeSettingUpdatePayload({ decision_model_option_key: 'active' }, runtimePayloadDefaults).decision_enabled, false);
+assert.equal(normalizeRuntimeSettingUpdatePayload({ decision_enabled: false, decision_model_option_key: 'active' }, runtimePayloadDefaults).decision_model_option_key, 'active');
+assert.equal(normalizeRuntimeSettingUpdatePayload({ decision_enabled: false, decision_model_option_key: null }, runtimePayloadDefaults).decision_model_option_key, null);
 const fullRuntimeSetting = {
   model_key: 'chat-model',
   fallback_model_key: 'chat-fallback',
   compression_model_key: 'compression-model',
   compression_fallback_model_key: 'compression-fallback',
   default_tts_model_option_key: 'tts-model',
+  decision_enabled: true,
+  decision_model_option_key: 'decision-model',
   safety_preset: 'high',
   response_length_preset: 'long',
   compression_strategy: 'fast',
@@ -23,6 +32,8 @@ assert.deepEqual(normalizeRuntimeSettingUpdatePayload(fullRuntimeSetting, runtim
   compression_model_key: 'compression-model',
   compression_fallback_model_key: 'compression-fallback',
   default_tts_model_option_key: 'tts-model',
+  decision_enabled: true,
+  decision_model_option_key: 'decision-model',
   safety_preset: 'high',
   response_length_preset: 'long',
   compression_strategy: 'fast',
@@ -33,6 +44,8 @@ assert.deepEqual(normalizeRuntimeSettingUpdatePayload({}, runtimePayloadDefaults
   compression_model_key: null,
   compression_fallback_model_key: null,
   default_tts_model_option_key: null,
+  decision_enabled: false,
+  decision_model_option_key: null,
   safety_preset: 'medium',
   response_length_preset: 'medium',
   compression_strategy: 'quality',

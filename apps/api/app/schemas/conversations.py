@@ -131,6 +131,7 @@ class MessageRead(BaseModel):
     thought: str | None = None
     metadata: dict = Field(default_factory=dict)
     assets: list[MessageAssetRead] = Field(default_factory=list)
+    asset_decision_pending: bool = False
     tts_audio_url: str | None = None
     tts_text: str | None = None
 

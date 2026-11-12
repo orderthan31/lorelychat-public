@@ -34,6 +34,7 @@ export type ChatMessage = {
   thought?: string;
   emotion?: string;
   assets?: MessageAsset[];
+  asset_decision_pending?: boolean;
   tts_audio_url?: string;
   tts_text?: string;
   failed?: boolean;

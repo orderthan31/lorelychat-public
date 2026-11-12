@@ -7,7 +7,13 @@ def create_character(client, name="Asset Test"):
     return response.json()
 
 
-def test_character_asset_crud_and_default_avatar(client):
+def test_character_asset_crud_and_default_avatar(client, tmp_path, monkeypatch):
+    from PIL import Image
+    from app.api import assets as assets_api
+    monkeypatch.setattr(assets_api, "UPLOAD_ROOT", tmp_path)
+    directory = tmp_path / "character-assets"
+    directory.mkdir()
+    Image.new("RGB", (320, 320), "skyblue").save(directory / "happy.png")
     character = create_character(client)
     create = client.post(f"/characters/{character['id']}/assets", json={
         "label": "웃는 얼굴",
@@ -36,7 +42,8 @@ def test_character_asset_crud_and_default_avatar(client):
     assert defaulted.status_code == 200
     assert defaulted.json()["is_default"] is True
     updated_character = client.get(f"/characters/{character['id']}").json()
-    assert updated_character["avatar_url"] == "/uploads/character-assets/happy.png"
+    assert updated_character["avatar_url"] == asset["image_url"]
+    assert asset["image_url"].endswith(".webp")
 
     deleted = client.delete(f"/character-assets/{asset['id']}")
     assert deleted.status_code == 204
