@@ -868,9 +868,7 @@ def build_generated_turn_post_commit_tasks(
         except Exception:
             logger.warning("Optional asset decision configuration unavailable; using legacy selection")
     decision_message_ids: list[str] = []
-    decision_target = next((m.id for m in reversed(generated_messages)
-                            if m.speaker_type == "character" and m.speaker_id), None)
-    decision_allowed = bool(decision_key and asset_decision_service.decision_turn_allowed(session, conversation.id))
+
     reserved_asset_ids: dict[str, set[str]] = {}
     for reply_index, message in enumerate(generated_messages):
         if message.speaker_type != "character" or not message.speaker_id:
@@ -878,8 +876,7 @@ def build_generated_turn_post_commit_tasks(
         task_prefix = f"{identity}:reply:{reply_index}"
         try:
             if decision_key:
-                if decision_allowed and message.id == decision_target:
-                    decision_message_ids.append(message.id)
+                decision_message_ids.append(message.id)
                 selected_asset = None
             else:
                 selected_asset = asset_service.select_asset_for_message(
@@ -1136,21 +1133,64 @@ async def _execute_claimed_post_commit_task(
                 ).values(updated_at=PostCommitTask.updated_at)
                   .execution_options(synchronize_session=False))
             return result.rowcount == 1
-        selections = await asset_decision_service.select_turn_assets(
-            session,
-            conversation_id=conversation_id,
-            message_ids=message_ids,
-            model_option_key=model_key,
-            apply_fence=apply_fence,
-        )
+        diagnostics = {}
+
+        def reserve_send():
+            # Durable pessimistic marker: a crash before the actual send may
+            # miss a recommendation, but reclaim must never bill a second send.
+            if not apply_fence():
+                session.rollback()
+                raise RuntimeError("Post-commit task lease was lost before send")
+            session.expire_all()
+            current = session.get(PostCommitTask, task_id)
+            current_payload = dict(current.payload_ or {})
+            if "decision_send" in current_payload:
+                session.rollback()
+                return False
+            current_payload["decision_send"] = {
+                "version": 1, "state": "send_may_have_started", "attempt": claimed_attempt,
+            }
+            current_payload["decision_diagnostics"] = asset_decision_service.bounded_diagnostics(diagnostics)
+            current.payload_ = current_payload
+            session.add(current)
+            session.commit()  # Must precede provider I/O, separate from link+ack.
+            return True
+
+        if "decision_send" in payload or claimed_attempt > 1:
+            if not apply_fence():
+                raise RuntimeError("Post-commit task lease was lost before recovery")
+            session.expire_all()
+            # Do not re-plan or fallback after an ambiguous prior send, even if
+            # settings changed or the current catalog now has no candidates.
+            previous = payload.get("decision_diagnostics")
+            diagnostics = {
+                **(asset_decision_service.bounded_diagnostics(previous) if isinstance(previous, dict) else {}),
+                "policy_version": asset_decision_service.POLICY_VERSION,
+                "outcome": "send_recovery_abstention", "attached_count": 0,
+                "target_count": len(message_ids),
+            }
+            selections = []
+        else:
+            selections = await asset_decision_service.select_turn_assets(
+                session,
+                conversation_id=conversation_id,
+                message_ids=message_ids,
+                model_option_key=model_key,
+                apply_fence=apply_fence,
+                reserve_send=reserve_send,
+                diagnostics=diagnostics,
+            )
         # The selector ends its read transaction before provider I/O and
         # revalidates source/settings/assets afterwards. Final links and the
         # lease-fenced acknowledgement still commit in one transaction.
         task = session.get(PostCommitTask, task_id)
         if task is None:
             raise RuntimeError("Post-commit task disappeared during asset decision")
-        for message_id, asset_id in selections[:1]:
+        for message_id, asset_id in selections:
             asset_service.attach_asset_to_message(session, message_id, asset_id, commit=False)
+        task.payload_ = {**dict(task.payload_ or {}),
+                         "decision_diagnostics": asset_decision_service.bounded_diagnostics(diagnostics)}
+        session.add(task)
     elif task.task_type == "asset":
         message = session.get(Message, payload.get("message_id"))
         asset_id = payload.get("asset_id")

@@ -139,7 +139,7 @@ def test_duplicate_model_choices_not_attached_twice(fixture):
     assert len(calls[0][2]) == 2
 
 
-def test_bounded_candidates_and_legacy_tail(fixture):
+def test_full_candidate_coverage_without_legacy_tail(fixture):
     session, _, calls = fixture
     for index in range(35):
         session.add(CharacterAsset(id=f"extra{index:02d}", character_id="char", label="happy", image_url="x", mood_tags=["happy"]))
@@ -151,12 +151,13 @@ def test_bounded_candidates_and_legacy_tail(fixture):
     session.commit()
     result = run(fixture, ids)
     assert len(calls) == 1
-    assert 1 <= len(calls[0][2]) <= 24
-    assert all(len(q.candidates) == 24 and "none" in q.candidates for q in calls[0][2])
+    assert len(calls[0][2]) == 30
+    assert all(len(q.candidates) == 37 and "none" in q.candidates for q in calls[0][2])
     decided_ids = {q.id for q in calls[0][2]}
-    assert {mid for mid, _ in result}.issuperset(set(ids) - decided_ids)
+    assert decided_ids == set(ids)
+    assert result == [("m1", "a1")]
     _, _, _, _, payload = transport._request(calls[0][0], calls[0][1], calls[0][2])
-    assert len(payload.decode("utf-8")) <= service.MAX_REQUEST_CHARS
+    assert len(payload) <= transport._MAX_TEXT_BYTES
     assert len({aid for _, aid in result}) == len(result)
 
 
@@ -248,9 +249,9 @@ def test_entire_candidate_payload_is_bounded_not_only_shared_input(fixture):
     run(fixture, ids)
     assert len(calls) == 1
     route, context, questions = calls[0]
-    assert len(questions) < service.MAX_QUESTIONS
+    assert len(questions) == len(ids)
     _, _, _, _, payload = transport._request(route, context, questions)
-    assert len(payload.decode("utf-8")) <= service.MAX_REQUEST_CHARS
+    assert len(payload) <= transport._MAX_TEXT_BYTES
 
 
 def test_manual_link_untouched_without_request(fixture):
@@ -308,8 +309,8 @@ def test_context_bounds_and_sensitive_fields_omitted(fixture):
     session.commit()
     assert run(fixture) == [("m1", "a1")]
     context = calls[0][1]
-    assert len(json.dumps(context, ensure_ascii=False)) <= 12_000
-    assert all(len(context["messages"][0][field]) <= 3000 for field in ("content", "action", "emotion"))
+    assert all(len(context["messages"][0][field]) == 20_000 for field in ("content", "action", "emotion"))
+    assert len(transport._request(calls[0][0], context, calls[0][2])[4]) <= transport._MAX_TEXT_BYTES
     serialized = json.dumps(context) + json.dumps(calls[0][2][0].candidates)
     assert "PRIVATE_PROMPT_SENTINEL" not in serialized and "https://private" not in serialized
 

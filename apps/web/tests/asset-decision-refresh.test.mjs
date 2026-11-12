@@ -201,4 +201,34 @@ await test('App effects use the targeted endpoint and current loaded messages wi
   visit.current = false; assert.equal(calls[0].isCurrent(), false);
   cleanup(); assert.equal(refreshRef.current, null); assert.equal(listeners.size, 0);
 });
+await test('one generated turn hydrates multiple image bubbles and abstentions together', async () => {
+  const initial = Array.from({ length: 32 }, (_, index) => row({
+    id: `turn-bubble-${index}`, generation_job_id: 'one-turn', reply_index: index,
+    speaker_id: `character-${index % 4}`, content: `unchanged source ${index}`,
+  }));
+  const f = fixture(ids => Promise.resolve(ids.map((id, index) => ({
+    ...initial.find(item => item.id === id),
+    assets: index === 0 || index === 17 || index === 31 ? [{ id: `asset-${index}` }] : [],
+    asset_decision_pending: false,
+  }))), initial);
+  await f.clock.advance(500);
+  assert.deepEqual(f.calls, [initial.map(item => item.id)]);
+  assert.deepEqual(f.rows.filter(item => item.assets.length).map(item => item.reply_index), [0, 17, 31]);
+  assert.ok(f.rows.every(item => !item.asset_decision_pending));
+  assert.ok(f.rows.every((item, index) => item.content === initial[index].content && item.metadata === initial[index].metadata));
+  await f.clock.advance(20000);
+  assert.equal(f.calls.length, 1);
+});
+await test('localized Decision help explains response bundles and multiple bubble images, without fixed cooldown', async () => {
+  const key = '에셋 추천은 별도 모델 호출을 사용하는 선택 기능입니다. 끄면 기존 방식이 유지되며, 제공자 오류나 시간 초과 시에도 기존 방식으로 처리합니다.';
+  const expected = {
+    ko: [/답변 한 묶음/, /버블마다/, /여러 장/, /고정된 휴식 턴은 없습니다/],
+    en: [/generated response/, /per matching bubble/, /multiple images per turn/, /no fixed turn cooldown/],
+    ja: [/応答ひとまとまり/, /バブルごと/, /複数枚/, /固定の休止ターンはありません/],
+  };
+  for (const [locale, patterns] of Object.entries(expected)) {
+    const catalog = JSON.parse(readFileSync(new URL(`../src/i18n/messages.${locale}.json`, import.meta.url), 'utf8'));
+    for (const pattern of patterns) assert.match(catalog[key], pattern, locale);
+  }
+});
 console.log(`asset decision refresh: ${passed} tests passed`);

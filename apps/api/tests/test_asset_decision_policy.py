@@ -1,4 +1,4 @@
-"""Opt-in cadence: no image is normal, and no-image does not call every turn."""
+"""Every generated turn is eligible; abstention is not a cooldown."""
 import asyncio
 from datetime import datetime, timedelta, timezone
 
@@ -8,7 +8,7 @@ from app.db.models import Character, CharacterAsset, Conversation, Message, Mess
 from app.services import asset_decision_service as decisions, conversation_service
 
 
-def test_none_result_still_keeps_two_generated_turns_between_checks(session, monkeypatch):
+def test_none_result_allows_consecutive_generated_turn_checks(session, monkeypatch):
     setting = api.get_settings().model_copy(update={'llm_mock': False})
     monkeypatch.setattr(api, 'get_settings', lambda: setting)
     monkeypatch.setattr(decisions, 'decision_model_key_for_turn', lambda *_: 'decision')
@@ -29,22 +29,22 @@ def test_none_result_still_keeps_two_generated_turns_between_checks(session, mon
         specs = api.build_generated_turn_post_commit_tasks(session=session, conversation=session.get(Conversation,'room'), scene_state=None, incoming_message=source, generated_messages=replies, enqueue_compression=False, character_ids=['c'], generation_job_id=job.id)
         if specs:
             checked.append(index)
-            assert specs[0]['payload']['message_ids'] == [replies[-1].id]
+            assert specs[0]['payload']['message_ids'] == [m.id for m in replies]
         conversation_service.finalize_message_generation_turn(session, job, replies, post_commit_tasks=specs)
         for spec in specs:
             claimed = conversation_service.claim_post_commit_task_by_unique_key(session, spec['unique_key'], lease_owner='asset-worker')
             asyncio.run(api._execute_claimed_post_commit_task(session, claimed, lease_owner='asset-worker'))
-    assert checked == [0, 3, 6]
-    assert len(calls) == 3
+    assert checked == list(range(7))
+    assert len(calls) == 7
     assert session.exec(select(MessageAsset)).all() == []
     assert all(task.status == 'completed' for task in session.exec(select(PostCommitTask)).all())
 
 
-def test_recent_manual_image_also_suppresses_new_optional_check(session):
+def test_recent_manual_image_does_not_suppress_entire_turn(session):
     session.add_all([
         Conversation(id='room', mode='user_character'),
         Message(id='recent', conversation_id='room', generation_job_id='prior', speaker_type='character', speaker_id='c', content='Prior'),
         MessageAsset(id='manual', message_id='recent', asset_id='a'),
     ]); session.commit()
-    assert decisions.decision_turn_allowed(session, 'room') is False
+    assert decisions.decision_turn_allowed(session, 'room') is True
     assert decisions.decision_turn_allowed(session, 'other-room') is True

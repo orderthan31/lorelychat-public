@@ -58,7 +58,7 @@ def test_on_builder_enqueues_one_identifier_only_task_without_provider_or_legacy
     monkeypatch.setattr(api.asset_service, "select_asset_for_message", lambda *_a, **_k: pytest.fail("legacy called while valid decision enabled"))
     tasks = build(session, room, source, replies)
     assert tasks == [{"unique_key": "job:decision-job:asset_decision", "task_type": "asset_decision", "payload": {
-        "conversation_id": room.id, "message_ids": [replies[-1].id], "decision_model_option_key": "decision-option", "turn_id": "decision-job",
+        "conversation_id": room.id, "message_ids": [m.id for m in replies], "decision_model_option_key": "decision-option", "turn_id": "decision-job",
     }}]
     assert "Synthetic" not in str(tasks)
     assert session.exec(select(PostCommitTask)).all() == []
@@ -97,7 +97,7 @@ def test_committed_primary_and_pending_get_then_worker_assets_readback(client, s
     pending = client.get(f"/conversations/{cid}/messages", params=[("message_ids", mid) for mid in mids])
     assert pending.status_code == 200
     assert {row["id"] for row in pending.json()} == set(mids)
-    assert [row["asset_decision_pending"] for row in pending.json()] == [False, True]
+    assert [row["asset_decision_pending"] for row in pending.json()] == [True, True]
     assert not any(row["assets"] for row in pending.json())
     calls = []
     async def select_turn(_session, **kwargs):

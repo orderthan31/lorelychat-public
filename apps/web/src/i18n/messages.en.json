@@ -1008,7 +1008,7 @@
   "복사하거나 삭제할 버블을 선택하세요": "Select messages to copy or delete.",
   "의사결정": "Decision",
   "의사결정 모델 사용": "Use decision model for asset recommendations",
-  "에셋 추천은 별도 모델 호출을 사용하는 선택 기능입니다. 끄면 기존 방식이 유지되며, 제공자 오류나 시간 초과 시에도 기존 방식으로 처리합니다.": "Asset recommendations are optional and use a separate model call. Disabled mode preserves the original behavior; provider errors or timeouts use the original selector. At most one image per turn, with two generated turns between checks. No image is a normal result.",
+  "에셋 추천은 별도 모델 호출을 사용하는 선택 기능입니다. 끄면 기존 방식이 유지되며, 제공자 오류나 시간 초과 시에도 기존 방식으로 처리합니다.": "One separate model call evaluates the bubbles of a generated response together: at most one image per matching bubble, allowing multiple images per turn with no fixed turn cooldown. Unnecessary or repeated images are skipped. Disabled mode preserves the original behavior; provider errors or timeouts use the original selector.",
   "의사결정 Provider": "Decision provider",
   "의사결정 모델": "Decision model",
   "의사결정 모델 선택": "Select a decision model",

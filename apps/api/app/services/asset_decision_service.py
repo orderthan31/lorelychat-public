@@ -10,23 +10,24 @@ import hashlib
 import ipaddress
 import json
 import re
+import time
 from urllib.parse import urlsplit
 
-from sqlalchemy import func
+from sqlalchemy import or_, and_
 from sqlmodel import Session, select, col
 
 from app.core.config import get_settings
 from app.db.models import (
     CharacterAsset, Conversation, Message, MessageAsset, ModelOption,
-    ModelProviderAccount, PostCommitTask, RuntimeSetting, SceneState,
+    ModelProviderAccount, RuntimeSetting, SceneState,
 )
 from app.services import asset_selector, model_provider_service, provider_secret_service
 from app.services.hardening_core_transactions import isolated_mock_execution
 
-MAX_QUESTIONS = 24
-MAX_CANDIDATES = 23
-MAX_CONTEXT = 12_000
-MAX_REQUEST_CHARS = 48_000
+MAX_QUESTIONS = 32
+MAX_CANDIDATES = 254
+PRIOR_ATTACHMENTS_PER_CHARACTER = 8
+POLICY_VERSION = "multi_bubble_v1"
 TOTAL_TIMEOUT = 8.0
 _TAG_FIELDS = ("tags", "mood_tags", "expression_tags", "scene_tags", "pose_tags", "outfit_tags")
 _PROVIDERS = {"openai", "google", "openrouter", "openai_compatible"}
@@ -96,39 +97,7 @@ def decision_model_key_for_turn(session: Session, conversation_id: str) -> str |
 
 
 def decision_turn_allowed(session: Session, conversation_id: str) -> bool:
-    """Two completed generated turns between optional checks, even after none.
-
-    No prose is read and no state is written. Existing/manual images also start
-    the quiet window. OFF never calls this policy or changes the old selector.
-    """
-    with session.no_autoflush:
-        recent_turns = list(session.exec(select(Message.generation_job_id).where(
-            Message.conversation_id == conversation_id,
-            col(Message.generation_job_id).is_not(None),
-        ).group_by(Message.generation_job_id).order_by(
-            func.max(Message.created_at).desc(), func.max(Message.id).desc(),
-        ).limit(2)).all())
-        if not recent_turns:
-            return True
-        image = session.exec(select(MessageAsset.id).join(Message, Message.id == MessageAsset.message_id).where(
-            Message.conversation_id == conversation_id,
-            col(Message.generation_job_id).in_(recent_turns),
-        ).limit(1)).first()
-        if image is not None:
-            return False
-        last_task = session.exec(select(PostCommitTask).where(
-            PostCommitTask.task_type == "asset_decision",
-            PostCommitTask.payload_["conversation_id"].as_string() == conversation_id,
-        ).order_by(PostCommitTask.created_at.desc(), PostCommitTask.id.desc()).limit(1)).first()
-        if last_task:
-            payload = last_task.payload_ if isinstance(last_task.payload_, dict) else {}
-            checked_turn = payload.get("turn_id")
-            if not checked_turn:
-                ids = payload.get("message_ids")
-                prior = session.get(Message, ids[0]) if isinstance(ids, list) and ids and isinstance(ids[0], str) else None
-                checked_turn = prior.generation_job_id if prior and prior.conversation_id == conversation_id else None
-            if checked_turn in recent_turns:
-                return False
+    """Eligibility is per turn; actual attachments, not cadence, prevent repeats."""
     return True
 
 
@@ -137,43 +106,103 @@ def _digest(value) -> str:
 
 
 def _row(row):
-    # ORM fields, not Pydantic serialization: malformed optional JSON must not
-    # emit serializer warnings containing private raw values.
+    # Avoid Pydantic warnings that can expose malformed private JSON.
     return {name: getattr(row, name) for name in type(row).model_fields} if row is not None else None
 
 
-def _eligible(asset: CharacterAsset, message: Message, scene: SceneState | None) -> bool:
+def _body(message: Message) -> dict:
+    """One complete ordered representation, never raw + aggregate duplication."""
+    metadata = message.metadata_ if isinstance(message.metadata_, dict) else {}
+    parts = metadata.get("render_parts")
+    if (isinstance(parts, list) and parts and all(isinstance(p, dict)
+            and p.get("type") in {"dialogue", "action", "thought"}
+            and isinstance(p.get("text"), str) for p in parts)):
+        return {"render_parts": [{"type": p["type"], "text": p["text"]} for p in parts]}
+    raw = metadata.get("raw_body")
+    if isinstance(raw, str) and raw.strip():
+        return {"raw_body": raw}
+    return {"content": message.content, "action": message.action or "",
+            "emotion": message.emotion or "", "thought": message.thought or ""}
+
+
+def _scene_text(context_messages) -> str:
+    return " ".join(json.dumps(_body(m), ensure_ascii=False) for m in context_messages)
+
+
+def _eligible(asset: CharacterAsset, message: Message, scene: SceneState | None,
+              turn_text: str = "") -> bool:
+    from app.services.asset_decision_metadata import decision_policy, detected_scene_tags
     if not asset.enabled or asset.asset_type != "image" or asset.character_id != message.speaker_id:
         return False
     if any(not isinstance(getattr(asset, field), list)
            or any(not isinstance(tag, str) for tag in getattr(asset, field)) for field in _TAG_FIELDS):
         return False
-    policy = asset_selector.asset_selection_policy(asset)
+    policy = decision_policy(asset)
     if policy is None:
         return False
     if policy.get("scope") == "scene_required":
-        scenes = asset_selector.detect_tags(
-            " ".join(v or "" for v in (scene.location if scene else None, message.action, message.content)).lower(),
-            asset_selector.SCENE_ALIASES,
-        )
-        if not scenes & asset_selector.tagset(policy.get("required_scene_tags") or []):
+        scenes = detected_scene_tags(scene.location if scene else "", turn_text,
+                                     message.action or "", message.content)
+        required = policy.get("required_scene_tags") or []
+        required_tags = asset_selector.tagset(required) | detected_scene_tags(*required)
+        if not scenes & required_tags:
             return False
     return True
 
 
 def _safe_text(value, limit: int) -> str:
-    # Descriptive fields only: never image paths, prompts, metadata or cards.
     if not isinstance(value, str):
         return ""
     value = re.sub(r"(?:https?://|data:|/uploads/)\S+", "", value[:limit * 2])
     return "".join(c for c in value if c.isprintable() or c in "\n\t")[:limit]
 
 
-def _description(asset: CharacterAsset) -> str:
-    parts = [_safe_text(asset.label, 80), _safe_text(asset.description, 320)]
-    for field in _TAG_FIELDS:
-        parts.append(field + ": " + ", ".join(_safe_text(t, 40) for t in getattr(asset, field)[:12]))
-    return " | ".join(parts)[:1100]
+def bounded_diagnostics(values: dict) -> dict:
+    """Persist only fixed outcomes, bounded counters and requested route identity."""
+    result: dict = {"policy_version": POLICY_VERSION}
+    for field in ("target_count", "question_count", "candidate_count", "request_bytes",
+                  "image_count", "attached_count", "elapsed_ms"):
+        value = values.get(field, 0)
+        result[field] = min(2**31 - 1, max(0, value)) if type(value) is int else 0
+    outcomes = {"success", "none", "fallback", "request_budget_exceeded", "stale", "send_recovery_abstention"}
+    outcome = values.get("outcome")
+    result["outcome"] = outcome if isinstance(outcome, str) and outcome in outcomes else "none"
+    prep = values.get("preparation_status")
+    result["preparation_status"] = prep if isinstance(prep, str) and prep in {"not_needed", "images", "text_only"} else "not_needed"
+    provider = values.get("requested_provider")
+    if isinstance(provider, str) and provider in _PROVIDERS:
+        result["requested_provider"] = provider
+    model = values.get("requested_model")
+    if isinstance(model, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,159}", model) and "://" not in model:
+        result["requested_model"] = model
+    return result
+
+
+def _prior_attachments(session, conversation_id, context_messages, characters):
+    """Bound actual image links BEFORE this turn, independently of bubble count.
+
+    The newest attached image for each character is a hard exact-ID exclusion.
+    Older facts are model evidence only; no perceptual-similarity claim is made.
+    """
+    from app.services.asset_decision_metadata import recommendation_facts
+    anchor = min(context_messages, key=lambda m: (m.created_at, m.id))
+    prior = []
+    for character in characters:
+        rows = session.exec(select(MessageAsset, Message, CharacterAsset).join(
+            Message, Message.id == MessageAsset.message_id).join(
+            CharacterAsset, CharacterAsset.id == MessageAsset.asset_id).where(
+            Message.conversation_id == conversation_id, Message.speaker_id == character,
+            CharacterAsset.character_id == character, CharacterAsset.asset_type == "image",
+            or_(Message.created_at < anchor.created_at,
+                and_(Message.created_at == anchor.created_at, Message.id < anchor.id)),
+            col(Message.id).not_in([m.id for m in context_messages]),
+        ).order_by(Message.created_at.desc(), Message.id.desc(), MessageAsset.id.desc())
+          .limit(PRIOR_ATTACHMENTS_PER_CHARACTER)).all()
+        for link, message, asset in rows:
+            prior.append({"link": _row(link), "message_id": message.id,
+                          "speaker_id": message.speaker_id, "created_at": str(message.created_at),
+                          "asset": recommendation_facts(asset)})
+    return prior
 
 
 def _snapshot(session: Session, conversation_id: str, ids: list[str], key: str):
@@ -183,166 +212,240 @@ def _snapshot(session: Session, conversation_id: str, ids: list[str], key: str):
         return None
     if any(m.speaker_type != "character" or not m.speaker_id for m in messages):
         return None
+    jobs = {m.generation_job_id for m in messages}
+    if len(jobs) != 1:
+        return None
+    job = next(iter(jobs))
+    context_messages = (list(session.exec(select(Message).where(
+        Message.conversation_id == conversation_id, Message.generation_job_id == job,
+    ).order_by(Message.reply_index, Message.created_at, Message.id)).all()) if job else messages)
     scene = session.get(SceneState, conversation_id)
     characters = sorted({m.speaker_id for m in messages})
-    assets = list(session.exec(select(CharacterAsset).where(CharacterAsset.character_id.in_(characters))
+    assets = list(session.exec(select(CharacterAsset).where(col(CharacterAsset.character_id).in_(characters))
                                .order_by(CharacterAsset.id)).all())
-    links = list(session.exec(select(MessageAsset).where(MessageAsset.message_id.in_(ids))
+    links = list(session.exec(select(MessageAsset).where(col(MessageAsset.message_id).in_([m.id for m in context_messages]))
                               .order_by(MessageAsset.id)).all())
+    prior = _prior_attachments(session, conversation_id, context_messages, characters)
     option = session.exec(select(ModelOption).where(ModelOption.key == key)).first()
     account = session.get(ModelProviderAccount, option.provider_account_id) if option else None
     route = _route(session, key) if not _mock() else None
     active_key = decision_model_key_for_turn(session, conversation_id)
     fingerprint = _digest({
-        "conversation_id": conversation.id,
-        "messages": [_row(m) for m in messages],
-        # Newer appended turns and Arc-only compression do not change the
-        # evidence consumed by this decision for an already committed bubble.
+        "conversation_id": conversation.id, "messages": [_row(m) for m in context_messages],
+        # Appended turns and Arc-only edits are not consumed evidence.
         "scene": {"location": scene.location, "mood": scene.mood} if scene else None,
-        "assets": [_row(a) for a in assets], "links": [_row(l) for l in links],
+        "assets": [_row(a) for a in assets], "links": [_row(l) for l in links], "prior": prior,
         "settings": [_row(session.get(RuntimeSetting, i)) for i in ("global", conversation_id)],
         "option": _row(option), "account": _row(account),
         "route": vars(route) if route else None, "mock": _mock(),
     })
-    return fingerprint, messages, scene, assets, links, route if active_key == key else None
+    return fingerprint, messages, scene, assets, links, route if active_key == key else None, context_messages, prior
 
 
-def _legacy(session, conversation_id, messages, scene, assets, links, decisions=None):
-    """Use the original seed and per-character reservations, including manual links."""
-    decisions = decisions or {}
+def _repeat_ids(prior):
+    latest = {}
+    for item in prior:
+        if item["asset"] is not None:
+            latest.setdefault(item["speaker_id"], item["link"]["asset_id"])
+    return set(latest.values())
+
+
+def _legacy(session, conversation_id, messages, scene, assets, links, decisions=None,
+            context_messages=None, prior=()):
+    """Preserve seed; enforce current manual, exact-repeat and policy exclusions."""
     attached = {link.message_id for link in links}
-    reserved: dict[str, set[str]] = {}
-    owners = {m.id: m.speaker_id for m in messages}
-    for link in links:
-        reserved.setdefault(owners[link.message_id], set()).add(link.asset_id)
+    reserved = {link.asset_id for link in links} | _repeat_ids(prior)
     result = []
+    turn_text = _scene_text(context_messages or messages)
     for message in messages:
-        excluded = reserved.setdefault(message.speaker_id, set())
         if message.id in attached:
             continue
-        eligible = {a.id for a in assets if _eligible(a, message, scene)}
-        if message.id in decisions:
-            selected_id = decisions[message.id]
+        eligible = {a.id for a in assets if _eligible(a, message, scene, turn_text)}
+        if decisions is not None:
+            selected_id = decisions.get(message.id)  # unasked/ineligible is none, never a hidden tail
         else:
             selected = asset_selector.select_asset_for_message(
                 session, conversation_id=conversation_id, character_id=message.speaker_id,
                 emotion=message.emotion, action=message.action, content=message.content,
                 scene_state=scene, selection_seed=message.id,
-                excluded_asset_ids=excluded | {a.id for a in assets if a.id not in eligible},
+                excluded_asset_ids=reserved | {a.id for a in assets if a.id not in eligible},
             )
             selected_id = selected.id if selected else None
-        if selected_id in eligible and selected_id not in excluded:
+        if selected_id in eligible and selected_id not in reserved:
             result.append((message.id, selected_id))
-            excluded.add(selected_id)
+            reserved.add(selected_id)
     return result
 
 
-def _validated_result(session, conversation_id, ids, key, fingerprint, decisions, apply_fence):
-    # SQLite's deferred BEGIN does not make SELECT revalidation atomic with a
-    # later attachment. The production caller must reserve its real write/lease
-    # boundary BEFORE this authoritative read, and retain it through link+ack.
+def _validated_result(session, conversation_id, ids, key, fingerprint, decisions, apply_fence, diagnostics=None):
+    # Acquire a physical write/ownership boundary BEFORE the authoritative read.
     if apply_fence is not None and not apply_fence():
         raise ValueError("asset_decision_application_fence_lost")
     session.expire_all()
     current = _snapshot(session, conversation_id, ids, key)
     if current is None or current[0] != fingerprint:
+        if diagnostics is not None:
+            diagnostics["outcome"] = "stale"
         return []
-    _, messages, scene, assets, links, _ = current
-    return _legacy(session, conversation_id, messages, scene, assets, links, decisions)
+    _, messages, scene, assets, links, _, context_messages, prior = current
+    selected = _legacy(session, conversation_id, messages, scene, assets, links, decisions, context_messages, prior)
+    # A later logical turn can finish its task first. Under the same write fence,
+    # also reject an exact match to the nearest following actual image. This is
+    # a commit-only adjacency guard, never future prose/model input; unrelated
+    # appended turns and different images do not invalidate this source.
+    end = max(context_messages, key=lambda m: (m.created_at, m.id))
+    owners = {m.id: m.speaker_id for m in messages}
+    following = set()
+    for character in {owners[mid] for mid, _ in selected}:
+        next_asset = session.exec(select(MessageAsset.asset_id).join(
+            Message, Message.id == MessageAsset.message_id).join(
+            CharacterAsset, CharacterAsset.id == MessageAsset.asset_id).where(
+            Message.conversation_id == conversation_id, Message.speaker_id == character,
+            CharacterAsset.character_id == character, CharacterAsset.asset_type == "image",
+            or_(Message.created_at > end.created_at,
+                and_(Message.created_at == end.created_at, Message.id > end.id)),
+        ).order_by(Message.created_at, Message.id, MessageAsset.id).limit(1)).first()
+        if next_asset:
+            following.add(next_asset)
+    selected = [(mid, aid) for mid, aid in selected if aid not in following]
+    if not selected and diagnostics is not None and diagnostics.get("outcome") == "success":
+        diagnostics["outcome"] = "none"
+    return selected
 
 
 async def select_turn_assets(session: Session, *, conversation_id: str,
                              message_ids: list[str], model_option_key: str,
-                             apply_fence=None) -> list[tuple[str, str]]:
-    """Return proposed links only; caller must attach and fence its lease atomically.
+                             apply_fence=None, reserve_send=None,
+                             diagnostics: dict | None = None) -> list[tuple[str, str]]:
+    """One complete admitted judgment or an explicit no-call outcome.
 
-    Requires a clean session. Releases the read transaction before the single
-    bounded await. Any changed source invalidates the *whole* turn, even fallback.
-    Messages beyond the bounded question set retain legacy selection behavior.
+    reserve_send is a synchronous durable owner/attempt CAS after preparation and
+    admission. It must commit before returning, leaving no write transaction over
+    provider I/O. A previous ambiguous send abstains rather than sending again.
     """
+    from app.services.asset_decision_metadata import recommendation_facts
+    from app.services.decision_transport import (
+        AssetDecisionQuestion, DecisionRequestBudgetExceeded, decide_assets, _request,
+    )
+    started = time.monotonic()
+    diag = diagnostics if diagnostics is not None else {}
+    diag.update(policy_version=POLICY_VERSION, target_count=len(message_ids), question_count=0,
+                candidate_count=0, request_bytes=0, image_count=0, preparation_status="not_needed",
+                outcome="none", attached_count=0)
     if session.new or session.dirty or session.deleted:
         raise ValueError("asset_decision_requires_clean_session")
     ids = list(dict.fromkeys(message_ids))
     if not ids:
         return []
-    # Expire identity-map cache: this must read current rows, not caller snapshots.
     session.expire_all()
     snapshot = _snapshot(session, conversation_id, ids, model_option_key)
     if snapshot is None:
+        diag["outcome"] = "stale"
         return []
-    fingerprint, messages, scene, assets, links, route = snapshot
+    fingerprint, messages, scene, assets, links, route, context_messages, prior = snapshot
+
+    def finish(decisions):
+        result = _validated_result(session, conversation_id, ids, model_option_key, fingerprint,
+                                   decisions, apply_fence, diag)
+        diag["attached_count"] = len(result)
+        diag["elapsed_ms"] = min(120000, int((time.monotonic() - started) * 1000))
+        return result
+
     if route is None:
-        return _validated_result(session, conversation_id, ids, model_option_key, fingerprint, None, apply_fence)
-
-    from app.services.decision_transport import AssetDecisionQuestion, decide_assets
-
+        diag["outcome"] = "fallback"
+        return finish(None)
+    diag.update(requested_provider=route.provider_type, requested_model=_safe_text(route.model, 160))
     attached = {link.message_id for link in links}
-    reserved = {link.asset_id for link in links}
-    counts = {c: asset_selector.usage_counts(session, c) for c in {m.speaker_id for m in messages}}
-    recent = {c: asset_selector.recent_asset_ranks(session, conversation_id, c) for c in counts}
-    context = {"scene": {"location": (scene.location or "")[:3000] if scene else "",
-                         "mood": (scene.mood or "")[:3000] if scene else ""}, "messages": []}
+    reserved = {link.asset_id for link in links} | _repeat_ids(prior)
+    context = {
+        "scene": {"location": scene.location or "", "mood": scene.mood or ""} if scene else {},
+        "messages": [{"id": m.id, "speaker_id": m.speaker_id, "speaker_type": m.speaker_type,
+                      "reply_index": m.reply_index, **_body(m)} for m in context_messages],
+        "current_attachments": [{"message_id": l.message_id, "asset_id": l.asset_id} for l in links],
+        "prior_images": [{"message_id": p["message_id"], "speaker_id": p["speaker_id"],
+                          "asset_id": p["link"]["asset_id"]} for p in prior],
+        "asset_catalog": {}, "visual_asset_ids": [],
+    }
     questions = []
+    turn_text = _scene_text(context_messages)
     for message in messages:
-        if len(questions) >= MAX_QUESTIONS:
-            break
         if message.id in attached:
             continue
-        candidates = [a for a in assets if a.id not in reserved and _eligible(a, message, scene)]
-        candidates.sort(key=lambda a: (a.id in recent[a.character_id], counts[a.character_id].get(a.id, 0),
-                                       -max(0, min(100, a.priority or 0)), not a.is_default, a.id))
+        candidates = [a for a in assets if a.id not in reserved and _eligible(a, message, scene, turn_text)]
         if not candidates:
             continue
-        bubble = {"id": message.id, "content": message.content[:3000],
-                  "action": (message.action or "")[:3000], "emotion": (message.emotion or "")[:3000]}
-        # Exact source prefixes, no history or summaries. Stop at a full-bubble
-        # boundary rather than fabricating context for questions with no text.
-        context["messages"].append(bubble)
-        if len(json.dumps(context, ensure_ascii=False)) > MAX_CONTEXT:
-            context["messages"].pop()
-            break
-        vision_capable = 'image' in route.input_modalities and bool(route.image_mime_types)
-        candidate_limit = 8 if vision_capable else MAX_CANDIDATES
-        choices = {a.id: _description(a) for a in candidates[:candidate_limit]}
-        choices["none"] = "No image is needed for routine dialogue or an unchanged scene, or no candidate fits."
-        question = AssetDecisionQuestion(id=message.id, candidates=choices)
-        proposed = questions + [question]
-        # Include repeated candidate descriptions, not only the shared input.
-        # 1 KiB/question conservatively reserves provider envelope/instructions.
-        payload_chars = len(json.dumps(context, ensure_ascii=False)) + len(json.dumps(
-            [{"id": q.id, "candidates": q.candidates} for q in proposed], ensure_ascii=False,
-        )) + 1024 * len(proposed)
-        if payload_chars > MAX_REQUEST_CHARS:
-            context["messages"].pop()
-            break
-        questions.append(question)
+        if len(candidates) > MAX_CANDIDATES or len(messages) > MAX_QUESTIONS:
+            diag["outcome"] = "request_budget_exceeded"
+            return finish({})
+        choices = {}
+        for asset in candidates:
+            context["asset_catalog"][asset.id] = {"character_id": asset.character_id, **recommendation_facts(asset)}
+            choices[asset.id] = f"Catalog {asset.id}; owner {asset.character_id}."
+        choices["none"] = "No image: no fit or redundant moment."
+        questions.append(AssetDecisionQuestion(id=message.id, candidates=choices))
+    diag.update(question_count=len(questions), candidate_count=len(context["asset_catalog"]))
     if not questions:
-        return _validated_result(session, conversation_id, ids, model_option_key, fingerprint, None, apply_fence)
-    wanted = {alias for q in questions for alias in q.candidates if alias != 'none'}
-    media_candidates = [
-        {'id': asset.id, 'image_url': asset.image_url, 'thumbnail_url': asset.thumbnail_url}
-        for asset in assets if asset.id in wanted
-    ]
-    # Only primitive context, frozen route/questions and digest survive awaits.
-    del snapshot, messages, scene, assets, links
-    message = candidates = None
-    session.rollback()
-    decisions = None
+        return finish({})
+    candidate_ids = set(context["asset_catalog"])
+    for item in prior:
+        context["asset_catalog"].setdefault(item["link"]["asset_id"],
+            {"character_id": item["speaker_id"], **item["asset"]})
+    # Actual native UTF-8 text envelope, not an estimated character budget.
     try:
-        from app.services.decision_asset_media import prepare_images
+        diag["request_bytes"] = len(_request(route, context, questions)[4])
+    except DecisionRequestBudgetExceeded as exc:
+        diag.update(outcome="request_budget_exceeded", request_bytes=exc.request_bytes)
+        return finish({})
+    except (ValueError, TypeError):
+        diag["outcome"] = "request_budget_exceeded"
+        return finish({})
+    # Round-robin characters: visual supplement never truncates text catalogs.
+    by_character = {c: [a for a in assets if a.character_id == c and a.id in candidate_ids]
+                    for c in dict.fromkeys(m.speaker_id for m in messages)}
+    media_candidates = []
+    while any(by_character.values()) and len(media_candidates) < 8:
+        for bucket in by_character.values():
+            if bucket and len(media_candidates) < 8:
+                asset = bucket.pop(0)
+                media_candidates.append({"id": asset.id, "image_url": asset.image_url,
+                                         "thumbnail_url": asset.thumbnail_url})
+    del snapshot, messages, scene, assets, links, context_messages, prior, by_character
+    message = candidates = asset = bucket = None
+    session.rollback()
+    from app.services.decision_asset_media import prepare_images
+    try:
         images = await prepare_images(route, media_candidates)
-        request = {'context': context, 'questions': questions}
-        if images:
-            request['images'] = images
+    except Exception:
+        images = []
+    context["visual_asset_ids"] = [image.id for image in images]
+    diag.update(image_count=len(images), preparation_status="images" if images else "text_only")
+    request = {"context": context, "questions": questions}
+    if images:
+        request["images"] = images
+    try:
+        diag["request_bytes"] = len(_request(route, **request)[4])
+    except DecisionRequestBudgetExceeded as exc:
+        diag.update(outcome="request_budget_exceeded", request_bytes=exc.request_bytes)
+        return finish({})
+    except (ValueError, TypeError):
+        diag["outcome"] = "request_budget_exceeded"
+        return finish({})
+    # Outside the provider exception handler: failed ownership must not fallback.
+    if reserve_send is not None and not reserve_send():
+        diag["outcome"] = "send_recovery_abstention"
+        return finish({})
+    decisions = None
+    diag["outcome"] = "fallback"
+    try:
         answer = await asyncio.wait_for(decide_assets(route, **request), timeout=TOTAL_TIMEOUT)
         expected = {q.id: q.candidates for q in questions}
         if (isinstance(answer, dict) and set(answer) == set(expected)
                 and all(value is None or (isinstance(value, str) and value != "none" and value in expected[mid])
                         for mid, value in answer.items())):
             decisions = answer
+            diag["outcome"] = "success" if any(answer.values()) else "none"
     except Exception:
-        # Provider exceptions and malformed results are optional; no raw logging.
-        pass
+        pass  # Fixed aggregate outcome only; never raw provider text/errors.
     if session.new or session.dirty or session.deleted:
         raise ValueError("asset_decision_requires_clean_session")
-    return _validated_result(session, conversation_id, ids, model_option_key, fingerprint, decisions, apply_fence)
+    return finish(decisions)
