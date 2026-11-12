@@ -128,4 +128,5 @@ def delete_character_asset(asset_id: str, session: Session = Depends(get_session
     asset = asset_service.get_asset(session, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
-    asset_service.delete_asset(session, asset)
+    asset_service.delete_asset(session, asset, upload_root=UPLOAD_ROOT,
+                               shared_root=get_settings().shared_upload_root)

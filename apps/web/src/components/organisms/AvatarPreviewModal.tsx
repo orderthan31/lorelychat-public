@@ -1,3 +1,4 @@
+import { WebpImage } from '../atoms/WebpImage';
 import { Button } from '../atoms';
 import { Card, CardContent, CardHeader, CardTitle } from '../atoms';
 import { useI18n } from '../../i18n/I18nProvider';
@@ -34,7 +35,7 @@ export function AvatarPreviewModal({ preview, onClose }: AvatarPreviewModalProps
         <Button type="button" variant="ghost" size="icon" className="avatar-modal-close size-11 min-h-11 rounded-full border border-border bg-card/90 text-2xl leading-none text-foreground shadow-[0_10px_28px_rgba(0,0,0,.22)] backdrop-blur-md hover:bg-card hover:text-primary" aria-label={t('아바타 미리보기 닫기')} onClick={onClose}>×</Button>
       </CardHeader>
       <CardContent>
-        <img className="avatar-preview-image" src={preview.src} alt={formatProfileImageAlt(character.name || t('캐릭터'), locale)} />
+        <WebpImage variant="full" className="avatar-preview-image" src={preview.src} alt={formatProfileImageAlt(character.name || t('캐릭터'), locale)} />
         <div className="avatar-character-info">
           <section><h3>{t('설명')}</h3><p>{character.description || t('저장된 설명 없음')}</p></section>
           <section><h3>{t('페르소나')}</h3><p>{character.persona || t('저장된 페르소나 없음')}</p></section>

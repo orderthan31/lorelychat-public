@@ -210,7 +210,7 @@ def test_lifespan_timeout_keeps_real_singleton_lock_and_shared_budget(tmp_path, 
     monkeypatch.setenv('LORECHAT_RUNTIME_LOCK_PATH',str(lock_path))
     monkeypatch.setattr(main,'engine',engine)
     monkeypatch.setattr(main.app.state,'engine',engine,raising=False)
-    monkeypatch.setattr(main,'get_settings',lambda:SimpleNamespace(llm_mock=False,dispatcher_shutdown_timeout_seconds=.05))
+    monkeypatch.setattr(main,'get_settings',lambda:SimpleNamespace(llm_mock=False,dispatcher_shutdown_timeout_seconds=.05, upload_root=str(tmp_path/'uploads'), shared_upload_root=None))
     budgets=[]
     class Dispatcher:
         def start(self,*a):pass

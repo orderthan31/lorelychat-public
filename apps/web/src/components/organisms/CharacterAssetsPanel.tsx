@@ -1,6 +1,7 @@
+import { WebpImage } from '../atoms/WebpImage';
 import { useState, type Dispatch, type SetStateAction } from 'react';
 import { Field, FormSection } from '../molecules';
-import { assetUrlFor } from '../../utils/assets';
+import { imageUrlFor } from '../../utils/assets';
 import { Badge } from '../atoms';
 import { Button } from '../atoms';
 import { Card } from '../atoms';
@@ -133,14 +134,14 @@ export function CharacterAssetsPanel({ character, assets = [], loading = false, 
       </div>}
     </FormSection>
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">{assets.map((asset) => <Button type="button" variant="ghost" className="group relative aspect-square min-h-0 w-full overflow-hidden !rounded-none border border-border bg-white/[.055] p-0 shadow-[0_10px_24px_rgba(0,0,0,.2)]" key={asset.id} onClick={() => openAsset(asset)}>
-      <img className="block h-full w-full !rounded-none object-cover transition-transform duration-200 group-hover:scale-[1.04]" src={assetUrlFor(asset.thumbnail_url || asset.image_url)} alt={asset.label || t('캐릭터 에셋')} />
+      <WebpImage className="block h-full w-full !rounded-none object-cover transition-transform duration-200 group-hover:scale-[1.04]" src={imageUrlFor(asset.thumbnail_url || asset.image_url)} alt={asset.label || t('캐릭터 에셋')} />
       <span className="absolute inset-x-0 bottom-0 overflow-hidden text-ellipsis whitespace-nowrap bg-[linear-gradient(180deg,transparent,rgba(5,8,16,.82))] px-2 pb-2 pt-5 text-left text-xs leading-tight text-white [text-shadow:0_1px_8px_rgba(0,0,0,.8)]">{asset.label}{asset.is_default ? ` · ${t('기본')}` : ''}</span>
     </Button>)}</div>
     {selected && <div className="fixed inset-0 z-[90] grid place-items-center p-4" role="dialog" aria-modal="true">
       <div className="fixed inset-0 bg-black/70 backdrop-blur-[10px]" aria-hidden="true" onClick={() => setSelectedAsset(null)} />
       <Card className="relative z-[1] grid max-h-[92dvh] w-[min(94vw,880px)] grid-cols-1 overflow-auto rounded-3xl border border-border bg-[#10172b] shadow-[0_30px_90px_rgba(0,0,0,.5)] md:grid-cols-[minmax(0,1.25fr)_minmax(280px,.75fr)]">
         <Button type="button" variant="ghost" size="icon" className="gallery-preview-close absolute right-3 top-3 z-[2] size-11 min-h-11 rounded-full border border-white/20 bg-black/45 text-2xl leading-none text-white shadow-[0_10px_28px_rgba(0,0,0,.38)] backdrop-blur-md hover:bg-black/60 hover:text-white" aria-label={t('에셋 상세 닫기')} onClick={() => setSelectedAsset(null)}>×</Button>
-        <img className="h-full min-h-[360px] w-full max-h-[92dvh] object-contain bg-black/30" src={assetUrlFor(selected.image_url)} alt={selected.label || t('캐릭터 에셋')} />
+        <WebpImage variant="full" className="h-full min-h-[360px] w-full max-h-[92dvh] object-contain bg-black/30" src={imageUrlFor(selected.image_url, 'full')} alt={selected.label || t('캐릭터 에셋')} />
         <div className="grid content-start gap-3 p-4.5">
           <h3 className="m-0 text-[22px]">{selected.label}{selected.is_default ? ` · ${t('기본')}` : ''}</h3>
           <p className="m-0 leading-snug text-muted">{selected.description || selected.image_url}</p>

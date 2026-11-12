@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.assets import router as assets_router
+from app.api.images import router as images_router
 from app.api.characters import router as characters_router
 from app.api.chat_commands import router as chat_commands_router
 from app.api.conversations import _run_message_generation_job_sync, _run_post_commit_task_sync, _run_mock_generation_queue, router as conversations_router
@@ -71,6 +72,10 @@ async def lifespan(app: FastAPI):
                 os.getenv("LORECHAT_RUNTIME_LOCK_PATH", "/tmp/lorechat-back.lock")
             )
         init_db(target_engine)
+        from app.services.image_cleanup_journal import replay_cleanup
+        await asyncio.to_thread(replay_cleanup, target_engine,
+                                upload_root=Path(settings.upload_root),
+                                shared_root=settings.shared_upload_root, limit=16)
         with Session(target_engine) as session:
             seed_default_chat_commands(session)
             asset_service.migrate_existing_avatars(session)
@@ -173,6 +178,7 @@ def ready(session: Session = Depends(get_session)) -> dict:
 app.include_router(characters_router)
 app.include_router(chat_commands_router)
 app.include_router(assets_router)
+app.include_router(images_router)
 app.include_router(conversations_router)
 
 app.include_router(model_providers_router)

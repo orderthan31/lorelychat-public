@@ -1,3 +1,4 @@
+import { WebpImage } from '../../components/atoms/WebpImage';
 import { useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import { Pencil, Trash2 } from 'lucide-react';
@@ -61,7 +62,7 @@ function ParticipantAvatarStack({ participants = [], characterById }: { particip
   const visible = participantCharacters.slice(0, 2);
   const extraCount = Math.max(0, participantCharacters.length - visible.length);
   return <div className="absolute bottom-3 right-3 z-10 flex items-center justify-end" aria-label={formatParticipantCount(participantCharacters.length, locale)}>
-    {visible.map((character, index) => <img key={character.id} className={`h-10 w-10 rounded-full border-2 border-white object-cover shadow-[0_10px_26px_rgba(0,0,0,.35)] ${index > 0 ? '-ml-3' : ''}`} src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(character.name || t('캐릭터'), locale)} />)}
+    {visible.map((character, index) => <WebpImage key={character.id} className={`h-10 w-10 rounded-full border-2 border-white object-cover shadow-[0_10px_26px_rgba(0,0,0,.35)] ${index > 0 ? '-ml-3' : ''}`} src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(character.name || t('캐릭터'), locale)} />)}
     {extraCount > 0 && <span className="-ml-3 grid h-10 min-w-10 place-items-center rounded-full border-2 border-white bg-primary px-2 text-xs font-black leading-none text-primary-foreground shadow-[0_10px_26px_rgba(0,0,0,.35)]">+{extraCount}</span>}
   </div>;
 }
@@ -73,8 +74,8 @@ function ConversationThumbnail({ conversation, characterById }: { conversation: 
   const thumbnailUrl = conversation.thumbnail_url?.trim() ? conversationThumbnailUrlFor(conversation, theme) : '';
   return <div className="relative h-full w-full overflow-hidden bg-surface-muted">
     {thumbnailUrl
-      ? <img className="h-full w-full object-cover" src={thumbnailUrl} alt={t('세계관 썸네일')} />
-      : <img className="h-full w-full object-contain object-center bg-surface-muted p-7" src={lorelyAppIconUrlForTheme(theme)} alt={`${title} · ${t('기본 썸네일')}`} />}
+      ? <WebpImage className="h-full w-full object-cover" src={thumbnailUrl} alt={t('세계관 썸네일')} />
+      : <WebpImage className="h-full w-full object-contain object-center bg-surface-muted p-7" src={lorelyAppIconUrlForTheme(theme)} alt={`${title} · ${t('기본 썸네일')}`} />}
     <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/30 to-transparent" />
     <ParticipantAvatarStack participants={conversation.participants} characterById={characterById} />
   </div>;

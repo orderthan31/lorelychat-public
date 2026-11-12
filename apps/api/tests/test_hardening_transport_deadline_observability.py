@@ -151,17 +151,41 @@ async def test_telemetry_failure_counter_not_raw_diagnostic(wire,monkeypatch,cap
     assert 'PRIVATE_TELEMETRY_SENTINEL' not in caplog.text
 
 async def test_retry_after_cannot_outlive_task(wire,monkeypatch):
+    from app.engine import llm_transport_deadline as deadline
+
+    # Bootstrap is not retry/backoff: a cold native adapter can consume a 40ms
+    # allowance before any request. Warm it, then consume the application clock
+    # at the actual first response, leaving only 20ms for a real 10-second wait.
+    wire[1].append(httpx.Response(200,json=native('openai')))
+    await make().chat([])
+    wire[0].clear()
+    clock=[time.monotonic()]
+    application_clock=SimpleNamespace(monotonic=lambda:clock[0])
+    monkeypatch.setattr(llm,'time',application_clock)
+    monkeypatch.setattr(deadline,'time',application_clock)
+    transport=sdk.new_http_transport()
+    remainders=[]
+    async def send(request):
+        response=await transport.handle_async_request(request)
+        clock[0]+=9.98
+        remainders.append(deadline.remaining_seconds())
+        return response
+    monkeypatch.setattr(sdk,'new_http_transport',lambda:httpx.MockTransport(send))
     class Task:
-        settings=SimpleNamespace(llm_task_deadline_seconds=0.04)
+        settings=SimpleNamespace(llm_task_deadline_seconds=10.0)
         @llm.bounded_llm_task
         async def run(self):
             obj=make()
             monkeypatch.setattr(obj,'retry_delay_seconds',lambda *a,**k:10)
             return await obj.chat([])
     wire[1].append(httpx.Response(503,json={'error':{}}))
+    previous=TASK_DEADLINE.get()
     started=time.monotonic()
-    with pytest.raises(LLMTaskDeadlineError):await Task().run()
+    with pytest.raises(LLMTaskDeadlineError) as caught:await Task().run()
     assert len(wire[0])==1 and time.monotonic()-started<0.5
+    assert remainders==pytest.approx([0.02])
+    assert caught.value.transport_attempts==1
+    assert TASK_DEADLINE.get()==previous
 
 async def test_fallback_receives_remaining_not_fresh_deadline(wire,monkeypatch):
     from app.engine import llm_transport_deadline as deadline

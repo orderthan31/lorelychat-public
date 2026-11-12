@@ -1,3 +1,4 @@
+import { WebpImage } from '../atoms/WebpImage';
 import { EMPTY_CHARACTER } from '../../constants/domain';
 import { avatarUrlFor } from '../../utils/assets';
 import { useUiStore } from '../../stores/uiStore';
@@ -31,7 +32,7 @@ export function CharacterCardPreviewModal({ character, onClose }: CharacterCardP
       </CardHeader>
       <CardContent>
         <div className="card-preview-hero">
-          <img className="card-preview-avatar" src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(String(character.name || t('캐릭터')), locale)} />
+          <WebpImage className="card-preview-avatar" src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(String(character.name || t('캐릭터')), locale)} />
           <div><strong>{character.name || t('새 캐릭터')}</strong><span>{character.description || t('설명 없음')}</span></div>
         </div>
         <div className="card-preview-grid">

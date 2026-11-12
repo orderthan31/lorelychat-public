@@ -1,3 +1,4 @@
+import { WebpImage } from '../../components/atoms/WebpImage';
 import { useEffect, useState, useTransition } from 'react';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import { Field, FormSection, ResourceCard } from '../../components/molecules';
@@ -91,7 +92,7 @@ export function WorldSettingsListView({ worldSettings = [], navigate, loadWorldS
         title={world.title || t('이름 없는 세계관')}
         description={world.description || world.world_seed || t('설명 없음')}
         meta={<><span>{t(world.enabled === false ? '비활성' : '활성')}</span><span>·</span><span>{t(genreModeLabel(world.genre_mode) as UiMessageKey)}</span></>}
-        media={<img className={`h-full w-full object-cover ${world.thumbnail_url ? '' : 'object-contain bg-surface-muted p-1.5'}`} src={world.thumbnail_url ? conversationThumbnailUrlFor(world, theme) : lorelyAppIconUrlForTheme(theme)} alt={t('세계관 썸네일')} />}
+        media={<WebpImage className={`h-full w-full object-cover ${world.thumbnail_url ? '' : 'object-contain bg-surface-muted p-1.5'}`} src={world.thumbnail_url ? conversationThumbnailUrlFor(world, theme) : lorelyAppIconUrlForTheme(theme)} alt={t('세계관 썸네일')} />}
         openLabel={formatNamedAction(world.title || t('세계관'), 'open', locale)}
         onOpen={() => navigate(`/world-settings/${world.id}`)}
       />)}
@@ -139,7 +140,7 @@ export function WorldSettingsDetailView({ route, worldSettings = [], loading = f
         <div className="grid gap-3 sm:grid-cols-[148px_minmax(0,1fr)] sm:items-start">
           <div className="overflow-hidden rounded-xl border border-border bg-background">
             <div className="aspect-square w-full">
-              <img className={`h-full w-full object-cover ${draft.thumbnail_url ? '' : '!object-contain !object-center bg-[radial-gradient(circle_at_20%_12%,rgba(255,255,255,.95),transparent_28%),linear-gradient(135deg,#fff7f9,#ffe8ec_52%,#fffafc)] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,.82),0_10px_24px_rgba(240,90,104,.10)]'}`} src={draft.thumbnail_url ? conversationThumbnailUrlFor(draft, theme) : lorelyAppIconUrlForTheme(theme)} alt={t('세계관 썸네일')} />
+              <WebpImage className={`h-full w-full object-cover ${draft.thumbnail_url ? '' : '!object-contain !object-center bg-[radial-gradient(circle_at_20%_12%,rgba(255,255,255,.95),transparent_28%),linear-gradient(135deg,#fff7f9,#ffe8ec_52%,#fffafc)] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,.82),0_10px_24px_rgba(240,90,104,.10)]'}`} src={draft.thumbnail_url ? conversationThumbnailUrlFor(draft, theme) : lorelyAppIconUrlForTheme(theme)} alt={t('세계관 썸네일')} />
             </div>
           </div>
           <div className="grid gap-2">

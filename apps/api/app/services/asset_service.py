@@ -208,10 +208,29 @@ def update_asset(session: Session, asset: CharacterAsset, payload: CharacterAsse
     return asset
 
 
-def delete_asset(session: Session, asset: CharacterAsset) -> None:
-    session.exec(delete(MessageAsset).where(MessageAsset.asset_id == asset.id))
-    session.delete(asset)
-    session.commit()
+def delete_asset(session: Session, asset: CharacterAsset, *, upload_root: Path | None = None, shared_root: str | None = None) -> None:
+    from app.core.config import get_settings
+    from app.services.image_cleanup_journal import stage_cleanup, replay_cleanup
+    settings = get_settings()
+    root = upload_root or Path(settings.upload_root)
+    shared = shared_root if shared_root is not None else settings.shared_upload_root
+    asset_id, character_id = asset.id, asset.character_id
+    urls = [asset.image_url, asset.thumbnail_url]
+    bind = session.get_bind()
+    ticket = stage_cleanup(asset_id, character_id, urls, upload_root=root, shared_root=shared)
+    try:
+        session.exec(delete(MessageAsset).where(MessageAsset.asset_id == asset_id))
+        session.delete(asset)
+        session.commit()
+        # Own locked ticket first; retries cannot discard it before domain commit.
+        if ticket is not None:
+            ticket.complete(bind, upload_root=root, shared_root=shared)
+    finally:
+        if ticket is not None:
+            ticket.release()
+    # No request transaction is held during fresh-session reference checks.
+    replay_cleanup(bind, upload_root=root, shared_root=shared, limit=1,
+                   skip=ticket.name if ticket is not None else None)
 
 
 def set_default_avatar(session: Session, asset_id: str) -> CharacterAsset:

@@ -1,3 +1,4 @@
+import { WebpImage } from '../../components/atoms/WebpImage';
 import { useState, useTransition } from 'react';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import { characterApi } from '../../api/resources';
@@ -48,7 +49,7 @@ export function CharactersListView({ characters = [], navigate }: CharactersList
       key={c.id}
       title={c.name || t('이름 없는 캐릭터')}
       description={c.description || c.persona || t('설명 없음')}
-      media={<img className="h-full w-full object-cover object-top" src={avatarUrlFor(c, theme)} alt={formatProfileImageAlt(c.name || t('캐릭터'), locale)} />}
+      media={<WebpImage className="h-full w-full object-cover object-top" src={avatarUrlFor(c, theme)} alt={formatProfileImageAlt(c.name || t('캐릭터'), locale)} />}
       openLabel={formatNamedAction(c.name || t('캐릭터'), 'open', locale)}
       onOpen={() => navigate(`/characters/${c.id}`)}
     />)}

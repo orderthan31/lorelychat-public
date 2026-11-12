@@ -1,3 +1,4 @@
+import { WebpImage } from '../../components/atoms/WebpImage';
 import { Children, cloneElement, isValidElement, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { useSuspenseQueries } from '@tanstack/react-query';
 import { characterApi, conversationApi, settingsApi } from '../../api/resources';
@@ -86,9 +87,9 @@ function WorldThumbnail({ world, title }: { world?: HomeWorldSettingItem | null;
   const theme = useUiStore((state) => state.theme);
   const { t } = useI18n();
   const thumbnailUrl = world?.thumbnail_url?.trim() ? conversationThumbnailUrlFor(world, theme) : '';
-  if (thumbnailUrl) return <img src={thumbnailUrl} alt={t('세계관 썸네일')} />;
+  if (thumbnailUrl) return <WebpImage src={thumbnailUrl} alt={t('세계관 썸네일')} />;
   return <span className="room-thumbnail-default" role="img" aria-label={`${title} · ${t('기본 썸네일')}`} data-default-thumbnail>
-    <img src={lorelyAppIconUrlForTheme(theme)} alt="" aria-hidden="true" />
+    <WebpImage src={lorelyAppIconUrlForTheme(theme)} alt="" aria-hidden="true" />
   </span>;
 }
 
@@ -102,7 +103,7 @@ function ParticipantAvatarStack({ participants = [], characterById }: { particip
   const visible = participantCharacters.slice(0, 2);
   const extraCount = Math.max(0, participantCharacters.length - visible.length);
   return <span className="room-participant-stack" aria-label={formatParticipantCount(participantCharacters.length, locale)}>
-    {visible.map((character) => <img key={character.id} src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(character.name || t('캐릭터'), locale)} />)}
+    {visible.map((character) => <WebpImage key={character.id} src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(character.name || t('캐릭터'), locale)} />)}
     {extraCount > 0 && <span className="room-participant-more">+{extraCount}</span>}
   </span>;
 }
@@ -148,7 +149,7 @@ export function HomeView({ conversations = [], characters = [], allCharacters = 
 
     <Rail title={t('자주 사용하는 캐릭터')} action={<Button type="button" variant="ghost" size="sm" onClick={() => navigate('/characters')}>{t('캐릭터 보기')}</Button>} auto>
       {favoriteCharacters.length ? favoriteCharacters.map((character) => <button type="button" key={character.id} className="recommend-card character-recommend-card touch-auto" onClick={() => navigate(`/characters/${character.id}`)}>
-        <img src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(character.name || t('캐릭터'), locale)} />
+        <WebpImage src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(character.name || t('캐릭터'), locale)} />
         <span><strong>{character.name || t('이름 없는 캐릭터')}</strong>{character.message_count || character.description ? <small>{character.message_count ? formatCharacterActivity(character.message_count, character.room_count || 0, locale) : character.description}</small> : null}</span>
       </button>) : <div className="empty-recommend-card"><strong>{t('등록된 캐릭터 없음')}</strong></div>}
     </Rail>

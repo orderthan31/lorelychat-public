@@ -655,7 +655,7 @@ assert.match(app, /<h3>\{t\('설명'\)\}<\/h3>/);
 assert.match(app, /<h3>\{t\('페르소나'\)\}<\/h3>/);
 assert.match(app, /character\.description \|\| t\('저장된 설명 없음'\)/);
 assert.match(app, /character\.persona \|\| t\('저장된 페르소나 없음'\)/);
-assert.match(app, /onClick=\{\(\) => onAvatarPreview\?\.\(\{ character, emotion: message\.emotion \|\| t\('아직 없음'\), src: avatarUrlFor\(character, theme\) \}\)\}/);
+assert.match(app, /onClick=\{\(\) => onAvatarPreview\?\.\(\{ character, emotion: message\.emotion \|\| t\('아직 없음'\), src: avatarUrlFor\(character, theme, 'full'\) \}\)\}/);
 assert.match(app, /const \[battleControlDraft, setBattleControlDraft\]/);
 assert.match(app, /battle_control: battleControlPayload/);
 assert.match(app, /loadBattleState\(selectedConversationId\)/);

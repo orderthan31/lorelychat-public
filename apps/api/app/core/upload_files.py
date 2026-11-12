@@ -73,6 +73,21 @@ class UploadStaticFiles(StaticFiles):
         if shared_upload_root:
             self.all_directories.append(Path(shared_upload_root).expanduser().resolve())
 
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        # Derivative metadata, remote snapshots and lock anchors are private.
+        # Only the typed /images API may serve validated cached image bytes.
+        if {'.image-cache', '.image-cleanup'}.intersection(Path(path).parts):
+            raise HTTPException(status_code=404)
+        return await super().get_response(path, scope)
+
+    def lookup_path(self, path: str):
+        full_path, result = super().lookup_path(path)
+        # Ordered static lookup resolves aliases before returning. Guard that
+        # resolved identity too, not only the spelling present in the request.
+        if {'.image-cache', '.image-cleanup'}.intersection(Path(full_path).parts):
+            return '', None
+        return full_path, result
+
     def file_response(
         self,
         full_path: str | os.PathLike[str],

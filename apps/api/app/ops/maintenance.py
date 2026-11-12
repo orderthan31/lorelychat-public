@@ -104,7 +104,10 @@ def media_inventory(database, upload_root, *, shared_root=None):
         if root==shared or root.is_relative_to(shared) or shared.is_relative_to(root):raise ValueError('Private/shared media roots must be disjoint')
     refs=referenced_uploads(database);orphans=[];files=set()
     for directory,dirs,names in os.walk(root,followlinks=False):
-        dirs[:]=[name for name in dirs if not (Path(directory)/name).is_symlink()]
+        # Internal derivatives/retry intents are not domain-media orphans and
+        # their private filenames must not enter the operator's source report.
+        dirs[:]=[name for name in dirs if name not in {'.image-cache', '.image-cleanup'}
+                 and not (Path(directory)/name).is_symlink()]
         for name in names:
             path=Path(directory)/name
             if path.is_symlink() or not path.is_file():continue
