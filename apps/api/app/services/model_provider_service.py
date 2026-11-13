@@ -206,6 +206,8 @@ def _context_metadata(metadata: dict | None) -> tuple[int | None, int | None]:
 
 def _family_for_provider(provider_type: str, model: str) -> str:
     lowered = model.lower()
+    if provider_type == "vertex_ai":
+        return "gemini" if lowered.startswith("gemini-") else "custom"
     if provider_type == "google":
         return "gemini"
     if provider_type == "openai":
@@ -228,6 +230,23 @@ def _capabilities_for_model(
 ) -> tuple[bool, bool, bool, bool, bool]:
     metadata = metadata or {}
     lowered = model.lower()
+    if provider_type == "vertex_ai":
+        # Model Garden includes deployable/embedding/media entries. Presence is
+        # not evidence of serverless access, regional availability or entitlement.
+        if not re.fullmatch(r'gemini-[a-zA-Z0-9][a-zA-Z0-9.-]{0,119}', model):
+            return False, False, False, False, False
+        if any(word in lowered for word in ('decision', 'image', 'live', 'embedding', 'robotics', 'research', 'computer-use')):
+            return False, False, False, False, False
+        # Positive family grammar: do not admit an unknown Gemini product
+        # (e.g. Omni, transcription or Nano Banana) as text merely by prefix.
+        is_tts = lowered in vertex_auth.TTS_MODELS
+        # Official Cloud model pages document GenerateContent for these new
+        # families; catalog presence alone did not establish that support.
+        # https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-argon
+        # https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-carbon
+        # https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-hydrogen
+        chat = lowered in {'gemini-4-argon', 'gemini-4-carbon', 'gemini-4-hydrogen'} or bool(re.fullmatch(r'gemini-\d+(?:\.\d+)?-(?:pro|flash)(?:-lite)?(?:-(?:preview|exp))?(?:-\d{2,4}){0,3}', lowered))
+        return chat, chat, is_tts, False, chat
     if provider_type == "google":
         # Decisions uses /decisions, not generateContent. Until the catalog
         # documents a decision capability field, recognize only the known ID.
@@ -283,6 +302,15 @@ def _capabilities_for_model(
 
 def _decision_input_capabilities(provider_type: str, model: str, metadata: dict | None,
                                  supports_decision: bool) -> ModelInputCapabilities:
+    if provider_type == 'vertex_ai':
+        chat, _, tts, _, _ = _capabilities_for_model(provider_type, model, metadata)
+        if chat:
+            # Reviewed Gemini generateContent input formats supported by this
+            # application's image surface, not an entitlement claim.
+            return ModelInputCapabilities(input_modalities=['text', 'image'],
+                image_mime_types=['image/png', 'image/jpeg', 'image/webp'], capability_source='official_registry')
+        if tts:
+            return ModelInputCapabilities(input_modalities=['text'], image_mime_types=[], capability_source='official_registry')
     if not supports_decision:
         return ModelInputCapabilities()
     # Exact reviewed native registry. OpenAI general vision supports WebP, but
@@ -340,7 +368,11 @@ def _provider_model(model: str, label: str | None, provider_type: str, metadata:
 
 def fetch_provider_models(account: ModelProviderAccount) -> list[ProviderModel]:
     if account.provider_type == 'vertex_ai':
-        raise ValueError('Vertex has no automatic model catalog; add a Gemini model ID manually')
+        from app.engine import vertex_catalog
+        credential = (provider_secret_service.get_secret(account.api_key_secret_ref)
+                      if account.vertex_auth_mode != 'adc' else None)
+        return [_provider_model(item['model_id'], item.get('displayName'), 'vertex_ai', item)
+                for item in vertex_catalog.fetch_models(account, credential)]
     api_key = provider_secret_service.get_secret(account.api_key_secret_ref)
     timeout = 30.0
     try:
@@ -724,12 +756,23 @@ def list_options(session: Session, *, provider_account_id: str | None = None) ->
     return [serialize_option(option, accounts.get(option.provider_account_id)) for option in options if accounts.get(option.provider_account_id)]
 
 
+def _validate_vertex_capabilities(model, payload, existing=None):
+    allowed = _capabilities_for_model('vertex_ai', model)
+    fields = ('supports_chat', 'supports_compression', 'supports_tts', 'supports_decision')
+    for field, supported in zip(fields, allowed):
+        requested = getattr(payload, field)
+        if requested is None and existing is not None and payload.enabled is True:
+            requested = getattr(existing, field)
+        if requested and not supported:
+            raise ValueError('Vertex model does not support the requested application capability')
+    if payload.enabled is True and not any(allowed[:4]):
+        raise ValueError('Vertex model has no supported application capability')
+
+
 def create_manual_option(session: Session, payload: ModelOptionManualCreate) -> ModelOption:
     account = _account_by_id(session, payload.provider_account_id)
     if account.provider_type == 'vertex_ai':
-        vertex_auth.validate_model(payload.model)
-        if payload.supports_tts or payload.supports_decision:
-            raise ValueError('Vertex currently supports chat and compression only')
+        _validate_vertex_capabilities(payload.model, payload)
         payload = payload.model_copy(update={'model_family': 'gemini'})
     explicit = bool({"input_modalities", "image_mime_types"} & payload.model_fields_set)
     capabilities = (ModelInputCapabilities(input_modalities=payload.input_modalities,
@@ -765,11 +808,9 @@ def create_manual_option(session: Session, payload: ModelOptionManualCreate) -> 
 def update_option(session: Session, option_id: str, payload: ModelOptionUpdate) -> ModelOption:
     option = _option_by_id(session, option_id)
     if option.provider_type == 'vertex_ai':
-        vertex_auth.validate_model(option.model)
-        if payload.supports_tts or payload.supports_decision:
-            raise ValueError('Vertex currently supports chat and compression only')
-        if payload.model_family not in (None, 'gemini'):
-            raise ValueError('Vertex currently supports Gemini only')
+        _validate_vertex_capabilities(option.model, payload, existing=option)
+        if payload.model_family not in (None, _family_for_provider('vertex_ai', option.model)):
+            raise ValueError('Vertex model family does not match the supported runtime')
     capability_fields = {"input_modalities", "image_mime_types"} & payload.model_fields_set
     if capability_fields:
         modalities = payload.input_modalities if "input_modalities" in capability_fields else option.input_modalities
@@ -821,7 +862,7 @@ def active_options_for_runtime(session: Session, capability: str) -> list[ModelO
             result.append(option)
         elif capability == "compression" and option.supports_compression:
             result.append(option)
-        elif capability == "tts" and option.supports_tts and option.provider_type == "google" and option.model_family == "gemini":
+        elif capability == "tts" and option.supports_tts and option.provider_type in {"google", "vertex_ai"} and option.model_family == "gemini":
             result.append(option)
         elif capability == "decision" and option.supports_decision and option.provider_type in {"google", "openrouter", "openai", "openai_compatible"}:
             result.append(option)
@@ -843,7 +884,7 @@ def option_is_active_for_capability(session: Session, option: ModelOption, capab
     if capability == "compression":
         return option.supports_compression
     if capability == "tts":
-        return option.supports_tts and option.provider_type == "google" and option.model_family == "gemini"
+        return option.supports_tts and option.provider_type in {"google", "vertex_ai"} and option.model_family == "gemini"
     if capability == "decision":
         return option.supports_decision and option.provider_type in {"google", "openrouter", "openai", "openai_compatible"}
     return False

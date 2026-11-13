@@ -16,10 +16,14 @@ async def sdk_completion(route, *, messages, parameters, client, timeout):
     from litellm.llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import VertexLLM, VertexGeminiConfig
     from litellm.llms.vertex_ai.gemini.transformation import get_supports_response_schema
 
+    if route.model in vertex_auth.TTS_MODELS:
+        raise TransportConfigurationError('Vertex TTS models require the audio synthesis surface')
+    if route.vertex_location in {'us', 'eu'}:
+        raise TransportConfigurationError('This chat SDK route requires global or a regional location')
     if any(not isinstance(message, dict) or not message.keys() <= {'role', 'content'}
            or message.get('role') not in {'system', 'user', 'assistant'}
            or not isinstance(message.get('content'), str) for message in messages):
-        raise TransportConfigurationError('Vertex currently supports text messages only')
+        raise TransportConfigurationError('Chat/compression accepts text messages; image assets use the separate Decision surface')
     config = VertexGeminiConfig()
     allowed = {'temperature', 'top_p', 'top_k', 'max_tokens', 'response_format', 'thinkingConfig', 'safety_settings'}
     if not parameters.keys() <= allowed:

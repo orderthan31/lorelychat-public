@@ -23,6 +23,14 @@ try {
     const page = await browser.newPage({ viewport: { width: locale === 'en' ? 360 : 390, height: 844 } });
     const errors = [], writes = [];
     let account = { id: 'synthetic-vertex', provider_type: 'vertex_ai', alias: 'Synthetic Vertex', enabled: true, configured: true, api_key_status: 'set', api_key_hint: 'MUST-NOT-RENDER-HINT', vertex_project: 'synthetic-project', vertex_location: 'global', vertex_auth_mode: 'service_account', last_test_status: 'success' };
+    const secondAccount = { ...account, id: 'synthetic-other', alias: 'Other Vertex' };
+    let syncFailure = false;
+    let options = [];
+    const fetchedModels = [
+      { id: 'chat-option', model: 'gemini-synthetic-chat', display_label: 'Synthetic chat', supports_chat: true, supports_compression: true, supports_tts: false },
+      { id: 'tts-option', model: 'gemini-synthetic-tts', display_label: 'Synthetic TTS', supports_chat: false, supports_compression: false, supports_tts: true },
+      { id: 'excluded-option', model: 'synthetic-image-output', display_label: 'Synthetic excluded output', supports_chat: false, supports_compression: false, supports_tts: false },
+    ].map(option => ({ ...option, key: option.id, label: option.display_label, provider_account_id: account.id, provider_account_alias: account.alias, provider_type: 'vertex_ai', model_family: 'gemini', supports_decision: false, enabled: true, source: 'fetched', input_modalities: ['text'], image_mime_types: [], capability_source: 'provider' }));
     page.on('pageerror', error => errors.push(error.message));
     await page.addInitScript(locale => localStorage.setItem('lorechat-language', locale), locale);
     await page.route('**/*', route => {
@@ -30,21 +38,35 @@ try {
       if (url.origin !== origin) return route.abort();
       if (url.pathname.startsWith('/api/')) {
         if (req.method() !== 'GET') writes.push({ path: url.pathname, body: req.postDataJSON() });
+        if (url.pathname.endsWith('/sync-models')) {
+          assert.equal(req.method(), 'POST');
+          assert.deepEqual(req.postDataJSON(), {}, 'refresh must not resend credentials');
+          if (syncFailure) return route.fulfill({ status: 400, json: { detail: 'Synthetic catalog unavailable' } });
+          options = fetchedModels;
+          return route.fulfill({ json: options });
+        }
         if (url.pathname.endsWith('/test')) return route.fulfill({ json: { status: account.configured ? 'success' : 'failed', message: 'Synthetic configuration check only' } });
         if (url.pathname === '/api/model-provider-accounts/synthetic-vertex' && req.method() === 'PATCH') {
           const payload = req.postDataJSON();
           account = { ...account, configured: payload.vertex_auth_mode === 'adc' || (!payload.clear_api_key && account.configured), ...Object.fromEntries(Object.entries(payload).filter(([key]) => !['api_key', 'clear_api_key'].includes(key))), api_key_status: payload.clear_api_key ? 'missing' : account.api_key_status };
           return route.fulfill({ json: account });
         }
-        if (url.pathname === '/api/model-provider-accounts') return route.fulfill({ json: req.method() === 'POST' ? { ...account, id: 'synthetic-created' } : [account] });
-        if (url.pathname === '/api/model-options') return route.fulfill({ json: [] });
+        if (url.pathname === '/api/model-provider-accounts') return route.fulfill({ json: req.method() === 'POST' ? { ...account, id: 'synthetic-created' } : [account, secondAccount] });
+        if (url.pathname === '/api/runtime-settings/default') return route.fulfill({ json: {
+          model_key: null, compression_model_key: null, default_tts_model_option_key: null, decision_enabled: false,
+          options: options.filter(option => option.supports_chat),
+          compression_options: options.filter(option => option.supports_compression),
+          tts_options: options.filter(option => option.supports_tts), decision_options: [],
+        } });
+        if (url.pathname === '/api/model-options') return route.fulfill({ json: options });
         if (url.pathname.endsWith('/manual')) return route.fulfill({ json: {} });
         return route.fulfill({ status: 404, json: { detail: 'Synthetic fixture only' } });
       }
       return route.continue();
     });
     await page.goto(`${origin}/vertex-fixture#providers`);
-    const card = page.locator('[data-provider-account-card]');
+    const card = page.locator('[data-provider-account-card]').filter({ has: page.locator('[data-provider-refresh-account=synthetic-vertex]') });
+    const otherCard = page.locator('[data-provider-account-card]').filter({ hasText: 'Other Vertex' });
     await expect(card).toContainText('Synthetic Vertex');
     assert.ok(!(await page.locator('body').innerText()).includes('MUST-NOT-RENDER-HINT'));
     await card.locator('summary').click();
@@ -52,7 +74,25 @@ try {
     // Do not let a picker accept filter hide them; validate the file contents.
     assert.equal(await card.locator('input[type=file]').getAttribute('accept'), null);
     const check = process.env.VERTEX_RED_CASE;
-    if (!check || check === 'sync') await expect(card.locator('[data-provider-refresh-account]')).toHaveCount(0);
+    if (!check || check === 'sync') {
+      const refresh = card.locator('[data-provider-refresh-account]');
+      await expect(refresh).toBeEnabled();
+      await refresh.click();
+      await expect(card.locator('[data-provider-refresh-result=success]')).toContainText(t('모델 목록 최신화 완료'));
+      await expect(otherCard.locator('[data-provider-refresh-result]')).toHaveCount(0);
+      await expect(refresh).toBeEnabled();
+      syncFailure = true;
+      await refresh.click();
+      await expect(card.locator('[data-provider-refresh-result=error]')).toContainText(t('모델 목록 최신화 실패 ·'));
+      await expect(otherCard.locator('[data-provider-refresh-result]')).toHaveCount(0);
+      await expect(refresh).toBeEnabled();
+      syncFailure = false;
+      await refresh.click();
+      await expect(card.locator('[data-provider-refresh-result=success]')).toContainText(t('모델 목록 최신화 완료'));
+      await expect(card.locator('[data-provider-refresh-result=error]')).toHaveCount(0);
+      await expect(refresh).toBeEnabled();
+    }
+    const writesBeforeFileRead = writes.length;
     if (!check || check === 'adc') {
       await card.locator('label').filter({ has: page.getByText(t('인증 방식'), { exact: true }) }).locator('select').selectOption('adc');
       await expect(card).toContainText(t('ADC로 저장하면 기존 JSON이 제거되고 서버에 구성된 ADC를 사용합니다.'));
@@ -76,9 +116,23 @@ try {
       await page.locator('[role=tab][id$="-trigger-providers"]').click();
       await card.locator('summary').click();
       await expect(card).toContainText(t('파일 내용과 이름은 표시하지 않습니다. 기존 인증 정보는 새 파일을 저장할 때만 교체됩니다.'));
-      assert.equal(writes.length, 0);
+      assert.equal(writes.length, writesBeforeFileRead);
     }
     if (check) { await page.close(); break; }
+    await page.locator('[role=tab][id$="-trigger-runtime"]').click();
+    const runtime = page.locator('[data-settings-section=runtime]');
+    const runtimeSelect = key => runtime.locator('label').filter({ has: page.getByText(t(key), { exact: true }) }).locator('select');
+    await runtimeSelect('채팅 Provider').selectOption('synthetic-vertex');
+    await expect(runtimeSelect('채팅 모델')).toHaveValue('chat-option');
+    await expect(runtimeSelect('채팅 모델').locator('option')).toHaveCount(2);
+    await runtimeSelect('압축 Provider').selectOption('synthetic-vertex');
+    await expect(runtimeSelect('압축 모델')).toHaveValue('chat-option');
+    await runtimeSelect('TTS 모델').selectOption('tts-option');
+    await expect(runtimeSelect('TTS 모델')).toHaveValue('tts-option');
+    await expect(runtimeSelect('TTS 모델').locator('option')).toHaveCount(2);
+    await expect(runtimeSelect('의사결정 Provider')).toBeDisabled();
+    await page.locator('[role=tab][id$="-trigger-providers"]').click();
+    await card.locator('summary').click();
     await card.getByLabel(t('Google Cloud 프로젝트 ID')).fill('changed-project');
     await card.getByRole('button', { name: t('Vertex 설정 저장'), exact: true }).click();
     await expect(card.getByRole('button', { name: t('Vertex 설정 저장'), exact: true })).toBeEnabled();
@@ -105,6 +159,7 @@ try {
     await page.locator('.danger-confirm-button').click();
     await expect(card.getByRole('button', { name: t('저장된 JSON 제거'), exact: true })).toBeDisabled();
     assert.deepEqual(writes.at(-1).body, { clear_api_key: true });
+    await expect(card.locator('[data-provider-refresh-account]')).toBeDisabled();
     await card.getByRole('button', { name: t('설정 확인 (호출 없음)'), exact: true }).click();
     await expect(page.locator('header').first()).toContainText(t('프로젝트, 위치 및 인증 정보를 확인하세요.'));
     await card.locator('label').filter({ has: page.getByText(t('인증 방식'), { exact: true }) }).locator('select').selectOption('adc');
@@ -133,6 +188,21 @@ try {
     assert.equal(createPayload.vertex_auth_mode, 'adc');
     assert.equal('api_key' in createPayload, false); assert.equal('base_url' in createPayload, false);
     await page.locator('[role=tab][id$="-trigger-models"]').click();
+    const capabilityFilter = page.locator('[data-model-list] label').filter({ has: page.getByText(t('용도'), { exact: true }) }).locator('select').first();
+    await page.locator('[data-model-list] label').filter({ has: page.getByText(t('Provider 계정'), { exact: true }) }).locator('select').first().selectOption('synthetic-vertex');
+    await expect(page.locator('[data-model-row]')).toHaveCount(2);
+    await capabilityFilter.selectOption('chat');
+    await expect(page.locator('[data-model-row]')).toHaveCount(1);
+    await expect(page.locator('[data-model-row]')).toContainText('Synthetic chat');
+    await capabilityFilter.selectOption('tts');
+    await expect(page.locator('[data-model-row]')).toHaveCount(1);
+    await expect(page.locator('[data-model-row]')).toContainText('Synthetic TTS');
+    await capabilityFilter.selectOption('decision');
+    await expect(page.locator('[data-model-row]')).toHaveCount(0);
+    await capabilityFilter.selectOption('none');
+    await expect(page.locator('[data-model-row]')).toHaveCount(1);
+    await expect(page.locator('[data-model-row]')).toContainText('Synthetic excluded output');
+    await capabilityFilter.selectOption('runtime');
     const manual = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: t('수동 추가') }) });
     await manual.locator('summary').click();
     await manual.locator('label').filter({ has: page.getByText(t('Provider 계정'), { exact: true }) }).locator('select').selectOption('synthetic-vertex');
@@ -147,9 +217,21 @@ try {
     assert.equal(writes.at(-1).body.supports_compression, true);
     assert.equal(writes.at(-1).body.supports_decision, false);
     assert.equal(writes.at(-1).body.supports_tts, false);
-    assert.equal(writes.some(write => write.path.endsWith('/sync-models')), false);
+    assert.equal(writes.filter(write => write.path.endsWith('/sync-models')).length, 3);
     assert.deepEqual(errors, []);
-    console.log(`PASS ${locale}: mobile form, private upload/replacement/clear, omitted secret, ADC create, configuration-only check and manual capability restrictions; ${writes.length} synthetic writes`);
+    await page.goto(origin + '/vertex-fixture?character=1');
+    await page.getByRole('button', { name: t('TTS'), exact: true }).click();
+    const characterSelect = key => page.locator('label').filter({ has: page.getByText(t(key), { exact: true }) }).locator('select');
+    await characterSelect('TTS 엔진').selectOption('vertex_ai');
+    await expect(characterSelect('음성 모델')).toHaveValue('vertex-owned-tts');
+    await expect(characterSelect('보이스')).toHaveValue('Kore');
+    await page.getByRole('button', { name: t('샘플 듣기'), exact: true }).click();
+    const sample = JSON.parse(await page.locator('[data-character-sample]').innerText());
+    assert.equal(sample.tts_provider, 'vertex_ai');
+    assert.equal(sample.tts_model, 'vertex-owned-tts');
+    assert.equal(sample.tts_voice_style, 'Kore');
+    assert.deepEqual(errors, []);
+    console.log(`PASS ${locale}: mobile form, private upload/replacement/clear, omitted secret, ADC create, configuration-only check, account-local catalog success/error/retry, capability filters and manual model path; ${writes.length} synthetic writes`);
     await page.close();
   }
 } finally { await browser?.close(); await server.close(); }

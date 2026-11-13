@@ -16,7 +16,7 @@ export function VertexFields({ value, onChange, onReadingChange, disabled = fals
   const [reading, setReading] = useState(false);
   useEffect(() => () => { readVersion.current += 1; }, []);
   return <div className="grid min-w-0 gap-2.5" data-vertex-fields>
-    <p className="m-0 text-xs leading-relaxed text-muted-foreground">{t('Vertex AI는 현재 Gemini 채팅과 압축만 지원합니다. 의사결정과 TTS는 지원하지 않습니다.')}</p>
+    <p className="m-0 text-xs leading-relaxed text-muted-foreground">{t('계정을 저장한 뒤 모델 목록을 최신화하세요. 사용 가능한 용도는 모델별 기능에 따라 달라집니다. Vertex AI에서는 전용 Decision API를 사용할 수 없습니다.')}</p>
     <Field label={t('Google Cloud 프로젝트 ID')}><Input required disabled={disabled || reading} value={value.vertex_project} placeholder="my-project" onChange={e => onChange({ vertex_project: e.target.value })} /></Field>
     <Field label={t('위치 (리전)')}><Input required disabled={disabled || reading} value={value.vertex_location} placeholder="global" onChange={e => onChange({ vertex_location: e.target.value })} /></Field>
     <p className="context-muted">{t('global 또는 모델을 지원하는 리전을 입력하세요.')}</p>
@@ -42,7 +42,7 @@ export function VertexFields({ value, onChange, onReadingChange, disabled = fals
       {value.api_key && <Button type="button" variant="ghost" disabled={disabled} onClick={() => onChange({ api_key: '' })}>{t('선택 취소')}</Button>}
       {error && <p role="alert" className="text-sm text-destructive">{t('유효한 서비스 계정 JSON 파일을 선택하세요. 최대 32KB입니다.')}</p>}
     </div>}
-    <p className="m-0 text-xs leading-relaxed text-muted-foreground">{t('설정 확인은 인증, 권한 또는 유료 모델 호출의 성공을 보장하지 않습니다. 모델 ID를 수동으로 추가할 수 있습니다.')}</p>
+    <p className="m-0 text-xs leading-relaxed text-muted-foreground">{t('설정 확인은 외부 호출 없이 진행됩니다. 모델 목록 최신화는 Google Cloud에 연결하지만 실제 모델 호출의 성공을 보장하지 않습니다. 목록에 없는 모델은 ID로 수동 추가할 수 있습니다.')}</p>
   </div>;
 }
 

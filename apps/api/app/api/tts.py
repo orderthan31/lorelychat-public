@@ -15,8 +15,8 @@ def list_tts_voices():
 
 
 @router.get("/tts/models", response_model=list[TTSModelOption])
-def list_tts_models():
-    return tts_service.tts_model_options()
+def list_tts_models(session: Session = Depends(get_session)):
+    return tts_service.tts_model_options(session)
 
 
 @router.post("/characters/{character_id}/tts-sample", response_model=TTSGenerateResponse)
@@ -31,6 +31,7 @@ def synthesize_character_sample(character_id: str, payload: TTSSampleRequest, se
             voice_style=payload.voice_style,
             provider=payload.tts_provider,
             model=payload.tts_model,
+            session=session,
         )
     except tts_service.TTSUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

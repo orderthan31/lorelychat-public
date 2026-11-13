@@ -76,7 +76,7 @@ def test_additive_migration_preserves_legacy_rows(tmp_path):
     engine.dispose()
 
 
-def test_runtime_overrides_adc_and_no_primary_changes(session):
+def test_runtime_overrides_adc_and_no_primary_changes(session, monkeypatch):
     from app.db.models import RuntimeSetting
     from app.services.runtime_settings_service import _dynamic_llm_overrides
     from sqlmodel import select
@@ -90,5 +90,6 @@ def test_runtime_overrides_adc_and_no_primary_changes(session):
     assert _dynamic_llm_overrides(session, option.key, 'compression')['provider']=='vertex_ai'
     assert service.active_options_for_runtime(session, 'tts')==[]
     assert service.active_options_for_runtime(session, 'decision')==[]
-    with pytest.raises(ValueError,match='manual'):
+    monkeypatch.setattr(service, 'fetch_provider_models', lambda account: [])
+    with pytest.raises(ValueError,match='no models'):
         service.sync_models(session,account.id)

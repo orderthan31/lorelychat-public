@@ -35,6 +35,25 @@ def native(usage=None):
         'usageMetadata': usage, 'modelVersion':'gemini-2.5-flash-001'}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model', ['gemini-4-argon', 'gemini-4-carbon', 'gemini-4-hydrogen'])
+async def test_current_gemini4_catalog_models_reach_real_sdk_wire(monkeypatch, credential, model):
+    exchanges = mock_auth(monkeypatch)
+    sent = []
+    async def send(request):
+        sent.append(request)
+        return httpx.Response(200, json={**native(), 'modelVersion': model + '-001'})
+    monkeypatch.setattr(transport, 'new_http_transport', lambda: httpx.MockTransport(send))
+    r = transport.resolve_route(SimpleNamespace(provider=lambda: 'vertex_ai', model=lambda: model,
+        overrides=dict(provider_account_id='synthetic', api_key=json.dumps(credential),
+            vertex_project='test-project', vertex_location='global', vertex_auth_mode='service_account')))
+    response = await transport.completion(r, messages=[{'role':'user','content':'Synthetic probe'}],
+        parameters={'max_tokens':32}, timeout=10, reserve=lambda: None)
+    assert len(sent) == len(exchanges) == 1
+    assert str(sent[0].url).endswith('/publishers/google/models/' + model + ':generateContent')
+    assert transport.native_observation(response, r)[0]['content'] == 'Original prose'
+
+
 def mock_auth(monkeypatch):
     requests = []
     def exchange(request):

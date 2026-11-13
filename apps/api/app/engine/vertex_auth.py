@@ -21,19 +21,38 @@ FIELDS = ('vertex_project', 'vertex_location', 'vertex_auth_mode')
 def validate_config(project, location, mode, base_url=None):
     if not isinstance(project, str) or not re.fullmatch(r'[a-z][a-z0-9-]{4,28}[a-z0-9]', project):
         raise ValueError('Vertex project must be a Google Cloud project ID')
-    if not isinstance(location, str) or not (location == 'global' or re.fullmatch(
+    if not isinstance(location, str) or not (location in {'global', 'us', 'eu'} or re.fullmatch(
         r'(?:us|europe|asia|australia|northamerica|southamerica|africa|me)-(?:central|east|west|north|south|northeast|southeast|southwest)\d{1,2}', location)):
-        raise ValueError('Vertex location must be global or a region ID')
+        raise ValueError('Vertex location must be global, us, eu or a region ID')
     if mode not in ('service_account', 'adc'):
         raise ValueError('Unsupported Vertex authentication mode')
     if base_url is not None:
         raise ValueError('Vertex uses Google-managed endpoints; base_url is not supported')
 
 
+# These have documented generateContent audio execution paths. Other audio,
+# image-output, embedding and Decision products require different app surfaces.
+TTS_MODELS = frozenset({
+    'gemini-2.5-flash-tts', 'gemini-2.5-pro-tts',
+    'gemini-2.5-flash-lite-preview-tts', 'gemini-3.1-flash-tts-preview',
+    'gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts',
+})
+
+
+def endpoint_host(location):
+    if location == 'global':
+        return 'aiplatform.googleapis.com'
+    if location in {'us', 'eu'}:
+        return f'aiplatform.{location}.rep.googleapis.com'
+    return f'{location}-aiplatform.googleapis.com'
+
+
 def validate_model(model):
+    if isinstance(model, str) and model in TTS_MODELS:
+        return
     if not isinstance(model, str) or not re.fullmatch(r'gemini-[a-zA-Z0-9][a-zA-Z0-9.-]{0,119}', model) or any(
-        word in model.lower() for word in ('image', 'tts', 'audio', 'embedding', 'robotics', 'decision', 'research', 'live')):
-        raise ValueError('Vertex currently supports Gemini text chat and compression only')
+        word in model.lower() for word in ('image', 'tts', 'audio', 'embedding', 'robotics', 'decision', 'research', 'live', 'omni', 'transcrib', 'nano-banana')):
+        raise ValueError('Vertex model requires an implemented Gemini chat/compression or TTS execution path')
 
 
 def _unique(pairs):
@@ -114,6 +133,8 @@ class GoogleAuthRequest:
                 safe.raise_for_status()
             data = bytearray()
             for chunk in response.iter_bytes():
+                if time.monotonic() >= self.deadline:
+                    raise TimeoutError()
                 if len(data) + len(chunk) > 65536:
                     raise ValueError('Google authentication response too large')
                 data.extend(chunk)

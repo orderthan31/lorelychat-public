@@ -156,7 +156,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
 
   const enabledChatCount = modelOptions.filter((option) => option.enabled && option.supports_chat).length;
   const enabledCompressionCount = modelOptions.filter((option) => option.enabled && option.supports_compression).length;
-  const enabledTtsCount = modelOptions.filter((option) => option.enabled && option.supports_tts && option.provider_type === 'google' && option.model_family === 'gemini').length;
+  const enabledTtsCount = modelOptions.filter((option) => option.enabled && option.supports_tts).length;
   const filteredModelOptions = useMemo(() => {
     const query = modelQuery.trim().toLowerCase();
     return modelOptions.filter((option) => {
@@ -285,7 +285,6 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
   }
 
   async function syncModels(account: ProviderAccount) {
-    if (account.provider_type === 'vertex_ai') return;
     const knownModelIds = new Set(
       modelOptions
         .filter((option) => option.provider_account_id === account.id)
@@ -406,7 +405,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
     try {
       const providerType = accounts.find((account) => account.id === selectedAccountId)?.provider_type;
       if (providerType === 'vertex_ai' && manualCapability !== 'chat') {
-        setMessage(t('Vertex AI는 현재 Gemini 채팅과 압축만 지원합니다. 의사결정과 TTS는 지원하지 않습니다.'));
+        setMessage(t('Vertex AI에서는 전용 Decision API를 사용할 수 없습니다.'));
         return;
       }
       await modelProviderApi.createManualOption({
@@ -483,10 +482,10 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
                         <p className="m-0 font-bold text-foreground">{account.alias}</p>
                         <p className="context-muted">{t(account.provider_type === 'vertex_ai' ? '인증 방식' : 'Key')} {account.provider_type === 'vertex_ai' ? (account.vertex_auth_mode === 'adc' ? t('서버 ADC') : t(account.api_key_status === 'set' ? '서비스 계정 JSON 등록됨' : '미등록')) : account.api_key_status === 'set' ? account.api_key_hint || t('등록됨') : t('미등록')} · {t('활성')} {account.active_model_count || 0}</p>
                       </div>
-                      {account.provider_type === 'vertex_ai' ? <p className="context-muted">{t('Vertex AI 모델은 활성 모델 목록에서 Gemini 모델 ID로 수동 추가하세요.')}</p> : <Button type="button" size="sm" variant="secondary" disabled={loading || !account.configured} data-provider-refresh-account={account.id} onClick={() => syncModels(account)}>
+                      <Button type="button" size="sm" variant="secondary" disabled={loading || !account.configured} data-provider-refresh-account={account.id} onClick={() => syncModels(account)}>
                         <RefreshCw className={`size-3.5 ${syncingAccountId === account.id ? 'animate-spin' : ''}`} aria-hidden="true" />
                         {t(syncingAccountId === account.id ? '모델 목록 최신화 중...' : '모델 목록 최신화')}
-                      </Button>}
+                      </Button>
                     </div>
                     {syncResult ? <p
                       className={`m-0 text-xs leading-relaxed ${syncResult.status === 'error' ? 'text-destructive' : 'text-primary'}`}

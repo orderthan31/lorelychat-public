@@ -80,7 +80,7 @@ def resolve_route(client) -> Route:
                 raise ValueError()
         except ValueError:
             raise TransportConfigurationError('Invalid Vertex account configuration') from None
-        host = 'aiplatform.googleapis.com' if location == 'global' else f'{location}-aiplatform.googleapis.com'
+        host = vertex_auth.endpoint_host(location)
         return Route(provider, 'vertex_ai', client.model(), f'https://{host}/v1', key or '', project, location, mode)
     record = _ROUTES.get(provider)
     if record is None:

@@ -442,6 +442,16 @@ def _dynamic_llm_overrides(session: Session, model_key: str | None, capability: 
     return overrides
 
 
+def tts_overrides_for_setting(setting: RuntimeSetting, session: Session) -> dict | None:
+    key = getattr(setting, 'default_tts_model_option_key', None)
+    if not key:
+        return None
+    overrides = _dynamic_llm_overrides(session, key, 'tts')
+    if overrides is None:
+        raise ValueError('Selected TTS model option was not found')
+    return overrides
+
+
 def llm_overrides_for_setting(setting: RuntimeSetting, settings: Settings | None = None, session: Session | None = None) -> dict:
     if session:
         dynamic_overrides = _dynamic_llm_overrides(session, setting.model_key, "chat")
