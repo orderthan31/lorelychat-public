@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import ts from 'typescript';
+const source = fs.readFileSync(new URL('../src/views/ModelSettings/vertex.ts', import.meta.url), 'utf8');
+const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+const exports = {};
+new Function('exports', code)(exports);
+const { vertexPayload, validVertexConfiguration, readServiceAccountJson } = exports;
+const draft = { vertex_project: ' example-project ', vertex_location: ' global ', vertex_auth_mode: 'service_account', api_key: '' };
+assert.equal(validVertexConfiguration(draft, false), false);
+assert.equal(validVertexConfiguration(draft, true), true);
+assert.equal(validVertexConfiguration({ ...draft, vertex_auth_mode: 'adc' }, false), true);
+assert.equal(validVertexConfiguration({ ...draft, vertex_project: '' }, true), false);
+assert.deepEqual(vertexPayload(draft), { vertex_project: 'example-project', vertex_location: 'global', vertex_auth_mode: 'service_account' });
+assert.equal('api_key' in vertexPayload({ ...draft, vertex_auth_mode: 'adc', api_key: 'do-not-send' }), false);
+const fixture = JSON.stringify({ type: 'service_account', project_id: 'synthetic-project', client_email: 'synthetic@example.invalid', private_key: 'synthetic-only-not-a-key' });
+assert.equal(readServiceAccountJson(fixture), fixture);
+assert.equal(vertexPayload({ ...draft, api_key: fixture }).api_key, fixture);
+for (const invalid of ['{}', 'null', 'not-json', JSON.stringify({ type: 'authorized_user' })]) assert.throws(() => readServiceAccountJson(invalid));
+// Backend accepts at most 32768 characters; the file picker also caps bytes.
+assert.equal(readServiceAccountJson(fixture.padEnd(32768)), fixture.padEnd(32768));
+assert.throws(() => readServiceAccountJson(fixture.padEnd(32769)));
+console.log('Vertex payload, credential omission, ADC, required fields and 32768-character JSON boundary passed');

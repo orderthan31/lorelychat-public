@@ -15,7 +15,7 @@ type SavePayload = { id?: string | null; payload: unknown };
 type RegeneratePayload = { replace_existing?: boolean };
 
 type RuntimeOption = { provider?: string; key: string; [key: string]: unknown };
-export type ProviderType = 'openai' | 'google' | 'anthropic' | 'openrouter' | 'xai' | 'openai_compatible';
+export type ProviderType = 'openai' | 'google' | 'anthropic' | 'openrouter' | 'xai' | 'openai_compatible' | 'vertex_ai';
 export type ProviderAccount = {
   id: string;
   provider_type: ProviderType;
@@ -23,6 +23,9 @@ export type ProviderAccount = {
   enabled: boolean;
   configured: boolean;
   base_url?: string | null;
+  vertex_project?: string | null;
+  vertex_location?: string | null;
+  vertex_auth_mode?: 'service_account' | 'adc' | null;
   api_key_status: 'missing' | 'set';
   api_key_hint?: string | null;
   preset?: string | null;

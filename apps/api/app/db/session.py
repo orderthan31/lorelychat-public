@@ -298,6 +298,12 @@ def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
             if "safety_preset" not in columns:
                 connection.execute(text("ALTER TABLE runtime_settings ADD COLUMN safety_preset VARCHAR NOT NULL DEFAULT 'medium'"))
                 connection.execute(text("UPDATE runtime_settings SET safety_preset = 'medium' WHERE safety_preset IS NULL OR safety_preset = ''"))
+    if "model_provider_accounts" in table_names:
+        columns = {column["name"] for column in inspector.get_columns("model_provider_accounts")}
+        with active_engine.begin() as connection:
+            for name in ("vertex_project", "vertex_location", "vertex_auth_mode"):
+                if name not in columns:
+                    connection.execute(text(f"ALTER TABLE model_provider_accounts ADD COLUMN {name} VARCHAR"))
     if "model_options" in table_names:
         columns = {column["name"] for column in inspector.get_columns("model_options")}
         with active_engine.begin() as connection:

@@ -292,7 +292,7 @@ class LLMClient:
         return self.provider() == "xai"
 
     def transport_capabilities(self, *, model: str | None = None):
-        gemini = self.provider() == "gemini" or (self.settings.llm_transport == "litellm" and self.provider() == "google")
+        gemini = self.provider() == "gemini" or (self.settings.llm_transport == "litellm" and self.provider() in {"google", "vertex_ai"})
         return capabilities(
             model=model or self.model(),
             endpoint="https://generativelanguage.googleapis.com/v1beta" if gemini else self.base_url(),
@@ -305,7 +305,7 @@ class LLMClient:
 
     def sampling_parameters(self, *, model: str | None = None) -> tuple[dict, list[str]]:
         policy = self.transport_capabilities(model=model)
-        gemini = self.provider() == "gemini" or (self.settings.llm_transport == "litellm" and self.provider() == "google")
+        gemini = self.provider() == "gemini" or (self.settings.llm_transport == "litellm" and self.provider() in {"google", "vertex_ai"})
         params = {"temperature": self.overrides.get("temperature", policy.temperature)}
         if self.overrides.get("top_p", policy.top_p) is not None:
             params["topP" if gemini else "top_p"] = self.overrides.get("top_p", policy.top_p)
@@ -322,7 +322,7 @@ class LLMClient:
 
     def thinking_parameters(self, *, model: str | None = None, wire_confirmed: bool = False) -> tuple[dict, dict]:
         """Preserve explicit transport controls; auto-OFF is chat-only and exact-gated."""
-        gemini = self.provider() == "gemini" or (self.settings.llm_transport == "litellm" and self.provider() == "google")
+        gemini = self.provider() == "gemini" or (self.settings.llm_transport == "litellm" and self.provider() in {"google", "vertex_ai"})
         explicit = {key: self.overrides[key] for key in ("reasoning_effort", "thinking_level", "thinking_budget")
                     if self.overrides.get(key) is not None}
         names = ({"thinking_level": "thinkingLevel", "thinking_budget": "thinkingBudget"}
@@ -534,6 +534,8 @@ class LLMClient:
 
         circuit_token = None
         try:
+            if self.provider() == 'vertex_ai' and self.settings.llm_transport != 'litellm':
+                raise LLMConfigurationError('Vertex requires the LiteLLM transport')
             if response_format and self.overrides.get('supports_json') is False:
                 raise LLMCapabilityError('Selected model does not support JSON output')
             sampling, omitted = self.sampling_parameters()
@@ -600,7 +602,7 @@ class LLMClient:
         schema = sdk.response_format_copy(response_format, strict=self.strict_structured_output())
         if schema is not None:
             parameters["response_format"] = schema
-        if route.sdk_provider == "gemini":
+        if route.sdk_provider in {"gemini", "vertex_ai"}:
             parameters["safety_settings"] = self.gemini_safety_settings()
         if self.transport_capabilities().cache_affinity and conversation_id:
             parameters["extra_headers"] = {"x-grok-conv-id": hashlib.sha256(
@@ -614,7 +616,7 @@ class LLMClient:
         observed, data = sdk.native_observation(response, route)
         budget = {"requested_max_output_tokens": cap}
         diagnostics = None
-        if route.sdk_provider == "gemini":
+        if route.sdk_provider in {"gemini", "vertex_ai"}:
             budget.update(thoughts_token_count=observed["reasoning_tokens"],
                           cached_content_token_count=observed["cached_tokens"])
             if self.profile == "compression" and not observed["content"]:

@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from sqlmodel import Session
 
 from app.db.session import get_session
@@ -14,7 +16,23 @@ from app.schemas.model_providers import (
 )
 from app.services import model_provider_service
 
-router = APIRouter(tags=["model-providers"])
+class _CredentialSafeRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def safe_handler(request):
+            try:
+                return await handler(request)
+            except RequestValidationError as error:
+                if request.url.path.startswith('/model-provider-accounts'):
+                    # FastAPI's default validation response includes rejected
+                    # input values (including an entire malformed credential).
+                    raise HTTPException(status_code=422, detail='Invalid provider credential request') from None
+                raise
+        return safe_handler
+
+
+router = APIRouter(tags=["model-providers"], route_class=_CredentialSafeRoute)
 
 
 def _not_found(error: ValueError) -> HTTPException:

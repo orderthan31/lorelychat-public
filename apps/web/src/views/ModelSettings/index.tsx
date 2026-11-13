@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import { VertexFields, VertexAccountEditor } from './VertexFields';
+import { validVertexConfiguration, vertexPayload, type VertexDraft } from './vertex';
 import { ChevronDown, ChevronLeft, ChevronRight, Cpu, KeyRound, Plus, PlugZap, RefreshCw, Save, SlidersHorizontal, Trash2 } from 'lucide-react';
 import Swal from 'sweetalert2';
 import { modelProviderApi, type ModelOption, type ProviderAccount, type ProviderType } from '../../api/resources';
@@ -18,7 +20,7 @@ export type ModelSettingsViewProps = {
   busy?: boolean;
 };
 
-type ProviderDraft = {
+type ProviderDraft = VertexDraft & {
   provider_type: ProviderType;
   alias: string;
   api_key: string;
@@ -28,6 +30,7 @@ type ProviderDraft = {
 
 const PROVIDERS: Array<{ type: ProviderType; label: string }> = [
   { type: 'google', label: 'Google Gemini' },
+  { type: 'vertex_ai', label: 'Google Vertex AI' },
   { type: 'openai', label: 'OpenAI' },
   { type: 'anthropic', label: 'Anthropic' },
   { type: 'xai', label: 'xAI Grok' },
@@ -41,6 +44,9 @@ const EMPTY_DRAFT: ProviderDraft = {
   api_key: '',
   base_url: '',
   preset: '',
+  vertex_project: '',
+  vertex_location: 'global',
+  vertex_auth_mode: 'service_account',
 };
 const MODEL_PAGE_SIZE_OPTIONS = [10, 20, 50];
 type ModelSettingsSection = 'runtime' | 'providers' | 'models';
@@ -50,13 +56,13 @@ function isModelSettingsSection(value: string): value is ModelSettingsSection {
   return value === 'runtime' || value === 'providers' || value === 'models';
 }
 
-async function confirmApiKeyClear(t: Translator) {
+async function confirmApiKeyClear(t: Translator, vertex = false) {
   const result = await Swal.fire({
-    title: t('API Key 제거'),
-    text: t('API Key를 제거하면 이 provider 계정의 모델이 모두 비활성화되고 기본 모델 선택지에서 사라집니다. 계정 별칭은 유지됩니다. 계속할까요?'),
+    title: t(vertex ? '저장된 JSON 제거' : 'API Key 제거'),
+    text: t(vertex ? '저장된 서비스 계정 JSON을 제거합니다. 이 계정의 모델이 비활성화됩니다. 계속할까요?' : 'API Key를 제거하면 이 provider 계정의 모델이 모두 비활성화되고 기본 모델 선택지에서 사라집니다. 계정 별칭은 유지됩니다. 계속할까요?'),
     icon: 'warning',
     showCancelButton: true,
-    confirmButtonText: t('API Key 제거'),
+    confirmButtonText: t(vertex ? '저장된 JSON 제거' : 'API Key 제거'),
     cancelButtonText: t('취소'),
     reverseButtons: true,
     focusCancel: true,
@@ -75,6 +81,7 @@ async function confirmApiKeyClear(t: Translator) {
 
 function statusBadge(t: Translator, account?: ProviderAccount) {
   if (!account) return <Badge variant="outline">{t('미설정')}</Badge>;
+  if (account.provider_type === 'vertex_ai') return <Badge variant="outline">{t(account.configured ? '설정됨 (호출 미검증)' : '연결 정보 필요')}</Badge>;
   if (account.last_test_status === 'failed') return <Badge variant="destructive">{t('연결 실패')}</Badge>;
   if (account.last_test_status === 'success') return <Badge variant="default">{t('연결 정상')}</Badge>;
   if (account.configured) return <Badge variant="secondary">{t('API Key 등록됨')}</Badge>;
@@ -231,14 +238,20 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
       setMessage(t('xAI Grok API Key를 입력해주세요.'));
       return;
     }
+    if (draft.provider_type === 'vertex_ai' && !validVertexConfiguration(draft)) {
+      setMessage(t('프로젝트, 위치 및 인증 정보를 확인하세요.'));
+      return;
+    }
     setLoading(true);
     try {
       const account = await modelProviderApi.createAccount({
         provider_type: draft.provider_type,
         alias: draft.alias.trim(),
-        api_key: draft.api_key.trim() || undefined,
-        base_url: draft.base_url.trim() || undefined,
-        preset: draft.preset || undefined,
+        ...(draft.provider_type === 'vertex_ai' ? vertexPayload(draft) : {
+          api_key: draft.api_key.trim() || undefined,
+          base_url: draft.base_url.trim() || undefined,
+          preset: draft.preset || undefined,
+        }),
       });
       setDraft({ ...EMPTY_DRAFT, provider_type: draft.provider_type });
       if (account) {
@@ -250,7 +263,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
         : t('Provider 계정이 저장되었습니다. API key 원문은 다시 표시되지 않습니다.'));
       await refreshModelProviderAndRuntimeState();
     } catch (error: any) {
-      setMessage(`${t('Provider 계정 저장 실패 ·')} ${error.message}`);
+      setMessage(draft.provider_type === 'vertex_ai' ? t('Vertex 설정 저장에 실패했습니다. 설정과 인증 파일을 확인하세요.') : `${t('Provider 계정 저장 실패 ·')} ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -260,7 +273,9 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
     setLoading(true);
     try {
       const result: any = await modelProviderApi.testAccount(accountId);
-      setMessage(result.message || t('연결 테스트 완료'));
+      setMessage(accounts.find(account => account.id === accountId)?.provider_type === 'vertex_ai'
+        ? t(result.status === 'success' ? '설정 확인 완료. 실제 인증 및 모델 호출은 검증하지 않았습니다.' : '프로젝트, 위치 및 인증 정보를 확인하세요.')
+        : result.message || t('연결 테스트 완료'));
       await refreshModelProviderAndRuntimeState();
     } catch (error: any) {
       setMessage(`${t('연결 테스트 실패 ·')} ${error.message}`);
@@ -270,6 +285,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
   }
 
   async function syncModels(account: ProviderAccount) {
+    if (account.provider_type === 'vertex_ai') return;
     const knownModelIds = new Set(
       modelOptions
         .filter((option) => option.provider_account_id === account.id)
@@ -302,6 +318,18 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
     }
   }
 
+  async function saveVertexAccount(account: ProviderAccount, value: VertexDraft) {
+    if (!validVertexConfiguration(value, account.api_key_status === 'set')) return false;
+    setLoading(true);
+    try {
+      await modelProviderApi.updateAccount(account.id, vertexPayload(value));
+      setMessage(t('Vertex 설정이 저장되었습니다. 실제 모델 호출은 검증하지 않았습니다.'));
+      await refreshModelProviderAndRuntimeState();
+      return true;
+    } catch { setMessage(t('Vertex 설정 저장에 실패했습니다. 설정과 인증 파일을 확인하세요.')); return false; }
+    finally { setLoading(false); }
+  }
+
   async function updateAccountApiKey(account: ProviderAccount) {
     const apiKey = (accountApiKeys[account.id] || '').trim();
     setAccountApiKeys((current) => {
@@ -326,7 +354,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
   }
 
   async function clearAccountApiKey(account: ProviderAccount) {
-    if (!(await confirmApiKeyClear(t))) {
+    if (!(await confirmApiKeyClear(t, account.provider_type === 'vertex_ai'))) {
       return;
     }
     setAccountApiKeys((current) => {
@@ -377,11 +405,15 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
     setLoading(true);
     try {
       const providerType = accounts.find((account) => account.id === selectedAccountId)?.provider_type;
+      if (providerType === 'vertex_ai' && manualCapability !== 'chat') {
+        setMessage(t('Vertex AI는 현재 Gemini 채팅과 압축만 지원합니다. 의사결정과 TTS는 지원하지 않습니다.'));
+        return;
+      }
       await modelProviderApi.createManualOption({
         provider_account_id: selectedAccountId,
         model: manualModel.trim(),
         label: manualLabel.trim() || manualModel.trim(),
-        model_family: providerType === 'openai_compatible' ? 'local' : providerType === 'xai' ? 'grok' : 'custom',
+        model_family: providerType === 'openai_compatible' ? 'local' : providerType === 'xai' ? 'grok' : providerType === 'vertex_ai' ? 'gemini' : 'custom',
         supports_chat: manualCapability === 'chat',
         supports_compression: manualCapability === 'chat',
         supports_tts: false,
@@ -449,12 +481,12 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="min-w-0">
                         <p className="m-0 font-bold text-foreground">{account.alias}</p>
-                        <p className="context-muted">{t('Key')} {account.api_key_status === 'set' ? account.api_key_hint || t('등록됨') : t('미등록')} · {t('활성')} {account.active_model_count || 0}</p>
+                        <p className="context-muted">{t(account.provider_type === 'vertex_ai' ? '인증 방식' : 'Key')} {account.provider_type === 'vertex_ai' ? (account.vertex_auth_mode === 'adc' ? t('서버 ADC') : t(account.api_key_status === 'set' ? '서비스 계정 JSON 등록됨' : '미등록')) : account.api_key_status === 'set' ? account.api_key_hint || t('등록됨') : t('미등록')} · {t('활성')} {account.active_model_count || 0}</p>
                       </div>
-                      <Button type="button" size="sm" variant="secondary" disabled={loading || !account.configured} data-provider-refresh-account={account.id} onClick={() => syncModels(account)}>
+                      {account.provider_type === 'vertex_ai' ? <p className="context-muted">{t('Vertex AI 모델은 활성 모델 목록에서 Gemini 모델 ID로 수동 추가하세요.')}</p> : <Button type="button" size="sm" variant="secondary" disabled={loading || !account.configured} data-provider-refresh-account={account.id} onClick={() => syncModels(account)}>
                         <RefreshCw className={`size-3.5 ${syncingAccountId === account.id ? 'animate-spin' : ''}`} aria-hidden="true" />
                         {t(syncingAccountId === account.id ? '모델 목록 최신화 중...' : '모델 목록 최신화')}
-                      </Button>
+                      </Button>}
                     </div>
                     {syncResult ? <p
                       className={`m-0 text-xs leading-relaxed ${syncResult.status === 'error' ? 'text-destructive' : 'text-primary'}`}
@@ -467,13 +499,13 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
                         <ChevronDown className="size-4 shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
                       </summary>
                       <div className="mt-2 grid gap-2.5 border-t border-border/70 pt-3">
-                      <div className="grid gap-2 min-[760px]:grid-cols-[minmax(0,1fr)_auto_auto] min-[760px]:items-end">
+                      {account.provider_type === 'vertex_ai' ? <VertexAccountEditor account={account} disabled={loading} save={value => saveVertexAccount(account, value)} clear={() => clearAccountApiKey(account)} /> : <div className="grid gap-2 min-[760px]:grid-cols-[minmax(0,1fr)_auto_auto] min-[760px]:items-end">
                         <Field label={t('API Key')}><Input type="password" value={accountApiKeys[account.id] || ''} placeholder={t('새 API Key 입력')} onChange={(e) => setAccountApiKeys((current) => ({ ...current, [account.id]: e.target.value }))} /></Field>
                         <Button type="button" size="sm" variant="secondary" disabled={loading || !(accountApiKeys[account.id] || '').trim()} onClick={() => updateAccountApiKey(account)}><Save className="size-3.5" aria-hidden="true" />{t('API Key 변경')}</Button>
                         <Button type="button" size="sm" variant="ghost" disabled={loading || account.api_key_status !== 'set'} onClick={() => clearAccountApiKey(account)}><Trash2 className="size-3.5" aria-hidden="true" />{t('API Key 제거')}</Button>
-                      </div>
+                      </div>}
                       <div className="flex flex-wrap gap-2">
-                        <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => testAccount(account.id)}><PlugZap className="size-3.5" aria-hidden="true" />{t('연결 테스트')}</Button>
+                        <Button type="button" size="sm" variant="ghost" disabled={loading} onClick={() => testAccount(account.id)}><PlugZap className="size-3.5" aria-hidden="true" />{t(account.provider_type === 'vertex_ai' ? '설정 확인 (호출 없음)' : '연결 테스트')}</Button>
                       </div>
                       </div>
                     </details>
@@ -487,17 +519,17 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
           <details className="group border-t border-border pt-3">
             <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('Provider 계정 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
             <div className="mt-3 grid gap-2.5">
-              <Field label={t('Provider')}><Select value={draft.provider_type} onChange={(e) => setDraft((current) => ({ ...current, provider_type: e.target.value as ProviderType }))}>{PROVIDERS.map((provider) => <option key={provider.type} value={provider.type}>{provider.label}</option>)}</Select></Field>
+              <Field label={t('Provider')}><Select value={draft.provider_type} onChange={(e) => setDraft((current) => ({ ...current, provider_type: e.target.value as ProviderType, api_key: '' }))}>{PROVIDERS.map((provider) => <option key={provider.type} value={provider.type}>{provider.label}</option>)}</Select></Field>
               {draft.provider_type === 'xai' ? <div className="border-l-2 border-accent px-3 text-sm text-muted-foreground" data-xai-provider-help>
                 {t('xAI 공식 API(')}<code>https://api.x.ai/v1</code>{t(')에서 Grok 모델 목록을 불러옵니다. 계정 저장 후 사용할 모델만 활성화하면 됩니다.')}
               </div> : null}
-              <Field label={t('별칭')}><Input value={draft.alias} placeholder={t(draft.provider_type === 'xai' ? '개인 Grok' : '개인 Gemini')} onChange={(e) => setDraft((current) => ({ ...current, alias: e.target.value }))} /></Field>
+              <Field label={t('별칭')}><Input value={draft.alias} placeholder={draft.provider_type === 'vertex_ai' ? 'Vertex AI' : t(draft.provider_type === 'xai' ? '개인 Grok' : '개인 Gemini')} onChange={(e) => setDraft((current) => ({ ...current, alias: e.target.value }))} /></Field>
               {draft.provider_type === 'openai_compatible' ? <>
                 <Field label={t('Preset')}><Select value={draft.preset} onChange={(e) => setDraft((current) => ({ ...current, preset: e.target.value }))}><option value="">{t('Custom')}</option><option value="local_gemma">Local Gemma</option><option value="lm_studio">LM Studio</option><option value="ollama">Ollama</option><option value="vllm">vLLM</option></Select></Field>
                 <Field label={t('Base URL')}><Input value={draft.base_url} placeholder="http://127.0.0.1:1234/v1" onChange={(e) => setDraft((current) => ({ ...current, base_url: e.target.value }))} /></Field>
               </> : null}
-              <Field label={t('API Key')}><Input type="password" value={draft.api_key} placeholder={draft.provider_type === 'openai_compatible' ? t('선택 사항') : draft.provider_type === 'xai' ? t('xAI API Key') : t('저장 후 다시 표시되지 않음')} onChange={(e) => setDraft((current) => ({ ...current, api_key: e.target.value }))} /></Field>
-              <Button type="button" disabled={loading} onClick={saveProviderAccount}><Save className="size-4" aria-hidden="true" />{t(loading ? '처리 중...' : 'Provider 저장')}</Button>
+              {draft.provider_type === 'vertex_ai' ? <VertexFields value={draft} disabled={loading} onChange={patch => setDraft(current => ({ ...current, ...patch }))} /> : <Field label={t('API Key')}><Input type="password" value={draft.api_key} placeholder={draft.provider_type === 'openai_compatible' ? t('선택 사항') : draft.provider_type === 'xai' ? t('xAI API Key') : t('저장 후 다시 표시되지 않음')} onChange={(e) => setDraft((current) => ({ ...current, api_key: e.target.value }))} /></Field>}
+              <Button type="button" disabled={loading || (draft.provider_type === 'vertex_ai' && !validVertexConfiguration(draft))} onClick={saveProviderAccount}><Save className="size-4" aria-hidden="true" />{t(loading ? '처리 중...' : 'Provider 저장')}</Button>
             </div>
           </details>
         </div>
@@ -541,8 +573,8 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
         <details className="group mt-1 border-t border-border pt-2">
           <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('수동 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
           <div className="mt-2 grid gap-2.5 min-[760px]:grid-cols-[minmax(160px,.7fr)_minmax(130px,.55fr)_minmax(0,1fr)_minmax(0,1fr)_auto] min-[760px]:items-end">
-            <Field label={t('Provider 계정')}><Select value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)}><option value="">{t('계정 선택')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.alias}</option>)}</Select></Field>
-            <Field label={t('용도')}><Select value={manualCapability} onChange={(e) => setManualCapability(e.target.value as typeof manualCapability)}><option value="chat">{t('채팅')} · {t('압축')}</option><option value="decision">{t('의사결정')}</option></Select></Field>
+            <Field label={t('Provider 계정')}><Select value={selectedAccountId} onChange={(e) => { setSelectedAccountId(e.target.value); setManualCapability('chat'); }}><option value="">{t('계정 선택')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.alias}</option>)}</Select></Field>
+            <Field label={t('용도')}><Select value={manualCapability} onChange={(e) => setManualCapability(e.target.value as typeof manualCapability)}><option value="chat">{t('채팅')} · {t('압축')}</option>{accounts.find(account => account.id === selectedAccountId)?.provider_type !== 'vertex_ai' && <option value="decision">{t('의사결정')}</option>}</Select></Field>
             {manualCapability === 'decision' && <CapabilityEditor modalities={manualInputs} mimes={manualMimes} disabled={loading} onChange={(m, f) => { setManualInputs(m); setManualMimes(f); setManualInputsEdited(true); }} />}
             <Field label={t('모델 ID')}><Input value={manualModel} placeholder="gemma-local" onChange={(e) => setManualModel(e.target.value)} /></Field>
             <Field label={t('표시명')}><Input value={manualLabel} placeholder="Local Gemma" onChange={(e) => setManualLabel(e.target.value)} /></Field>

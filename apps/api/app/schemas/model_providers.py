@@ -4,7 +4,7 @@ from typing import Literal
 from app.schemas.input_policy import RequestModel
 from pydantic import BaseModel, Field, field_validator
 
-ProviderType = Literal["openai", "google", "anthropic", "openrouter", "xai", "openai_compatible"]
+ProviderType = Literal["openai", "google", "vertex_ai", "anthropic", "openrouter", "xai", "openai_compatible"]
 ApiKeyStatus = Literal["missing", "set"]
 TestStatus = Literal["untested", "success", "failed"]
 ModelFamily = Literal["gemini", "gpt", "claude", "grok", "openrouter", "local", "custom"]
@@ -16,6 +16,9 @@ class ProviderAccountCreate(RequestModel):
     alias: str = Field(min_length=1, max_length=80)
     enabled: bool = True
     base_url: str | None = None
+    vertex_project: str | None = None
+    vertex_location: str | None = None
+    vertex_auth_mode: Literal["service_account", "adc"] | None = None
     api_key: str | None = Field(default=None, min_length=1)
     preset: str | None = None
 
@@ -26,6 +29,9 @@ class ProviderAccountUpdate(RequestModel):
     alias: str | None = Field(default=None, min_length=1, max_length=80)
     enabled: bool | None = None
     base_url: str | None = None
+    vertex_project: str | None = None
+    vertex_location: str | None = None
+    vertex_auth_mode: Literal["service_account", "adc"] | None = None
     api_key: str | None = Field(default=None, min_length=1)
     clear_api_key: bool = False
     preset: str | None = None
@@ -38,6 +44,9 @@ class ProviderAccountRead(BaseModel):
     enabled: bool
     configured: bool
     base_url: str | None = None
+    vertex_project: str | None = None
+    vertex_location: str | None = None
+    vertex_auth_mode: Literal["service_account", "adc"] | None = None
     api_key_status: ApiKeyStatus
     api_key_hint: str | None = None
     preset: str | None = None

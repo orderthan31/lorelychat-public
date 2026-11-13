@@ -56,10 +56,32 @@ class Route:
     model: str
     base_url: str
     api_key: str = field(repr=False)
+    vertex_project: str | None = None
+    vertex_location: str | None = None
+    vertex_auth_mode: str | None = None
 
 
 def resolve_route(client) -> Route:
     provider = client.provider()
+    if provider == 'vertex_ai':
+        from app.engine import vertex_auth
+        values = client.overrides
+        project, location = values.get('vertex_project'), values.get('vertex_location')
+        mode = values.get('vertex_auth_mode') or 'service_account'
+        try:
+            vertex_auth.validate_config(project, location, mode, values.get('base_url'))
+            vertex_auth.validate_model(client.model())
+            if not values.get('provider_account_id'):
+                raise ValueError()
+            key = values.get('api_key')
+            if mode == 'service_account':
+                vertex_auth.service_account_info(key)
+            elif key:
+                raise ValueError()
+        except ValueError:
+            raise TransportConfigurationError('Invalid Vertex account configuration') from None
+        host = 'aiplatform.googleapis.com' if location == 'global' else f'{location}-aiplatform.googleapis.com'
+        return Route(provider, 'vertex_ai', client.model(), f'https://{host}/v1', key or '', project, location, mode)
     record = _ROUTES.get(provider)
     if record is None:
         raise TransportConfigurationError('Unsupported LLM provider')
@@ -278,7 +300,7 @@ def native_observation(response, route):
         if not isinstance(data, dict) or 'error' in data:
             raise ValueError
         # Only explicit native safety/refusal evidence, never prose heuristics.
-        if route.sdk_provider == 'gemini':
+        if route.sdk_provider in ('gemini', 'vertex_ai'):
             feedback = metadata_object(data.get('promptFeedback'))
             candidates_for_policy = data.get('candidates')
             if 'candidates' in data and not isinstance(candidates_for_policy, list):
@@ -299,7 +321,7 @@ def native_observation(response, route):
                 for c in choices_for_policy)
         if blocked:
             raise LLMPolicyError()
-        if route.sdk_provider == 'gemini':
+        if route.sdk_provider in ('gemini', 'vertex_ai'):
             candidates = data.get('candidates')
             if 'candidates' not in data:
                 feedback = metadata_object(data.get('promptFeedback'))
@@ -393,13 +415,17 @@ async def completion(route, *, messages, parameters, timeout, reserve):
         else:
             client = AsyncHTTPHandler(transport=guard, timeout=timeout, follow_redirects=False)
         try:
-            await sdk.acompletion(
-                model=route.model, custom_llm_provider=route.sdk_provider,
-                api_base=route.base_url, api_key=route.api_key, client=client,
-                messages=deepcopy(messages), stream=False, timeout=timeout,
-                num_retries=0, max_retries=0, drop_params=False,
-                enable_json_schema_validation=False, **deepcopy(parameters),
-            )
+            if route.sdk_provider == 'vertex_ai':
+                from app.engine.vertex_transport import sdk_completion
+                await sdk_completion(route, messages=messages, parameters=parameters, client=client, timeout=timeout)
+            else:
+                await sdk.acompletion(
+                    model=route.model, custom_llm_provider=route.sdk_provider,
+                    api_base=route.base_url, api_key=route.api_key, client=client,
+                    messages=deepcopy(messages), stream=False, timeout=timeout,
+                    num_retries=0, max_retries=0, drop_params=False,
+                    enable_json_schema_validation=False, **deepcopy(parameters),
+                )
         except Exception as exc:
             error = exc
     finally:
@@ -423,4 +449,7 @@ async def completion(route, *, messages, parameters, timeout, reserve):
         guard.response.extensions['lorechat_sdk_response_status'] = (
             'native_validated_after_sdk_error' if error is not None else 'native_validated')
         return guard.response
+    from app.engine.llm_error_types import LLMTerminalError
+    if isinstance(error, LLMTerminalError) or (route.sdk_provider == 'vertex_ai' and isinstance(error, httpx.HTTPError)):
+        raise error from None
     raise TransportConfigurationError('SDK rejected request before dispatch') from None

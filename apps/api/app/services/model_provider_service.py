@@ -21,8 +21,9 @@ from app.schemas.model_providers import (
     ProviderAccountUpdate,
 )
 from app.services import provider_secret_service
+from app.engine import vertex_auth
 
-PROVIDER_TYPES = {"openai", "google", "anthropic", "openrouter", "xai", "openai_compatible"}
+PROVIDER_TYPES = {"vertex_ai", "openai", "google", "anthropic", "openrouter", "xai", "openai_compatible"}
 XAI_BASE_URL = "https://api.x.ai/v1"
 GOOGLE_EXCLUDED_MODEL_PATTERNS = (
     "image",
@@ -338,6 +339,8 @@ def _provider_model(model: str, label: str | None, provider_type: str, metadata:
 
 
 def fetch_provider_models(account: ModelProviderAccount) -> list[ProviderModel]:
+    if account.provider_type == 'vertex_ai':
+        raise ValueError('Vertex has no automatic model catalog; add a Gemini model ID manually')
     api_key = provider_secret_service.get_secret(account.api_key_secret_ref)
     timeout = 30.0
     try:
@@ -453,6 +456,13 @@ def _configured(account: ModelProviderAccount, *, has_api_key: bool | None = Non
         return False
     if has_api_key is None:
         has_api_key = bool(provider_secret_service.get_secret(account.api_key_secret_ref))
+    if account.provider_type == 'vertex_ai':
+        try:
+            vertex_auth.validate_config(account.vertex_project, account.vertex_location,
+                account.vertex_auth_mode or 'service_account', account.base_url)
+        except ValueError:
+            return False
+        return account.vertex_auth_mode == 'adc' or has_api_key
     if account.provider_type == "openai_compatible":
         return bool(account.base_url) and (has_api_key or keyless_local_allowed(account))
     if account.provider_type == "xai":
@@ -488,6 +498,16 @@ def list_accounts(session: Session) -> list[ProviderAccountRead]:
 
 
 def create_account(session: Session, payload: ProviderAccountCreate) -> ModelProviderAccount:
+    vertex = {name: getattr(payload, name) for name in vertex_auth.FIELDS}
+    if payload.provider_type == 'vertex_ai':
+        vertex['vertex_auth_mode'] = payload.vertex_auth_mode or 'service_account'
+        vertex_auth.validate_config(vertex['vertex_project'], vertex['vertex_location'], vertex['vertex_auth_mode'], payload.base_url)
+        if payload.api_key:
+            if vertex['vertex_auth_mode'] == 'adc':
+                raise ValueError('Server ADC cannot be combined with an uploaded credential')
+            vertex_auth.service_account_info(payload.api_key)
+    elif any(value is not None for value in vertex.values()):
+        raise ValueError('Vertex fields require a Vertex provider account')
     account = ModelProviderAccount(
         id=_id("provider_account"),
         provider_type=payload.provider_type,
@@ -495,9 +515,12 @@ def create_account(session: Session, payload: ProviderAccountCreate) -> ModelPro
         enabled=payload.enabled,
         base_url=payload.base_url or (XAI_BASE_URL if payload.provider_type == "xai" else None),
         preset=payload.preset,
+        **vertex,
     )
     if payload.api_key:
         account.api_key_secret_ref, account.api_key_hint = provider_secret_service.save_secret(payload.api_key)
+    if account.provider_type == "vertex_ai":
+        account.api_key_hint = None
     created_secret_ref = account.api_key_secret_ref
     try:
         account.configured = _configured(account)
@@ -508,7 +531,7 @@ def create_account(session: Session, payload: ProviderAccountCreate) -> ModelPro
         provider_secret_service.delete_secret(created_secret_ref)
         raise
     session.refresh(account)
-    should_auto_sync = account.configured and (account.provider_type != "openai_compatible" or bool(payload.api_key))
+    should_auto_sync = account.provider_type != "vertex_ai" and account.configured and (account.provider_type != "openai_compatible" or bool(payload.api_key))
     if should_auto_sync:
         sync_models(session, account.id)
         session.refresh(account)
@@ -517,6 +540,21 @@ def create_account(session: Session, payload: ProviderAccountCreate) -> ModelPro
 
 def update_account(session: Session, account_id: str, payload: ProviderAccountUpdate) -> ModelProviderAccount:
     account = _account_by_id(session, account_id)
+    vertex = {name: (getattr(payload, name) if name in payload.model_fields_set else getattr(account, name))
+              for name in vertex_auth.FIELDS}
+    if account.provider_type == 'vertex_ai':
+        vertex['vertex_auth_mode'] = vertex['vertex_auth_mode'] or 'service_account'
+        vertex_auth.validate_config(vertex['vertex_project'], vertex['vertex_location'], vertex['vertex_auth_mode'],
+            payload.base_url if 'base_url' in payload.model_fields_set else account.base_url)
+        if vertex['vertex_auth_mode'] == 'adc' and payload.api_key:
+            raise ValueError('Server ADC cannot be combined with an uploaded credential')
+        if payload.api_key:
+            vertex_auth.service_account_info(payload.api_key)
+        # Switching to ADC retires this account's stored credential after commit.
+        if vertex['vertex_auth_mode'] == 'adc' and account.api_key_secret_ref:
+            payload = payload.model_copy(update={'clear_api_key': True})
+    elif any(value is not None for value in vertex.values()):
+        raise ValueError('Vertex fields require a Vertex provider account')
     old_secret_ref = account.api_key_secret_ref
     new_secret_ref = None
     if payload.clear_api_key and payload.api_key:
@@ -540,6 +578,8 @@ def update_account(session: Session, account_id: str, payload: ProviderAccountUp
             )
         ).all()
         for option in options:
+            if account.provider_type == 'vertex_ai' and vertex['vertex_auth_mode'] == 'adc':
+                continue
             option.enabled = False
             option.updated_at = disabled_at
             session.add(option)
@@ -548,9 +588,14 @@ def update_account(session: Session, account_id: str, payload: ProviderAccountUp
         # referenced by the committed row. Retire the old ref only after commit.
         account.api_key_secret_ref, account.api_key_hint = provider_secret_service.save_secret(payload.api_key)
         new_secret_ref = account.api_key_secret_ref
+    for name, value in vertex.items():
+        setattr(account, name, value)
+    if account.provider_type == 'vertex_ai':
+        account.api_key_hint = None
     account.updated_at = _now()
     try:
-        account.configured = False if payload.clear_api_key else _configured(account)
+        account.configured = (_configured(account) if account.provider_type == 'vertex_ai'
+                              else False if payload.clear_api_key else _configured(account))
         session.add(account)
         session.commit()
     except Exception:
@@ -567,7 +612,11 @@ def test_account(session: Session, account_id: str) -> ProviderAccountTestRead:
     account = _account_by_id(session, account_id)
     account.configured = _configured(account)
     ok = account.configured
-    if ok:
+    if account.provider_type == 'vertex_ai':
+        message = ('Vertex 설정 형식만 확인했습니다. 실제 인증·권한·모델 이용 가능 여부는 확인하지 않았으며 추론을 호출하지 않았습니다.'
+                   if ok else 'Vertex 필수 연결 정보가 없습니다. 실제 인증은 확인하지 않았습니다.')
+        status = 'success' if ok else 'failed'
+    elif ok:
         message = "연결 정보가 설정되었습니다. 실제 provider 호출 테스트는 adapter 연동 단계에서 수행됩니다."
         status = "success"
     elif account.provider_type == "openai_compatible" and not account.base_url:
@@ -673,6 +722,11 @@ def list_options(session: Session, *, provider_account_id: str | None = None) ->
 
 def create_manual_option(session: Session, payload: ModelOptionManualCreate) -> ModelOption:
     account = _account_by_id(session, payload.provider_account_id)
+    if account.provider_type == 'vertex_ai':
+        vertex_auth.validate_model(payload.model)
+        if payload.supports_tts or payload.supports_decision:
+            raise ValueError('Vertex currently supports chat and compression only')
+        payload = payload.model_copy(update={'model_family': 'gemini'})
     explicit = bool({"input_modalities", "image_mime_types"} & payload.model_fields_set)
     capabilities = (ModelInputCapabilities(input_modalities=payload.input_modalities,
         image_mime_types=payload.image_mime_types, capability_source="manual") if explicit else
@@ -706,6 +760,12 @@ def create_manual_option(session: Session, payload: ModelOptionManualCreate) -> 
 
 def update_option(session: Session, option_id: str, payload: ModelOptionUpdate) -> ModelOption:
     option = _option_by_id(session, option_id)
+    if option.provider_type == 'vertex_ai':
+        vertex_auth.validate_model(option.model)
+        if payload.supports_tts or payload.supports_decision:
+            raise ValueError('Vertex currently supports chat and compression only')
+        if payload.model_family not in (None, 'gemini'):
+            raise ValueError('Vertex currently supports Gemini only')
     capability_fields = {"input_modalities", "image_mime_types"} & payload.model_fields_set
     if capability_fields:
         modalities = payload.input_modalities if "input_modalities" in capability_fields else option.input_modalities
@@ -795,7 +855,10 @@ def serialize_account(account: ModelProviderAccount, *, active_model_count: int 
         configured=_configured(account, has_api_key=has_api_key),
         base_url=account.base_url,
         api_key_status="set" if has_api_key else "missing",
-        api_key_hint=account.api_key_hint if has_api_key else None,
+        api_key_hint=account.api_key_hint if has_api_key and account.provider_type != 'vertex_ai' else None,
+        vertex_project=account.vertex_project,
+        vertex_location=account.vertex_location,
+        vertex_auth_mode=account.vertex_auth_mode,
         preset=account.preset,
         last_test_status=account.last_test_status,
         last_test_message=account.last_test_message,

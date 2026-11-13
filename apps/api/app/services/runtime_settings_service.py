@@ -428,6 +428,11 @@ def _dynamic_llm_overrides(session: Session, model_key: str | None, capability: 
         "keyless_local": model_provider_service.keyless_local_allowed(account),
         "provider_config_revision": account.updated_at.isoformat(),
     }
+    if account.provider_type == 'vertex_ai':
+        overrides.update(vertex_project=account.vertex_project, vertex_location=account.vertex_location,
+                         vertex_auth_mode=account.vertex_auth_mode or 'service_account')
+        if account.vertex_auth_mode == 'adc':
+            api_key = None
     if account.base_url:
         overrides["base_url"] = account.base_url
     if api_key:
