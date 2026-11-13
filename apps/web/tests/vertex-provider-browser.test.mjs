@@ -48,6 +48,9 @@ try {
     await expect(card).toContainText('Synthetic Vertex');
     assert.ok(!(await page.locator('body').innerText()).includes('MUST-NOT-RENDER-HINT'));
     await card.locator('summary').click();
+    // Native document providers may identify .json files with a different MIME.
+    // Do not let a picker accept filter hide them; validate the file contents.
+    assert.equal(await card.locator('input[type=file]').getAttribute('accept'), null);
     const check = process.env.VERTEX_RED_CASE;
     if (!check || check === 'sync') await expect(card.locator('[data-provider-refresh-account]')).toHaveCount(0);
     if (!check || check === 'adc') {
@@ -89,7 +92,7 @@ try {
     await card.locator('input[type=file]').setInputFiles({ name: 'boundary.json', mimeType: 'application/json', buffer: Buffer.from(fixture.padEnd(32768)) });
     await expect(card).toContainText(t('새 인증 파일이 준비되었습니다. 저장해야 적용됩니다.'));
     await expect(card.getByRole('alert')).toHaveCount(0);
-    await card.locator('input[type=file]').setInputFiles({ name: 'PRIVATE-FILENAME.json', mimeType: 'application/json', buffer: Buffer.from(fixture) });
+    await card.locator('input[type=file]').setInputFiles({ name: 'PRIVATE-FILENAME.json', mimeType: 'application/octet-stream', buffer: Buffer.from(fixture) });
     await expect(card).toContainText(t('새 인증 파일이 준비되었습니다. 저장해야 적용됩니다.'));
     assert.ok(!(await card.innerText()).includes('PRIVATE-FILENAME'));
     assert.ok(!(await card.innerText()).includes('SYNTHETIC-SECRET'));

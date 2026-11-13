@@ -24,7 +24,7 @@ export function VertexFields({ value, onChange, onReadingChange, disabled = fals
       <option value="service_account">{t('서비스 계정 JSON')}</option><option value="adc">{t('서버 ADC')}</option>
     </Select></Field>
     {value.vertex_auth_mode === 'adc' ? <p className="context-muted">{t('서버에 미리 구성된 Application Default Credentials를 사용합니다. 브라우저에서 인증 파일 경로를 입력하지 않습니다.')}</p> : <div className="grid gap-2">
-      <input ref={fileInput} hidden type="file" accept=".json,application/json" aria-label={t('서비스 계정 JSON')} onChange={async e => {
+      <input ref={fileInput} hidden type="file" aria-label={t('서비스 계정 JSON')} onChange={async e => {
         const file = e.currentTarget.files?.[0];
         e.currentTarget.value = '';
         if (!file) return;
