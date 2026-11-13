@@ -12,6 +12,15 @@ ModelSource = Literal["fetched", "manual", "preset"]
 
 
 class ProviderAccountCreate(RequestModel):
+    root_string_limits = {'api_key': 32768}
+
+    @field_validator('api_key')
+    @classmethod
+    def bound_ordinary_key(cls, value, info):
+        if value is not None and info.data.get('provider_type') != 'vertex_ai' and len(value) > 2048:
+            raise ValueError('API key exceeds 2048 characters')
+        return value
+
     provider_type: ProviderType
     alias: str = Field(min_length=1, max_length=80)
     enabled: bool = True
@@ -24,6 +33,8 @@ class ProviderAccountCreate(RequestModel):
 
 
 class ProviderAccountUpdate(RequestModel):
+    # Account type is resolved by the service; ordinary keys still cap at 2048.
+    root_string_limits = {'api_key': 32768}
     nonnull_fields = frozenset(['alias', 'enabled'])
     nonblank_fields = frozenset(['alias'])
     alias: str | None = Field(default=None, min_length=1, max_length=80)

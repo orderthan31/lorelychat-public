@@ -8,7 +8,7 @@ MAX_INPUT_DEPTH = 16
 MAX_INPUT_TEXT = 1048576
 
 
-def check_input_budget(value):
+def check_input_budget(value, *, root_string_limits=None):
     stack = [(value, 0, '')]
     nodes = text_size = 0
     while stack:
@@ -18,6 +18,10 @@ def check_input_budget(value):
             raise ValueError('Request structure exceeds depth/node budget')
         if isinstance(item, str):
             limit = 2048 if key.endswith(('_id', '_url', '_key')) or key in {'id','name','title','model','alias','speaker_id'} else MAX_AUTHORED_CHARS
+            # Explicit DTO-owned exceptions apply only to direct fields. Keep
+            # nested budgets and total text accounting unchanged.
+            if depth == 1 and root_string_limits:
+                limit = root_string_limits.get(key, limit)
             if len(item) > limit:
                 raise ValueError(f'{key or "text"} exceeds {limit} characters')
             text_size += len(item)
@@ -39,6 +43,7 @@ def check_input_budget(value):
 class RequestModel(BaseModel):
     # Nullable JSON DB columns retain their existing clear/reset semantics.
     validate_inputs: ClassVar[bool] = True
+    root_string_limits: ClassVar[dict[str, int]] = {}
     nonnull_fields: ClassVar[frozenset[str]] = frozenset()
     nonblank_fields: ClassVar[frozenset[str]] = frozenset()
 
@@ -47,7 +52,7 @@ class RequestModel(BaseModel):
     def validate_request_boundary(cls, data):
         if not cls.validate_inputs:
             return data  # historical response DTOs are not ingress
-        check_input_budget(data)
+        check_input_budget(data, root_string_limits=cls.root_string_limits)
         if isinstance(data, dict):
             for key in cls.nonnull_fields:
                 if key in data and data[key] is None:

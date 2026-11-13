@@ -540,6 +540,10 @@ def create_account(session: Session, payload: ProviderAccountCreate) -> ModelPro
 
 def update_account(session: Session, account_id: str, payload: ProviderAccountUpdate) -> ModelProviderAccount:
     account = _account_by_id(session, account_id)
+    # PATCH has no provider_type: enforce its ordinary-key cap against the
+    # persisted account before changing either metadata or the secret store.
+    if account.provider_type != 'vertex_ai' and payload.api_key is not None and len(payload.api_key) > 2048:
+        raise ValueError('API key exceeds 2048 characters')
     vertex = {name: (getattr(payload, name) if name in payload.model_fields_set else getattr(account, name))
               for name in vertex_auth.FIELDS}
     if account.provider_type == 'vertex_ai':
