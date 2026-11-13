@@ -87,6 +87,11 @@ def test_compression_preview_capacity_uses_only_reachable_fallback(session, monk
     session.commit()
     monkeypatch.setattr(preview, 'get_settings', lambda: SimpleNamespace(context_management_mode='automatic'))
     monkeypatch.setattr(preview.runtime_settings_service, 'get_effective_setting', lambda *a: setting)
+    # Capacity now reserves the actual selected client's reasoning-aware cap;
+    # keep this fixture's intentionally opaque model-option objects isolated
+    # from the real account/secret resolver.
+    monkeypatch.setattr(preview.runtime_settings_service, 'llm_overrides_for_setting',
+                        lambda *a, **kw: {'provider': 'mock', 'model': 'synthetic-primary'})
     monkeypatch.setattr(preview.model_provider_service, 'option_by_key',
                         lambda _session, key: primary if key == 'primary' else fallback)
     monkeypatch.setattr(preview.runtime_settings_service, 'fallback_llm_overrides_for_setting',

@@ -25,7 +25,7 @@ async def sdk_completion(route, *, messages, parameters, client, timeout):
            or not isinstance(message.get('content'), str) for message in messages):
         raise TransportConfigurationError('Chat/compression accepts text messages; image assets use the separate Decision surface')
     config = VertexGeminiConfig()
-    allowed = {'temperature', 'top_p', 'top_k', 'max_tokens', 'response_format', 'thinkingConfig', 'safety_settings'}
+    allowed = {'temperature', 'top_p', 'top_k', 'max_tokens', 'response_format', 'reasoning_effort', 'thinkingConfig', 'safety_settings'}
     if not parameters.keys() <= allowed:
         raise TransportConfigurationError('Unsupported Vertex request control')
     params = deepcopy(parameters)

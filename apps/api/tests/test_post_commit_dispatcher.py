@@ -348,7 +348,9 @@ async def test_automatic_scene_compression_worker_recomputes_selector_from_curre
     monkeypatch.setattr(
         conversations_api.runtime_settings_service,
         "get_effective_setting",
-        lambda *_args, **_kwargs: SimpleNamespace(model_key="model_current"),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            id=conversation_id, model_key="model_current", thinking_level=None,
+        ),
     )
     monkeypatch.setattr(
         conversations_api.model_provider_service,
@@ -404,7 +406,9 @@ async def test_automatic_scene_compression_worker_skips_stale_task_at_low_pressu
     monkeypatch.setattr(
         conversations_api.runtime_settings_service,
         "get_effective_setting",
-        lambda *_args, **_kwargs: SimpleNamespace(model_key="model_current"),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            id=conversation_id, model_key="model_current", thinking_level=None,
+        ),
     )
     monkeypatch.setattr(
         conversations_api.model_provider_service,

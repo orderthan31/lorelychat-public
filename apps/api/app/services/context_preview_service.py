@@ -116,14 +116,21 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
         token_target = runtime_settings_service.preset_token_target(
             getattr(runtime_setting, "response_length_preset", runtime_settings_service.DEFAULT_RESPONSE_LENGTH_PRESET)
         )
+        # A metadata-less client misses both room reasoning and model caps.
+        # Use the same selected/reachable routes as the generation preview.
+        primary_overrides = runtime_settings_service.llm_overrides_for_setting(runtime_setting, session=session)
+        primary_overrides["min_output_tokens"] = token_target
+        output_reserve = int(LLMClient(profile="chat", overrides=primary_overrides).max_output_tokens() or 0)
+        if fallback_overrides:
+            fallback_overrides["min_output_tokens"] = token_target
+            output_reserve = max(output_reserve, int(LLMClient(
+                profile="chat", overrides=fallback_overrides).max_output_tokens() or 0))
         capacity = resolve_safe_model_context_capacity(
             model_option,
             fallback_model_option,
             room_prompt_budget_tokens=room_prompt_budget,
             comparison_options=comparison,
-            completion_reserve_tokens=LLMClient(
-                profile="chat", overrides={"min_output_tokens": token_target},
-            ).max_output_tokens(),
+            completion_reserve_tokens=output_reserve,
         )
         characters = [
             character

@@ -1,4 +1,12 @@
 {
+  "추론 깊이": "Reasoning depth",
+  "공통 설정 상속": "Use common setting",
+  "추론 낮음": "Low",
+  "추론 보통": "Medium",
+  "추론 높음": "High",
+  "추론 매우 높음": "Extra high",
+  "추론 최대": "Maximum",
+  "추론 깊이를 조절합니다. 높을수록 전체 생성 한도(생각+답변)가 늘어납니다. 미지원 단계는 모델 지원 범위로 조정되며, 별도의 표시 답변 분량을 보장하지 않습니다.": "Controls reasoning depth. Higher levels raise the total generation ceiling (thinking + answer). Unsupported levels adapt to the model’s supported range; a separate visible answer budget is not guaranteed.",
   "Vertex AI에서는 전용 Decision API를 사용할 수 없습니다.": "The dedicated Decision API is unavailable on Vertex AI.",
   "ADC로 저장하면 기존 JSON이 제거되고 서버에 구성된 ADC를 사용합니다.": "Saving ADC removes the stored JSON and uses ADC configured on the server.",
   "계정을 저장한 뒤 모델 목록을 최신화하세요. 사용 가능한 용도는 모델별 기능에 따라 달라집니다. Vertex AI에서는 전용 Decision API를 사용할 수 없습니다.": "Save the account, then refresh its model list. Available uses depend on each model’s capabilities. The dedicated Decision API is unavailable on Vertex AI.",

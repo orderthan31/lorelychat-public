@@ -5,6 +5,9 @@ from app.schemas.model_providers import ModelInputCapabilities
 from pydantic import BaseModel, Field
 
 
+ThinkingLevel = Literal["low", "medium", "high", "xhigh", "max"]
+
+
 class RuntimeModelOptionRead(ModelInputCapabilities):
     key: str
     label: str
@@ -34,6 +37,8 @@ class CompressionIntervalOptionRead(BaseModel):
 
 class RuntimeSettingRead(BaseModel):
     scope: str
+    thinking_level: ThinkingLevel | None = None
+    effective_thinking_level: ThinkingLevel = "low"
     chat_fallback_status: Literal["not_configured", "available", "unavailable"] = "not_configured"
     compression_fallback_status: Literal["not_configured", "available", "unavailable"] = "not_configured"
     conversation_id: str | None = None
@@ -60,6 +65,7 @@ class RuntimeSettingRead(BaseModel):
 
 
 class RuntimeSettingUpdate(RequestModel):
+    thinking_level: ThinkingLevel | None = None
     nonnull_fields = frozenset(['compression_strategy', 'response_length_preset', 'safety_preset', 'min_output_tokens', 'compression_interval_turns'])
     nonblank_fields = frozenset(['response_length_preset'])
     model_key: str | None = None

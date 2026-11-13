@@ -40,6 +40,8 @@ export function normalizeRuntimeSettingUpdatePayload(
     decision_enabled: !!setting.decision_enabled,
     decision_model_option_key: setting.decision_model_option_key || null,
     safety_preset: setting.safety_preset || 'medium',
+    // Omission preserves the server value; explicit null restores room inheritance.
+    ...(setting.thinking_level !== undefined ? { thinking_level: setting.thinking_level } : {}),
     response_length_preset: setting.response_length_preset || defaults.response_length_preset,
     compression_strategy: normalizeCompressionStrategy(setting.compression_strategy),
   };

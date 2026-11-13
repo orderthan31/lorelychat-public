@@ -75,7 +75,7 @@ export function useBootstrapSync({
     if (!setting) return;
     const normalizedSetting = normalizeRuntimeSetting(setting);
     setRuntimeDefaultSetting(normalizedSetting);
-    setConversationRuntimeSetting((current) => normalizeRuntimeSetting({ ...normalizedSetting, ...(current?.scope === 'conversation' ? current : {}) }));
+    setConversationRuntimeSetting((current) => normalizeRuntimeSetting({ ...normalizedSetting, thinking_level: null, ...(current?.scope === 'conversation' ? current : {}) }));
   }, [bootstrap.runtimeDefault.data, setRuntimeDefaultSetting, setConversationRuntimeSetting]);
 
   useEffect(() => {

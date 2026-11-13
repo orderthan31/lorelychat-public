@@ -42,6 +42,7 @@ export interface ConversationSummary {
   tts_enabled?: boolean;
 }
 
+export type ThinkingLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type CompressionStrategy = 'fast' | 'quality';
 export type FallbackStatus = 'not_configured' | 'available' | 'unavailable';
 
@@ -71,6 +72,8 @@ export interface RuntimeSetting {
   decision_enabled?: boolean;
   decision_model_option_key?: string | null;
   safety_preset?: string;
+  thinking_level?: ThinkingLevel | null;
+  effective_thinking_level?: ThinkingLevel;
   response_length_preset?: string;
   compression_interval_turns?: number | string;
   compression_strategy?: CompressionStrategy;
@@ -86,6 +89,7 @@ export type RuntimeSettingUpdatePayload = {
   decision_enabled: boolean;
   decision_model_option_key: string | null;
   safety_preset: string;
+  thinking_level?: ThinkingLevel | null;
   response_length_preset: string;
   compression_strategy: CompressionStrategy;
 };

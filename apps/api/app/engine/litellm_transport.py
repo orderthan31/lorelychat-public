@@ -240,7 +240,12 @@ _CONTROL_PATHS = {
     'reasoning_effort': ('reasoning_effort',),
     'thinkingConfig.thinkingBudget': ('thinkingConfig.thinkingBudget', 'thinking_budget'),
     'thinkingConfig.thinkingLevel': ('thinkingConfig.thinkingLevel', 'thinking_level'),
+    'thinkingConfig.includeThoughts': ('thinkingConfig.includeThoughts',),
     'reasoning.enabled': ('reasoning.enabled',),
+    'reasoning.effort': ('reasoning.effort',),
+    'thinking.type': ('thinking.type',),
+    'thinking.budget_tokens': ('thinking.budget_tokens',),
+    'output_config.effort': ('output_config.effort',),
     'response_format.strict': ('response_format.json_schema.strict',),
 }
 
@@ -256,7 +261,8 @@ def control_fields(payload):
                     value = metadata_object(value).get(part)
                 if (type(value) in (bool, int) or
                     (type(value) is float and math.isfinite(value)) or
-                    (type(value) is str and value in {'none', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh'})):
+                    (type(value) is str and value in {'none', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max',
+                                                                     'enabled', 'disabled', 'adaptive', 'MINIMAL', 'LOW', 'MEDIUM', 'HIGH'})):
                     result[name] = value
     return result
 
@@ -266,12 +272,16 @@ def control_diagnostics(response, parameters, requested, omitted):
     wire = response.extensions['lorechat_wire_controls']
     aliases = {'topP': 'top_p', 'topK': 'top_k'}
     absent = [name for name in omitted if aliases.get(name, name) not in wire]
+    translated = ({key: value for key, value in wire.items()
+                   if key.startswith(('thinkingConfig.', 'thinking.', 'output_config.', 'reasoning.'))}
+                  if app.get('reasoning_effort') is not None else {})
     return {
         'requested_controls': control_fields(requested),
         'application_controls': app,
         'application_omitted_parameters': list(omitted),
         'serialized_wire_controls': wire,
-        'sdk_added_defaults': {key: value for key, value in wire.items() if key not in app},
+        'sdk_translated_controls': translated,
+        'sdk_added_defaults': {key: value for key, value in wire.items() if key not in app and key not in translated},
         'omitted_parameters': absent,
         'sdk_response_status': response.extensions['lorechat_sdk_response_status'],
     }

@@ -8,7 +8,7 @@ import type { ConversationComposerProps } from './contracts';
 export function ConversationComposer({
   conversation, setConversation, busy, sendConversationMessage,
   speakerId, setSpeakerId, speakerOptions, participantName,
-  chatSettingsOpen, setChatSettingsOpen, conversationRuntimeSetting,
+  chatSettingsOpen, setChatSettingsOpen, conversationRuntimeSetting, inheritedThinkingLevel,
   setConversationRuntimeSetting, saveConversationRuntimeSetting,
   renderChatImages, setRenderChatImages, compressConversationNow,
   composerTextareaRef, compose, setCompose, resizeComposerTextarea,
@@ -44,6 +44,7 @@ export function ConversationComposer({
         <ChatSettingsBubble
           open={chatSettingsOpen}
           setting={conversationRuntimeSetting}
+          inheritedThinkingLevel={inheritedThinkingLevel}
           onChange={setConversationRuntimeSetting}
           onSave={saveConversationRuntimeSetting}
           saving={busy}

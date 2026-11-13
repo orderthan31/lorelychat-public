@@ -11,7 +11,7 @@ import { Switch } from '../atoms';
 import { cn } from '../../lib/utils';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { Translator } from '../../i18n/core';
-import type { CompressionStrategy, FallbackStatus, RuntimeModelOption } from '../../types/domain';
+import type { CompressionStrategy, FallbackStatus, RuntimeModelOption, ThinkingLevel } from '../../types/domain';
 import { hasActiveDecisionModel, normalizeCompressionStrategy } from '../../utils/runtimeSettings';
 
 type RuntimeOption = RuntimeModelOption;
@@ -28,6 +28,8 @@ export type RuntimeSettingValue = {
   decision_enabled?: boolean;
   decision_model_option_key?: string | null;
   safety_preset?: 'high' | 'medium' | 'low' | string;
+  thinking_level?: ThinkingLevel | null;
+  effective_thinking_level?: ThinkingLevel;
   response_length_preset?: string;
   compression_strategy?: CompressionStrategy;
   options?: RuntimeOption[];
@@ -44,6 +46,8 @@ export type RuntimeSettingFieldsProps = {
   value?: RuntimeSettingValue;
   onChange?: RuntimeSettingChange;
   compact?: boolean;
+  scope?: 'global' | 'room';
+  inheritedThinkingLevel?: ThinkingLevel;
 };
 
 export type RuntimeSettingsPanelProps = {
@@ -52,6 +56,7 @@ export type RuntimeSettingsPanelProps = {
   onSave?: () => void;
   saving?: boolean;
   title?: string;
+  inheritedThinkingLevel?: ThinkingLevel;
 
 };
 
@@ -87,9 +92,13 @@ export function DecisionCapabilityHint({ option }: { option?: RuntimeOption }) {
   </p>;
 }
 
-function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compact = false }: RuntimeSettingFieldsProps) {
+function RuntimeSettingFields({ value = {}, onChange, compact = false, scope = 'global', inheritedThinkingLevel }: RuntimeSettingFieldsProps) {
   const { t } = useI18n();
   const compressionStrategyGroupName = useId();
+  const thinkingHintId = useId();
+  const thinkingLabels = { low: t('추론 낮음'), medium: t('추론 보통'), high: t('추론 높음'), xhigh: t('추론 매우 높음'), max: t('추론 최대') };
+  const commonThinkingLevel = inheritedThinkingLevel ?? (value.thinking_level == null ? value.effective_thinking_level : undefined);
+  const thinkingValue = scope === 'room' ? (value.thinking_level ?? '') : (value.thinking_level ?? 'low');
   const options = runtimeModelOptions(value);
   const fallbackOptions = options.filter((option) => option.key !== value.model_key);
   const compressionOptions = compressionModelOptions(value);
@@ -109,7 +118,13 @@ function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compa
   const compressionOptionsForAccount = selectedCompressionAccountId ? compressionOptions.filter((option) => option.provider_account_id === selectedCompressionAccountId) : [];
   const decisionOptionsForAccount = selectedDecisionAccountId ? decisionOptions.filter((option) => option.provider_account_id === selectedDecisionAccountId) : [];
   const normalizedCompressionStrategy = normalizeCompressionStrategy(value.compression_strategy);
-  const update = (patch: Partial<RuntimeSettingValue>) => onChange?.({ ...DEFAULT_RUNTIME_SETTING, ...(value || {}), ...patch });
+  const update = (patch: Partial<RuntimeSettingValue>) => {
+    const next: RuntimeSettingValue = { ...DEFAULT_RUNTIME_SETTING, ...value, ...patch };
+    // Initialization owns defaults. An unrelated edit must not turn a legacy
+    // omitted preference into a room reset or a new global LOW selection.
+    if (value.thinking_level === undefined && patch.thinking_level === undefined) delete next.thinking_level;
+    onChange?.(next);
+  };
   return <div className={cn('grid grid-cols-1 gap-2.5 min-[720px]:grid-cols-[minmax(0,1.25fr)_minmax(160px,.75fr)]', compact && 'gap-2')}>
     {value.chat_fallback_status === 'unavailable' && <p role="status" data-fallback-unavailable="chat">Chat fallback unavailable · {value.fallback_model_key || 'requested model'}. Selection preserved; no replacement selected.</p>}
     {value.compression_fallback_status === 'unavailable' && <p role="status" data-fallback-unavailable="compression">Compression fallback unavailable · {value.compression_fallback_model_key || value.fallback_model_key || 'requested model'}. Selection preserved; no replacement selected.</p>}
@@ -183,6 +198,12 @@ function RuntimeSettingFields({ value = DEFAULT_RUNTIME_SETTING, onChange, compa
     }}><option value="">{decisionAccounts.length ? t('Provider 계정 선택') : t('선택 가능한 모델 없음')}</option>{decisionAccounts.map(([id, option]) => <option key={id} value={id}>{option.provider_account_alias || option.provider || id}</option>)}</Select></Field>
     <Field label={t('의사결정 모델')}><Select value={String(value.decision_model_option_key || '')} disabled={!decisionOptionsForAccount.length} onChange={(e) => update({ decision_model_option_key: e.target.value || null })}><option value="">{decisionOptionsForAccount.length ? t('의사결정 모델 선택') : t('선택 가능한 모델 없음')}</option>{decisionOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
     <div className="min-[720px]:col-span-2"><DecisionCapabilityHint option={decisionOptions.find((option) => option.key === value.decision_model_option_key)} /></div>
+    <div className="min-w-0 min-[720px]:col-span-2">
+      <Field label={t('추론 깊이')}><Select className="w-full min-w-0" aria-describedby={thinkingHintId} value={thinkingValue} onChange={(event) => update({ thinking_level: event.target.value ? event.target.value as ThinkingLevel : null })}>
+        {scope === 'room' && <option value="">{t('공통 설정 상속')}{commonThinkingLevel ? ` · ${thinkingLabels[commonThinkingLevel]}` : ''}</option>}
+        {(Object.keys(thinkingLabels) as ThinkingLevel[]).map(level => <option key={level} value={level}>{thinkingLabels[level]}</option>)}
+      </Select><p id={thinkingHintId} className="context-muted">{t('추론 깊이를 조절합니다. 높을수록 전체 생성 한도(생각+답변)가 늘어납니다. 미지원 단계는 모델 지원 범위로 조정되며, 별도의 표시 답변 분량을 보장하지 않습니다.')}</p></Field>
+    </div>
     <Field label={t('대화 길이')}><Select value={String(value.response_length_preset || DEFAULT_RUNTIME_SETTING.response_length_preset)} onChange={(e) => update({ response_length_preset: e.target.value })}>{responseLengthPresets(value).map((preset) => <option key={preset.key} value={preset.key}>{localizedResponseLengthLabel(preset, t)}</option>)}</Select></Field>
     <Field label={t('민감 콘텐츠 필터')}><Select value={String(value.safety_preset || 'medium')} onChange={(e) => update({ safety_preset: e.target.value })}><option value="high">{t('높음 · 제한 강함')}</option><option value="medium">{t('보통 · 기본 RP')}</option><option value="low">{t('낮음 · provider 허용 범위')}</option></Select><p className="context-muted">{t('개인 로컬 채팅의 모델 응답 필터에만 적용됩니다. 마켓 검수 기준과는 별개입니다.')}</p></Field>
   </div>;
@@ -196,12 +217,12 @@ function RuntimeSettingsPanel({ setting, onChange, onSave, saving, title }: Runt
     action={<Button type="button" disabled={saving || !canSave} onClick={onSave}>{saving ? t('저장 중…') : t('기본값 저장')}</Button>}
     data-modernized="runtime 설정 flat form section"
   >
-    <RuntimeSettingFields value={setting} onChange={onChange} />
+    <RuntimeSettingFields value={setting} onChange={onChange} scope="global" />
     {!canSave ? <p className="context-muted">{t('Provider 계정을 연결하고 모델 목록을 불러온 뒤 채팅/압축 모델을 선택해주세요.')}</p> : null}
   </FormSection>;
 }
 
-function ChatSettingsBubble({ open, setting, onChange, onSave, saving, onClose, renderImages, onRenderImagesChange, ttsEnabled, onTtsEnabledChange, onCompressNow }: ChatSettingsBubbleProps) {
+function ChatSettingsBubble({ open, inheritedThinkingLevel, setting, onChange, onSave, saving, onClose, renderImages, onRenderImagesChange, ttsEnabled, onTtsEnabledChange, onCompressNow }: ChatSettingsBubbleProps) {
   const { t } = useI18n();
   if (!open) return null;
   const imagesEnabled = renderImages !== false;
@@ -211,7 +232,7 @@ function ChatSettingsBubble({ open, setting, onChange, onSave, saving, onClose, 
       <Button type="button" variant="ghost" size="icon" aria-label={t('채팅 설정 닫기')} onClick={onClose}>×</Button>
     </CardHeader>
     <CardContent>
-      <RuntimeSettingFields value={setting} onChange={onChange} compact />
+      <RuntimeSettingFields value={setting} onChange={onChange} scope="room" inheritedThinkingLevel={inheritedThinkingLevel} compact />
       <Switch checked={imagesEnabled} onChange={(e) => onRenderImagesChange?.(e.target.checked)} label={t('대화 이미지 표시')} />
       <Switch checked={!!ttsEnabled} onChange={(e) => onTtsEnabledChange?.(e.target.checked)} label={t('캐릭터 TTS 자동 생성')} />
       <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(0,1fr))] gap-2.5 [&>button]:w-full [&>button]:min-w-0 [&>button]:justify-self-stretch"><Button type="button" disabled={saving || (!!setting?.decision_enabled && !hasActiveDecisionModel(setting))} onClick={onSave}>{saving ? t('저장 중…') : t('이 방 설정 저장')}</Button><Button type="button" variant="ghost" disabled={saving} onClick={onCompressNow}>{t('지금 압축')}</Button></div>

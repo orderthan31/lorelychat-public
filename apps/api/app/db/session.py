@@ -274,6 +274,8 @@ def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
     if "runtime_settings" in table_names:
         columns = {column["name"] for column in inspector.get_columns("runtime_settings")}
         with active_engine.begin() as connection:
+            if "thinking_level" not in columns:
+                connection.execute(text("ALTER TABLE runtime_settings ADD COLUMN thinking_level TEXT"))
             if "response_length_preset" not in columns:
                 connection.execute(text("ALTER TABLE runtime_settings ADD COLUMN response_length_preset VARCHAR NOT NULL DEFAULT 'medium'"))
                 connection.execute(text("UPDATE runtime_settings SET response_length_preset = 'medium' WHERE response_length_preset IS NULL OR response_length_preset = ''"))

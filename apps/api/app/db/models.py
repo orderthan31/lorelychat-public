@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 from sqlmodel import Field, SQLModel, Column, JSON
-from sqlalchemy import Index, UniqueConstraint
+from sqlalchemy import Index, Text, UniqueConstraint
 
 
 def utc_now() -> datetime:
@@ -350,6 +350,8 @@ class RuntimeSetting(SQLModel, table=True):
     fallback_model_key: Optional[str] = None
     compression_model_key: Optional[str] = None
     compression_fallback_model_key: Optional[str] = None
+    # Null room values inherit the current global level, never a copied default.
+    thinking_level: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     compression_strategy: str = Field(default="quality")
     response_length_preset: str = Field(default="medium")
     min_output_tokens: int = Field(default=768)

@@ -46,6 +46,7 @@ export type ConversationComposerProps = ConversationComposerOptions & Conversati
   chatSettingsOpen: boolean;
   setChatSettingsOpen: Setter<boolean>;
   conversationRuntimeSetting: RuntimeSettingValue;
+  inheritedThinkingLevel?: import('../../types/domain').ThinkingLevel;
   setConversationRuntimeSetting: (setting: RuntimeSettingValue) => void;
   saveConversationRuntimeSetting: () => void;
   renderChatImages: boolean;

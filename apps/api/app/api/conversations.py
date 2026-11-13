@@ -979,10 +979,21 @@ async def _run_scene_compression_in_session(
     )
     if get_settings().context_management_mode == "automatic":
         selected_model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
+        fallback_overrides = runtime_settings_service.fallback_llm_overrides_for_setting(runtime_setting, session=session)
         fallback_model_option = model_provider_service.option_by_key(
             session,
             getattr(runtime_setting, "fallback_model_key", None),
-        ) if runtime_settings_service.fallback_llm_overrides_for_setting(runtime_setting, session=session) else None
+        ) if fallback_overrides else None
+        length_overrides = {"min_output_tokens": runtime_settings_service.preset_token_target(
+            getattr(runtime_setting, "response_length_preset", None))}
+        reachable_overrides = [runtime_settings_service.llm_overrides_for_setting(runtime_setting, session=session)]
+        if fallback_overrides:
+            reachable_overrides.append(fallback_overrides)
+        # Post-commit projections reserve the same reasoning-aware generation
+        # ceiling as dispatch, including the independently resolved fallback.
+        completion_reserve = max(int(LLMClient(profile="chat", overrides={
+            **route_overrides, **length_overrides,
+        }).max_output_tokens() or 0) for route_overrides in reachable_overrides)
         automatic_capacity = resolve_safe_model_context_capacity(
             selected_model_option,
             fallback_model_option,
@@ -991,10 +1002,7 @@ async def _run_scene_compression_in_session(
                 is_multi_room=len(character_ids) >= 2,
             ),
             comparison_options=comparison,
-            completion_reserve_tokens=LLMClient(profile="chat", overrides={
-                **runtime_settings_service.llm_overrides_for_setting(runtime_setting, session=session),
-                "min_output_tokens": runtime_settings_service.preset_token_target(getattr(runtime_setting, "response_length_preset", None)),
-            }).max_output_tokens(),
+            completion_reserve_tokens=completion_reserve,
         )
         execution_plan = conversation_service.automatic_context_plan(
             current_scene,

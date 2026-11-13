@@ -312,11 +312,13 @@ async def test_zero_invalid_and_missing_native_counts(wire, provider, model, url
     assert result.completion_tokens is result.total_tokens is result.reasoning_tokens is result.cached_tokens is None
 
 
-async def test_sdk_preflight_unsupported_effort_does_not_spend_budget(wire):
+async def test_sdk_preflight_invalid_effort_does_not_spend_budget(wire):
+    # Known nonreasoning models now omit effort (covered by the engine wire
+    # matrix). Invalid preferences must still reject before any provider send.
     @bounded_llm_task
     async def run():
-        with pytest.raises(sdk.TransportConfigurationError):
-            await make('xai', 'grok-2', reasoning_effort='high').chat([{'role': 'user', 'content': 'hi'}])
+        with pytest.raises(LLMCapabilityError):
+            await make('xai', 'grok-2', reasoning_effort='ultra').chat([{'role': 'user', 'content': 'hi'}])
         assert task_attempt_metadata()['network_attempts'] == 0
     await run()
     assert wire[0] == []

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import cast
 
 from sqlmodel import Session, select
 
 from app.core.config import Settings, get_settings
 from app.db.models import ModelOption, ModelProviderAccount, RuntimeSetting
-from app.schemas.runtime_settings import CompressionIntervalOptionRead, ResponseLengthPresetRead, RuntimeModelOptionRead, RuntimeSettingRead, RuntimeSettingUpdate
+from app.schemas.runtime_settings import CompressionIntervalOptionRead, ResponseLengthPresetRead, RuntimeModelOptionRead, RuntimeSettingRead, RuntimeSettingUpdate, ThinkingLevel
 from app.services import model_provider_service, provider_secret_service
 
 GLOBAL_RUNTIME_SETTING_ID = "global"
@@ -206,6 +207,7 @@ def get_global_setting(session: Session) -> RuntimeSetting:
     setting = RuntimeSetting(
         id=GLOBAL_RUNTIME_SETTING_ID,
         conversation_id=None,
+        thinking_level="low",
         model_key=None,
         fallback_model_key=None,
         compression_model_key=None,
@@ -230,6 +232,17 @@ def get_effective_setting(session: Session, conversation_id: str | None = None) 
         if room_setting:
             return room_setting
     return get_global_setting(session)
+
+
+def effective_thinking_level(setting: RuntimeSetting, session: Session | None = None) -> ThinkingLevel:
+    """Resolve null room values at use time, without persisting an inherited copy."""
+    if setting.thinking_level is not None:
+        return cast(ThinkingLevel, setting.thinking_level)
+    if setting.id != GLOBAL_RUNTIME_SETTING_ID and session is not None:
+        global_setting = get_setting(session, GLOBAL_RUNTIME_SETTING_ID)
+        if global_setting is not None and global_setting.thinking_level is not None:
+            return cast(ThinkingLevel, global_setting.thinking_level)
+    return "low"
 
 
 def serialize_setting(setting: RuntimeSetting, *, scope: str, options: bool = True, session: Session | None = None) -> RuntimeSettingRead:
@@ -269,6 +282,12 @@ def serialize_setting(setting: RuntimeSetting, *, scope: str, options: bool = Tr
     preset = response_length_preset_by_key(getattr(setting, "response_length_preset", DEFAULT_RESPONSE_LENGTH_PRESET))
     return RuntimeSettingRead(
         scope=scope,
+        thinking_level=cast(ThinkingLevel | None, (
+            None if scope == "conversation" and setting.id == GLOBAL_RUNTIME_SETTING_ID
+            else setting.thinking_level if scope == "conversation"
+            else setting.thinking_level or "low"
+        )),
+        effective_thinking_level=effective_thinking_level(setting, session),
         conversation_id=setting.conversation_id,
         model_key=valid_option.key if valid_option else None,
         fallback_model_key=chat_key,
@@ -336,6 +355,8 @@ def update_conversation_setting(session: Session, conversation_id: str, payload:
 
 
 def apply_update(setting: RuntimeSetting, payload: RuntimeSettingUpdate, *, session: Session | None = None) -> None:
+    if _field_was_set(payload, "thinking_level"):
+        setting.thinking_level = payload.thinking_level
     if payload.model_key is not None:
         setting.model_key = _validate_runtime_model_key(session, payload.model_key, "chat")
     if _field_was_set(payload, "fallback_model_key"):
@@ -428,6 +449,12 @@ def _dynamic_llm_overrides(session: Session, model_key: str | None, capability: 
         "keyless_local": model_provider_service.keyless_local_allowed(account),
         "provider_config_revision": account.updated_at.isoformat(),
     }
+    for field, value in (
+        ("model_max_output_tokens", option.max_output_tokens),
+        ("model_context_window_tokens", option.context_window_tokens),
+    ):
+        if type(value) is int and value > 0:
+            overrides[field] = value
     if account.provider_type == 'vertex_ai':
         overrides.update(vertex_project=account.vertex_project, vertex_location=account.vertex_location,
                          vertex_auth_mode=account.vertex_auth_mode or 'service_account')
@@ -456,9 +483,9 @@ def llm_overrides_for_setting(setting: RuntimeSetting, settings: Settings | None
     if session:
         dynamic_overrides = _dynamic_llm_overrides(session, setting.model_key, "chat")
         if dynamic_overrides:
-            return dynamic_overrides
+            return {**dynamic_overrides, "reasoning_effort": effective_thinking_level(setting, session)}
     if (settings or get_settings()).llm_mock:
-        return {"provider": "mock", "model": "mock"}
+        return {"provider": "mock", "model": "mock", "reasoning_effort": effective_thinking_level(setting, session)}
     raise ValueError("No active chat model option is selected")
 
 
@@ -472,7 +499,10 @@ def fallback_llm_overrides_for_setting(setting: RuntimeSetting, session: Session
         session, model_provider_service.option_by_key(session, model_key), "chat"
     ):
         return None
-    return _dynamic_llm_overrides(session, model_key, "chat")
+    overrides = _dynamic_llm_overrides(session, model_key, "chat")
+    if overrides is not None:
+        return {**overrides, "reasoning_effort": effective_thinking_level(setting, session)}
+    return None
 
 
 def compression_fallback_llm_overrides_for_setting(

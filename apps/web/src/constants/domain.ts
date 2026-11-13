@@ -1,4 +1,4 @@
-import type { CompressionStrategy } from '../types/domain';
+import type { CompressionStrategy, ThinkingLevel } from '../types/domain';
 
 const viteEnv = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env;
 export const API_BASE: string = viteEnv?.VITE_API_BASE_URL || '/api';
@@ -76,8 +76,8 @@ export const FALLBACK_TTS_MODELS = [
   { key: 'gemini-3.1-flash-tts-preview', label: 'Gemini 3.1 Flash TTS Preview · 고품질/API', provider: 'gemini', cost_hint: 'Google API 과금' },
 ];
 
-export type RuntimeSettingDefaults = { model_key: string | null; fallback_model_key: string | null; compression_model_key: string | null; compression_fallback_model_key: string | null; effective_compression_fallback_model_key: string | null; compression_fallback_source: string; decision_enabled: boolean; decision_model_option_key: string | null; response_length_preset: string; min_output_tokens: number; compression_strategy: CompressionStrategy; options: unknown[]; compression_options: unknown[]; decision_options: unknown[]; response_length_presets: unknown[] };
-export const DEFAULT_RUNTIME_SETTING: RuntimeSettingDefaults = { model_key: null, fallback_model_key: null, compression_model_key: null, compression_fallback_model_key: null, effective_compression_fallback_model_key: null, compression_fallback_source: 'none', decision_enabled: false, decision_model_option_key: null, response_length_preset: 'medium', min_output_tokens: 768, compression_strategy: 'quality', options: [], compression_options: [], decision_options: [], response_length_presets: [] };
+export type RuntimeSettingDefaults = { thinking_level: ThinkingLevel | null; effective_thinking_level: ThinkingLevel; model_key: string | null; fallback_model_key: string | null; compression_model_key: string | null; compression_fallback_model_key: string | null; effective_compression_fallback_model_key: string | null; compression_fallback_source: string; decision_enabled: boolean; decision_model_option_key: string | null; response_length_preset: string; min_output_tokens: number; compression_strategy: CompressionStrategy; options: unknown[]; compression_options: unknown[]; decision_options: unknown[]; response_length_presets: unknown[] };
+export const DEFAULT_RUNTIME_SETTING: RuntimeSettingDefaults = { thinking_level: 'low', effective_thinking_level: 'low', model_key: null, fallback_model_key: null, compression_model_key: null, compression_fallback_model_key: null, effective_compression_fallback_model_key: null, compression_fallback_source: 'none', decision_enabled: false, decision_model_option_key: null, response_length_preset: 'medium', min_output_tokens: 768, compression_strategy: 'quality', options: [], compression_options: [], decision_options: [], response_length_presets: [] };
 export const FALLBACK_RESPONSE_LENGTH_PRESETS = [
   { key: 'short', label: '짧게', description: '비용 절약/빠른 티키타카. 보통 1~2버블.', target_output_tokens: 320 },
   { key: 'medium', label: '중간', description: '기본 역할놀이 밸런스. 감정선은 살리되 과출력 방지.', target_output_tokens: 768 },

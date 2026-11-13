@@ -213,7 +213,24 @@ class LLMClient:
         self.settings = settings or get_settings()
         self.profile = profile
         self.purpose = purpose or ("compression" if profile == "compression" else "chat_generation")
-        self.overrides = overrides or {}
+        self.overrides = dict(overrides or {})
+        self._reasoning_cache = {}
+        self._output_budget_cache = {}
+
+    def reasoning_resolution(self, *, model: str | None = None):
+        from app.engine.reasoning import resolve
+        key = model or self.model()
+        if key not in self._reasoning_cache:
+            self._reasoning_cache[key] = resolve(self, key)
+        return self._reasoning_cache[key]
+
+    def output_budget_diagnostics(self, *, model: str | None = None):
+        from copy import deepcopy
+        from app.engine.reasoning import output_budget
+        key = model or self.model()
+        if key not in self._output_budget_cache:
+            self._output_budget_cache[key] = output_budget(self, self.reasoning_resolution(model=key))
+        return deepcopy(self._output_budget_cache[key])
 
     @classmethod
     def reset_circuit_breakers(cls) -> None:
@@ -305,6 +322,15 @@ class LLMClient:
 
     def sampling_parameters(self, *, model: str | None = None) -> tuple[dict, list[str]]:
         policy = self.transport_capabilities(model=model)
+        if self.settings.llm_transport == 'litellm' and self.overrides.get('reasoning_effort') is not None:
+            from app.engine.reasoning import sampling_parameters
+            resolved = self.reasoning_resolution(model=model)
+            if resolved.effective:
+                return sampling_parameters(resolved, {
+                    'temperature': self.overrides.get('temperature', policy.temperature),
+                    'top_p': self.overrides.get('top_p', policy.top_p),
+                    'top_k': self.overrides.get('top_k'),
+                })
         gemini = self.provider() == "gemini" or (self.settings.llm_transport == "litellm" and self.provider() in {"google", "vertex_ai"})
         params = {"temperature": self.overrides.get("temperature", policy.temperature)}
         if self.overrides.get("top_p", policy.top_p) is not None:
@@ -321,7 +347,19 @@ class LLMClient:
         return {key: value for key, value in params.items() if value is not None}, omitted
 
     def thinking_parameters(self, *, model: str | None = None, wire_confirmed: bool = False) -> tuple[dict, dict]:
-        """Preserve explicit transport controls; auto-OFF is chat-only and exact-gated."""
+        """Unified selected efforts take priority over legacy automatic OFF."""
+        if self.settings.llm_transport == 'litellm' and self.overrides.get('reasoning_effort') is not None:
+            resolved = self.reasoning_resolution(model=model)
+            params = {'reasoning_effort': resolved.effective} if resolved.effective else {}
+            return params, {
+                **resolved.diagnostics(), 'requested': resolved.requested,
+                'parameter': 'reasoning_effort' if params else None,
+                'omission_reason': None if params else resolved.reason,
+                'applied_on_wire': bool(params and wire_confirmed),
+                'explicit_parameters_on_wire': ['reasoning_effort'] if params and wire_confirmed else [],
+                'deprecated_native_controls_ignored': [key for key in ('thinking_level', 'thinking_budget')
+                                                       if self.overrides.get(key) is not None],
+            }
         gemini = self.provider() == "gemini" or (self.settings.llm_transport == "litellm" and self.provider() in {"google", "vertex_ai"})
         explicit = {key: self.overrides[key] for key in ("reasoning_effort", "thinking_level", "thinking_budget")
                     if self.overrides.get(key) is not None}
@@ -479,7 +517,9 @@ class LLMClient:
             return self.settings.compression_llm_timeout_seconds or self.settings.llm_timeout_seconds
         return self.settings.chat_llm_timeout_seconds or self.settings.llm_timeout_seconds
 
-    def max_output_tokens(self) -> int | None:
+    def max_output_tokens(self, *, model: str | None = None) -> int | None:
+        if self.settings.llm_transport == 'litellm' and self.overrides.get('reasoning_effort') is not None:
+            return self.output_budget_diagnostics(model=model)['final_max_output_tokens']
         value = self.overrides.get("min_output_tokens")
         if value is None:
             return None
@@ -625,6 +665,8 @@ class LLMClient:
             warning_count=len(response.headers.get_list("warning")), wire_confirmed=False)
         _, omitted = self.sampling_parameters()
         transport_diagnostics.update(sdk.control_diagnostics(response, parameters, self.overrides, omitted))
+        if self.overrides.get('reasoning_effort') is not None:
+            transport_diagnostics['output_headroom'] = self.output_budget_diagnostics()
         wire_controls = transport_diagnostics["serialized_wire_controls"]
         thinking_controls = sdk.control_fields(thinking)
         confirmed = bool(thinking_controls) and all(wire_controls.get(k) == v for k, v in thinking_controls.items())
