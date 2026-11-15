@@ -88,14 +88,14 @@ export function ConversationEditView({
   };
 
   return <section className="panel page grid gap-4 editor-surface" data-modernized="대화방 수정 world-select-only marker flat form sections">
-    <EditorActionBar label={t('페이지 액션')}><Button type="button" disabled={busy} onClick={saveConversationRoomEdit}>{t(busy ? '저장 중…' : '저장')}</Button><Button type="button" variant="secondary" onClick={addCharacterSlot}><Plus className="size-4" aria-hidden="true" />{t('참여 캐릭터')} · {t('추가')}</Button></EditorActionBar>
+    <EditorActionBar label={t('페이지 액션')}><Button type="button" disabled={busy} onClick={saveConversationRoomEdit}>{t(busy ? '저장 중…' : '저장')}</Button></EditorActionBar>
     <div className="editor-columns">
     <FormSection title={t('대화방 정보')}>
       <Field label={t('대화방 제목')}><Input value={roomEditDraft.title || ''} onChange={(e) => setRoomEditDraft({ ...roomEditDraft, title: e.target.value })} placeholder={t('대화방 제목')} /></Field>
       <Field label={t('세계관 (선택)')}><Select data-world-select value={roomEditDraft.world_setting_id || ''} onChange={(e) => setRoomEditDraft({ ...roomEditDraft, world_setting_id: e.target.value })}><option value="">{t('세계관 없음')}</option>{worldSettings.filter((world) => world.enabled !== false || world.id === roomEditDraft.world_setting_id).map((world) => <option key={world.id} value={world.id}>{world.title || world.id}</option>)}</Select></Field>
     </FormSection>
 
-    <FormSection title={t('참여 캐릭터')}>
+    <FormSection title={t('참여 캐릭터')} action={<Button type="button" variant="secondary" onClick={addCharacterSlot}><Plus className="size-4" aria-hidden="true" />{t('참여 캐릭터')} · {t('추가')}</Button>}>
       {characterParticipants.map((participant, index) => <div className="relative grid min-w-0 gap-2.5 border-t border-border pt-3 first:border-t-0 first:pt-0" key={`character-${index}`}>
         <Field className={characterParticipants.length > 1 ? 'min-w-0 pr-12' : 'min-w-0'} label={formatCharacterSlot(index + 1, locale)}><Select value={participant.id} onChange={(e) => updateCharacterAt(index, e.target.value)}><option value="">{t('캐릭터 선택')}</option>{characters.map((character) => { const id = String(character.id || ''); const alreadySelected = selectedCharacterIds.has(id) && id !== participant.id; return <option key={id} value={id} disabled={alreadySelected}>{character.name || id}</option>; })}</Select></Field>
         <Field label={t('캐릭터 역할')}><Select value={participant.role || ''} disabled={busy} onChange={(e) => updateCharacterRoleAt(index, e.target.value)}>{participant.role && !CAST_ROLE_PRESETS.some(preset => preset.key === participant.role) && <option value={participant.role}>{participant.role}</option>}{CAST_ROLE_PRESETS.map(preset => <option key={preset.key || 'none'} value={preset.key}>{t(preset.label as UiMessageKey)}</option>)}</Select></Field>

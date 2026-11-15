@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { EditorActionBar } from '../molecules/EditorActionBar';
 import type { Dispatch, SetStateAction } from 'react';
 import { Field } from '../molecules';
@@ -28,14 +29,16 @@ export type PresetFormProps = {
 };
 
 export function PresetForm({ draft, setDraft, onSave, onDelete, saving, isNew }: PresetFormProps) {
+  const formId = useId();
   const { t } = useI18n();
   const update = (key: string, value: unknown) => setDraft((current) => ({ ...current, [key]: value }));
-  return <form className="stack editor-surface" data-modernized="프리셋 폼 design-system primitive marker" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
-    <EditorActionBar label={t('페이지 액션')}><Button type="submit" disabled={saving}>{t(saving ? '저장 중…' : '저장')}</Button>{!isNew && <Button type="button" variant="destructive" onClick={onDelete}>{t('삭제')}</Button>}</EditorActionBar>
+  return <form id={formId} className="stack editor-surface" data-modernized="프리셋 폼 design-system primitive marker" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
+    <EditorActionBar label={t('페이지 액션')}><Button type="submit" form={formId} disabled={saving}>{t(saving ? '저장 중…' : '저장')}</Button></EditorActionBar>
     <p className="context-muted">{t('프리셋 제목과 내용은 필수입니다.')}</p>
     <div className="grid two compact"><Field label={t('프리셋 타입')}><Select value={draft.preset_type || 'speech_style'} onChange={(e) => update('preset_type', e.target.value)}><option value="speech_style">{t('캐릭터 말투')}</option></Select></Field><Field label={t('제목')}><Input value={draft.title || ''} onChange={(e) => update('title', e.target.value)} /></Field></div>
     <TextareaWithExpand label={t('내용')} rows={8} value={draft.content || ''} onChange={(value) => update('content', value)} placeholder={t('캐릭터 말투 프리셋 내용')} />
     <Field label={t('설명')}><Input value={draft.description || ''} onChange={(e) => update('description', e.target.value)} /></Field>
     <Switch checked={draft.enabled !== false} onChange={(e) => update('enabled', e.target.checked)} label={t('활성화')} />
+    <div className="editor-secondary-actions">{!isNew && <Button type="button" variant="destructive" onClick={onDelete}>{t('삭제')}</Button>}</div>
   </form>;
 }

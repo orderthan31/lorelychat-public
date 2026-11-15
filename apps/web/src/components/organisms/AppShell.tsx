@@ -1,5 +1,7 @@
-import { useEffect, type ReactNode } from 'react';
-import { Menu } from 'lucide-react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { PageHeaderTarget } from '../molecules/PageHeaderActions';
+import { Menu, MoreHorizontal } from 'lucide-react';
+import * as Popover from '@radix-ui/react-popover';
 import { Drawer } from './Drawer';
 import { AgentLauncher, AgentSurface } from '../../agent/components';
 import { pageTitle, type LegacyRoute } from '../../router/legacyRouter';
@@ -17,10 +19,12 @@ export type AppShellProps = {
   children: ReactNode;
   overlays?: ReactNode;
   headerActions?: ReactNode;
+  secondaryHeaderActions?: boolean;
   chatHeaderReady?: boolean;
 };
 
-export function AppShell({ route, backendOnline, drawerOpen, setDrawerOpen, navigate, children, overlays, headerActions, chatHeaderReady = true }: AppShellProps) {
+export function AppShell({ route, backendOnline, drawerOpen, setDrawerOpen, navigate, children, overlays, headerActions, secondaryHeaderActions = false, chatHeaderReady = true }: AppShellProps) {
+  const [actionTarget, setActionTarget] = useState<HTMLDivElement | null>(null);
   const isChatRoute = route.page === 'conversationDetail';
   const theme = useUiStore((state) => state.theme);
   const { t } = useI18n();
@@ -32,7 +36,7 @@ export function AppShell({ route, backendOnline, drawerOpen, setDrawerOpen, navi
     root.dataset.theme = theme;
   }, [theme]);
 
-  return <>
+  return <PageHeaderTarget.Provider value={isChatRoute ? null : actionTarget}>
     {(!isChatRoute || !chatHeaderReady) && <header className="app-bar sticky top-0 z-30 flex min-h-[56px] w-full items-center gap-2 overflow-hidden border-b border-border bg-card px-3.5 py-1.5 text-foreground md:gap-3 md:px-5" data-modernized="앱 셸 design-system primitive marker">
       <Button type="button" variant="ghost" size="icon" className="inline-grid size-11 min-h-11 shrink-0 place-items-center self-center rounded-xl text-foreground" aria-label={t('메뉴 열기')} onClick={() => setDrawerOpen(true)}><Menu className="block" size={20} /></Button>
       <div className="app-title flex min-h-10 min-w-0 flex-1 items-center self-center overflow-hidden">
@@ -44,11 +48,12 @@ export function AppShell({ route, backendOnline, drawerOpen, setDrawerOpen, navi
           event.preventDefault(); navigate(item.path);
         }}>{t(item.label)}</a>)}
       </nav>}
-      {headerActions && <div className="app-actions ml-auto flex shrink-0 items-center justify-end gap-2 overflow-x-auto" aria-label={t('페이지 액션')}>{headerActions}</div>}
+      {headerActions && <div className="app-actions" aria-label={t('페이지 액션')}>{secondaryHeaderActions ? <Popover.Root><Popover.Trigger asChild><Button variant="ghost" size="icon" aria-label={t('페이지 액션')} title={t('페이지 액션')}><MoreHorizontal size={20} /></Button></Popover.Trigger><Popover.Portal><Popover.Content align="end" sideOffset={6} className="header-secondary-menu" aria-label={t('페이지 액션')}>{headerActions}</Popover.Content></Popover.Portal></Popover.Root> : headerActions}</div>}
+      <div ref={setActionTarget} className="page-header-slot" />
       <AgentLauncher />
     </header>}
     <Drawer route={route} open={drawerOpen} navigate={navigate} close={() => setDrawerOpen(false)} backendOnline={backendOnline} />
     <div className="agent-layout"><main className="shell">{children}</main><AgentSurface /></div>
     {overlays}
-  </>;
+  </PageHeaderTarget.Provider>;
 }

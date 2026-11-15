@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Button, Input, Select, Switch, Textarea } from '../components/atoms';
 import { Field } from '../components/molecules';
+import { useId } from 'react';
 import { EditorActionBar } from '../components/molecules/EditorActionBar';
 import { useI18n } from '../i18n/I18nProvider';
 import { AgentError, AgentOpenButton } from './components';
@@ -40,6 +41,7 @@ function McpSettings() {
   </section>;
 }
 export function AgentSettingsView() {
+  const formId = useId();
   const { t } = useI18n(); const s = useAgentStore();
   const [draft, setDraft] = useState<AgentSettingsInput | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [saved, setSaved] = useState(false);
   const [llmAccountId, setLlmAccountId] = useState('');
@@ -59,7 +61,7 @@ export function AgentSettingsView() {
     <AgentError value={s.settingsError} /><AgentError value={error} />
     {s.settingsError && <Button onClick={() => void agentActions.loadSettings()}>{t('agent.refresh')}</Button>}
     {!s.settings && !s.settingsError && <p role="status">{t('불러오는 중…')}</p>}
-    {draft && <form className="editor-surface" onSubmit={e => { e.preventDefault(); void save(); }}><fieldset className="grid gap-4 border-0 p-0 min-w-0" disabled={busy}>
+    {draft && <form id={formId} className="editor-surface" onSubmit={e => { e.preventDefault(); void save(); }}><fieldset className="grid gap-4 border-0 p-0 min-w-0" disabled={busy}>
       <Switch role="switch" label={t('agent.enable')} checked={draft.enabled} onChange={e => setDraft({ ...draft, enabled: e.target.checked })} />
       <Field label={t('agent.llmAccount')}><Select aria-label={t('agent.llmAccount')} value={llmAccountId} onChange={e => { const id = e.target.value; setLlmAccountId(id); setDraft({ ...draft, llm_model_option_key: s.settings?.llm_options.some(model => model.key === draft.llm_model_option_key && model.provider_account_id === id) ? draft.llm_model_option_key : null }); }}><option value="">{t('agent.none')}</option>{llmAccounts.map(a => <option key={a.id} value={a.id}>{a.alias}</option>)}</Select></Field>
       <Field label={t('agent.llm')}><Select disabled={!llmAccountId} aria-label={t('agent.llm')} value={draft.llm_model_option_key || ''} onChange={e => setDraft({ ...draft, llm_model_option_key: e.target.value || null })}><option value="">{t('agent.none')}</option>{llmOptions.map(model => <option key={model.key} value={model.key}>{model.label}</option>)}</Select></Field>
@@ -67,7 +69,7 @@ export function AgentSettingsView() {
       <Field label={t('agent.imageAccount')}><Select aria-label={t('agent.imageAccount')} value={draft.image_provider_account_id || ''} onChange={e => setDraft({ ...draft, image_provider_account_id: e.target.value || null, image_model_id: null })}><option value="">{t('agent.none')}</option>{s.settings?.image_accounts.map(a => <option value={a.id} key={a.id}>{a.alias}</option>)}</Select></Field>
       <Field label={t('agent.imageModel')}><Select aria-label={t('agent.imageModel')} disabled={!account} value={draft.image_model_id || ''} onChange={e => setDraft({ ...draft, image_model_id: e.target.value || null })}><option value="">{t('agent.none')}</option>{s.settings?.image_models.filter(m => m.provider_type === account?.provider_type && (!account?.image_model_ids || account.image_model_ids.includes(m.id))).map(m => <option value={m.id} key={m.id}>{m.label}</option>)}</Select></Field>
       <Switch role="switch" label={t('agent.mcpEnable')} checked={draft.mcp_enabled} onChange={e => setDraft({ ...draft, mcp_enabled: e.target.checked })} />
-      <EditorActionBar label={t('저장')}><Button type="submit" disabled={busy}>{t('저장')}</Button></EditorActionBar>
+      <EditorActionBar label={t('저장')}><Button type="submit" form={formId} disabled={busy}>{t('저장')}</Button></EditorActionBar>
     </fieldset></form>}
     {saved && <p role="status">{t('agent.saved')}</p>}
     {s.settings && <McpSettings />}

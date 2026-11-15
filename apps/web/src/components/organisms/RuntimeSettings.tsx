@@ -218,7 +218,7 @@ function ChatSettingsBubble({ open, embedded = false, inheritedThinkingLevel, se
       <Button type="button" variant="ghost" size="icon" aria-label={t('채팅 설정 닫기')} onClick={onClose}>×</Button>
     </CardHeader>
     <CardContent className="editor-surface runtime-settings-container">
-      <EditorActionBar label={t('페이지 액션')}><Button type="button" disabled={saving || (!!setting?.decision_enabled && !hasActiveDecisionModel(setting))} onClick={onSave}>{saving ? t('저장 중…') : t('이 방 설정 저장')}</Button><Button type="button" variant="ghost" disabled={saving} onClick={onCompressNow}>{t('지금 압축')}</Button></EditorActionBar>
+      <EditorActionBar placement="local" label={t('페이지 액션')}><Button type="button" disabled={saving || (!!setting?.decision_enabled && !hasActiveDecisionModel(setting))} onClick={onSave}>{saving ? t('저장 중…') : t('이 방 설정 저장')}</Button><Button type="button" variant="ghost" disabled={saving} onClick={onCompressNow}>{t('지금 압축')}</Button></EditorActionBar>
       <RuntimeSettingFields value={setting} onChange={onChange} scope="room" inheritedThinkingLevel={inheritedThinkingLevel} compact />
       <Switch checked={imagesEnabled} onChange={(e) => onRenderImagesChange?.(e.target.checked)} label={t('대화 이미지 표시')} />
       <Switch checked={!!ttsEnabled} onChange={(e) => onTtsEnabledChange?.(e.target.checked)} label={t('캐릭터 TTS 자동 생성')} />

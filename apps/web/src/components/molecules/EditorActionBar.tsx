@@ -1,8 +1,11 @@
-import { useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useContext, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { PageHeaderAction, PageHeaderTarget } from './PageHeaderActions';
 import './EditorActionBar.scss';
 
 /** One action owner, in normal flow: never clones a submit button or overlays a keyboard. */
-export function EditorActionBar({ children, label }: { children: ReactNode; label: string }) {
+export function EditorActionBar({ children, label, placement = 'page' }: { children: ReactNode; label: string; placement?: 'page' | 'local' }) {
+  const target = useContext(PageHeaderTarget);
+  const inHeader = placement === 'page' && !!target;
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const bar = ref.current;
@@ -26,6 +29,7 @@ export function EditorActionBar({ children, label }: { children: ReactNode; labe
     observer.observe(bar);
     window.addEventListener('resize', measure);
     return () => { observer.disconnect(); window.removeEventListener('resize', measure); };
-  }, []);
+  }, [inHeader]);
+  if (inHeader) return <PageHeaderAction><div className="editor-header-actions" role="group" aria-label={label}>{children}</div></PageHeaderAction>;
   return <div ref={ref} className="editor-action-bar" role="group" aria-label={label}>{children}</div>;
 }

@@ -14,3 +14,6 @@
   summary { min-height: 44px; align-content: center; cursor: pointer; }
   p { margin: .25rem 0 .75rem; line-height: 1.5; }
 }
+
+.settings-add[data-header-add]:not([open]) { display: none; }
+.settings-add[data-header-add] { scroll-margin-top: 72px; }

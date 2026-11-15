@@ -95,7 +95,7 @@ try {
     await titleField.fill('Synthetic'); await expect(primary).toBeEnabled();
    }
    if(kind==='create'||kind==='edit'){
-    const before=await page.locator('select').count(); await (kind==='create'?page.locator('.conversation-participants').getByRole('button',{name:/추가/}):bar.getByRole('button').last()).click();
+    const before=await page.locator('select').count(); await (kind==='create'?page.locator('.conversation-participants').getByRole('button',{name:/추가/}):page.getByRole('button',{name:'참여 캐릭터 · 추가',exact:true})).click();
     assert.ok(await page.locator('select').count()>before,'Add Character retains handler');
    }
    if(kind==='runtime'||kind==='embedded'){

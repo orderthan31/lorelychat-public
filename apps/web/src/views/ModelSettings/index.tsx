@@ -1,5 +1,6 @@
 import './settings-ux.scss';
-import { useEffect, useMemo, useState } from 'react';
+import { useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { PageHeaderAction, PageHeaderTarget } from '../../components/molecules/PageHeaderActions';
 import { VertexFields, VertexAccountEditor } from './VertexFields';
 import { validVertexConfiguration, vertexPayload, type VertexDraft } from './vertex';
 import { ChevronDown, ChevronLeft, ChevronRight, Plus, PlugZap, RefreshCw, Save, Trash2 } from 'lucide-react';
@@ -120,6 +121,18 @@ function ManualCapabilityEditor({ option, disabled, save }: { option: ModelOptio
 }
 
 export function ModelSettingsView({ section = 'runtime', runtimeDefaultSetting, setRuntimeDefaultSetting, saveRuntimeDefaultSetting, refetchRuntimeDefaultSetting, busy = false }: ModelSettingsViewProps) {
+  const headerTarget = useContext(PageHeaderTarget);
+  const addRef = useRef<HTMLDetailsElement>(null);
+  const addId = useId();
+  const [addOpen, setAddOpen] = useState(false);
+  useEffect(() => { setAddOpen(false); }, [section]);
+  const openAdd = () => {
+    setAddOpen(true);
+    requestAnimationFrame(() => {
+      addRef.current?.scrollIntoView({ block: 'start' });
+      addRef.current?.querySelector<HTMLElement>('select, input')?.focus({ preventScroll: true });
+    });
+  };
   const { locale, t } = useI18n();
   const wideFilters = useMediaMatch('(min-width: 960px)');
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -417,6 +430,7 @@ export function ModelSettingsView({ section = 'runtime', runtimeDefaultSetting, 
 
   return <section className="panel page model-settings-page grid gap-4" data-page="model-settings">
     <h1 className="sr-only">{t(section === 'providers' ? 'settings.providers' : section === 'models' ? 'settings.modelCatalog' : 'settings.defaultModels')}</h1>
+    {headerTarget && section !== 'runtime' && <PageHeaderAction><Button type="button" onClick={openAdd} aria-expanded={addOpen} aria-controls={addId}><Plus className="size-4" aria-hidden="true" />{t('추가')}</Button></PageHeaderAction>}
     {message ? <p className="context-muted" role="status" aria-live="polite">{message}</p> : null}
 
       <div className="min-w-0">
@@ -426,8 +440,8 @@ export function ModelSettingsView({ section = 'runtime', runtimeDefaultSetting, 
 
         {section === 'providers' && <div data-settings-section="providers">
     <section className="grid gap-4" data-provider-list>
-          <details className="group settings-add" data-provider-add>
-            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('Provider 계정 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
+          <details ref={addRef} id={addId} open={addOpen} className="group settings-add" data-header-add={headerTarget ? '' : undefined} data-provider-add>
+            <summary onClick={event => { event.preventDefault(); setAddOpen(open => !open); }} className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('Provider 계정 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
             <div className="mt-3 grid gap-2.5">
               <Field label={t('Provider')}><Select value={draft.provider_type} onChange={(e) => setDraft((current) => ({ ...current, provider_type: e.target.value as ProviderType, api_key: '' }))}>{PROVIDERS.map((provider) => <option key={provider.type} value={provider.type}>{provider.label}</option>)}</Select></Field>
               {draft.provider_type === 'xai' ? <div className="border-l-2 border-accent px-3 text-sm text-muted-foreground" data-xai-provider-help>
@@ -501,8 +515,8 @@ export function ModelSettingsView({ section = 'runtime', runtimeDefaultSetting, 
 
         {section === 'models' && <div data-settings-section="models">
     <section className="grid gap-3" data-model-list>
-        <details className="group settings-add" data-model-add>
-          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('수동 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
+        <details ref={addRef} id={addId} open={addOpen} className="group settings-add" data-header-add={headerTarget ? '' : undefined} data-model-add>
+          <summary onClick={event => { event.preventDefault(); setAddOpen(open => !open); }} className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('수동 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
           <div className="model-manual-fields">
             <Field label={t('Provider 계정')}><Select value={selectedAccountId} onChange={(e) => { setSelectedAccountId(e.target.value); setManualCapability('chat'); }}><option value="">{t('계정 선택')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.alias}</option>)}</Select></Field>
             <Field label={t('용도')}><Select value={manualCapability} onChange={(e) => setManualCapability(e.target.value as typeof manualCapability)}><option value="chat">{t('채팅')} · {t('압축')}</option>{accounts.find(account => account.id === selectedAccountId)?.provider_type !== 'vertex_ai' && <option value="decision">{t('의사결정')}</option>}</Select></Field>

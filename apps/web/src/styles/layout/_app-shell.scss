@@ -16,6 +16,19 @@
 .app-tool-nav a:hover, .app-tool-nav a[aria-current="page"] { color: var(--foreground); background: var(--surface-muted); }
 .app-tool-nav a:focus-visible { outline: 2px solid var(--foreground); outline-offset: -2px; }
 @media (min-width: 960px) { .app-tool-nav { display: flex; } }
+.page-header-slot:empty { display: none; }
+.page-header-slot, .app-actions { flex: 0 0 auto; }
+.page-header-primary { border: 0; padding: 0; margin: 0; min-width: 0; }
+.editor-header-actions, .app-actions { display: flex; align-items: center; gap: 6px; }
+.editor-header-actions button, .page-header-primary button { min-height: 44px; white-space: nowrap; }
+.editor-secondary-actions:empty { display: none; }
+.editor-secondary-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.header-secondary-menu { z-index: 60; display: grid; min-width: 140px; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); box-shadow: var(--shadow-surface); }
+.header-secondary-menu button { min-height: 44px; justify-content: flex-start; }
+@media (max-width: 480px) {
+  .app-bar { gap: 4px; padding-inline: 8px; }
+  .app-title h1 { white-space: normal; overflow: visible; overflow-wrap: anywhere; font-size: 14px; }
+}
 .panel { margin-bottom: 12px; min-width: 0; }
 .chat-shell { border: 1px solid var(--line); background: var(--card); border-radius: var(--radius-surface); box-shadow: var(--shadow-surface); }
 .dot { flex: 0 0 auto; width: 11px; height: 11px; border-radius: 999px; background: #666; box-shadow: 0 0 0 5px rgba(255,255,255,.05); }

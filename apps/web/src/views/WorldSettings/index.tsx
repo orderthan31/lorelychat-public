@@ -139,11 +139,8 @@ export function WorldSettingsDetailView({ reviewMode = false, changedFields = []
   if (!isNew && ((!current && !reviewMode) || draft.id !== route.id)) return <section role={loadError || (!loading && !current) ? 'alert' : 'status'}><p>{loadError || (loading || current ? t('불러오는 중…') : t('세계관을 찾을 수 없습니다.'))}</p><Button onClick={onRetry}>{t('재시도')}</Button><Button onClick={() => navigate('/world-settings')}>{t('목록으로')}</Button></section>;
   return <section className="panel page grid gap-3 editor-surface" data-modernized="세계관 상세 separated marker">
     <EditorActionBar label={t('페이지 액션')}>
-      <Button type="button" disabled={busy || !canSave} onClick={saveWorldSetting}>{t(busy ? '저장 중…' : '저장')}</Button>
-      {draft.id && !reviewMode && <Button type="button" variant="destructive" onClick={() => deleteWorldSetting(draft)}>{t('삭제')}</Button>}
-      {reviewMode && <Button type="button" variant="ghost" disabled={busy} onClick={onCancelReview}>{t('취소')}</Button>}
-    </EditorActionBar>
-    <FormSection title={draft.id ? formatNamedAction(draft.title || t('세계관'), 'edit', locale) : t('새 세계관 등록')}>
+      <Button type="button" disabled={busy || !canSave} onClick={saveWorldSetting}>{t(busy ? '저장 중…' : '저장')}</Button></EditorActionBar>
+    <div className="grid min-w-0 gap-3">
         <p className="context-muted">{t('세계관 이름과 세계관/규칙은 필수입니다.')}</p>
         <div className="editor-columns">
         <FormSection title={t('기본')}>
@@ -182,6 +179,10 @@ export function WorldSettingsDetailView({ reviewMode = false, changedFields = []
         <ProposalField name="enabled" changedFields={changedFields}><Switch checked={draft.enabled !== false} onChange={(e) => updateDraft({ enabled: e.target.checked })} label={t('활성화')} /></ProposalField>
 
         </FormSection>
-    </FormSection>
+    </div>
+    <div className="editor-secondary-actions">
+      {draft.id && !reviewMode && <Button type="button" variant="destructive" onClick={() => deleteWorldSetting(draft)}>{t('삭제')}</Button>}
+      {reviewMode && <Button type="button" variant="ghost" disabled={busy} onClick={onCancelReview}>{t('취소')}</Button>}
+    </div>
   </section>;
 }

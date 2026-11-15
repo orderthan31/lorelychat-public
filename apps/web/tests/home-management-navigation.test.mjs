@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
 import * as icons from 'lucide-react';
 const text = path => readFileSync(new URL(path, import.meta.url), 'utf8');
-const env = {AgentLauncher:()=>null,AgentSurface:()=>null,React,...icons,useEffect:()=>{},useUiStore:selector=>selector({theme:'light',toggleTheme:()=>{}}),useI18n:()=>({t:key=>key}),pageTitle:route=>route.page,lorelyHorizontalLogoUrlForTheme:()=>'/logo.svg',WebpImage:props=>React.createElement('img',props),Button:({variant,size,children,...props})=>React.createElement('button',props,children)};
+const env = {AgentLauncher:()=>null,AgentSurface:()=>null,React,...icons,useState:React.useState,PageHeaderTarget:React.createContext(null),useEffect:()=>{},useUiStore:selector=>selector({theme:'light',toggleTheme:()=>{}}),useI18n:()=>({t:key=>key}),pageTitle:route=>route.page,lorelyHorizontalLogoUrlForTheme:()=>'/logo.svg',WebpImage:props=>React.createElement('img',props),Button:({variant,size,children,...props})=>React.createElement('button',props,children)};
 function load(path,names){const source=ts.transpileModule(text(path),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText.replace(/^import .*;\n/gm,'').replace(/export /g,'');return new Function('env',`with(env){${source};return {${names.join(',')}};}`)(env);}
 Object.assign(env,load('../src/router/managementNavigation.ts',['MANAGEMENT_NAV_ITEMS','isManagementRoute']));
 Object.assign(env,load('../src/components/organisms/Drawer.tsx',['Drawer']));

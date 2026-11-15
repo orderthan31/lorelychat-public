@@ -121,10 +121,8 @@ function CommandForm({ draft, updateDraft, saveChatCommand, deleteChatCommand, b
 
   return <section className="editor-surface grid gap-3">
     <EditorActionBar label={t('페이지 액션')}>
-      <Button type="button" disabled={busy || !canSave} onClick={saveChatCommand}>{t(busy ? '저장 중…' : '저장')}</Button>
-      {!isNew && draft.id && <Button type="button" variant="destructive" onClick={() => deleteChatCommand(draft)}>{t('삭제')}</Button>}
-    </EditorActionBar>
-    <FormSection title={isNew ? t('새 커맨드 등록') : `${draft.name || t('커맨드')} · ${t('상세')}`}>
+      <Button type="button" disabled={busy || !canSave} onClick={saveChatCommand}>{t(busy ? '저장 중…' : '저장')}</Button></EditorActionBar>
+    <div className="grid min-w-0 gap-3">
       <p className="context-muted">{t('커맨드명과 생성 또는 후처리 프롬프트를 입력하세요.')}</p>
       <label>{t('커맨드명')}<Input value={draft.name || ''} onChange={(e) => { const name = e.target.value.replace(/^!/, ''); updateDraft({ name, display_name: name }); }} placeholder={t('예: 방송마지막')} /></label>
       <label>{t('설명')}<Input value={draft.description || ''} onChange={(e) => updateDraft({ description: e.target.value })} placeholder={t('자동완성에 표시할 설명')} /></label>
@@ -150,7 +148,10 @@ function CommandForm({ draft, updateDraft, saveChatCommand, deleteChatCommand, b
       </div>
       <Switch checked={draft.enabled !== false} onChange={(e) => updateDraft({ enabled: e.target.checked })} label={t('채팅에서 사용')} />
 
-  </FormSection>
+  </div>
+    <div className="editor-secondary-actions">
+      {!isNew && draft.id && <Button type="button" variant="destructive" onClick={() => deleteChatCommand(draft)}>{t('삭제')}</Button>}
+    </div>
   </section>;
 }
 
