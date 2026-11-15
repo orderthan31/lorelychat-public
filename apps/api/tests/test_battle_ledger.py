@@ -183,6 +183,13 @@ def test_context_preview_uses_one_official_domain_section_without_cross_genre_ba
     _add_character(session, "char_b", "미아 미오")
     battle_room = _add_room(session, "conv_battle_preview", genre_mode="battle")
     romance_room = _add_room(session, "conv_romance_preview", genre_mode="romance")
+    world = client.post("/world-settings", json={
+        "title": "Synthetic romance stage", "world_seed": "학교 선후배 감정선",
+        "genre_mode": "romance",
+    }).json()
+    romance_room.world_setting_id = world["id"]
+    session.add(romance_room)
+    session.commit()
     battle_ledger_service.upsert_match_result(session, battle_room, {
         "matchup_key": "park_arin_vs_sakura_mio",
         "participant_a_id": "char_a",

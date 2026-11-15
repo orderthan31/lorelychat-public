@@ -21,10 +21,21 @@ def test_conversation_genre_mode_round_trips_through_api(client, session):
 
 
 def test_prompt_genre_policy_is_available_in_context_preview(client):
+    world = client.post("/world-settings", json={
+        "title": "Synthetic fantasy stage", "world_seed": "왕국 원정",
+        "genre_mode": "fantasy",
+    }).json()
+    character = client.post("/characters", json={
+        "name": "Synthetic adventurer", "persona": "왕국 원정을 이끄는 모험가",
+    }).json()
     room = client.post("/conversations", json={
         "mode": "user_character",
         "genre_mode": "fantasy",
-        "participants": [{"type": "user", "id": "user_001", "order_index": 0}],
+        "world_setting_id": world["id"],
+        "participants": [
+            {"type": "user", "id": "user_001", "order_index": 0},
+            {"type": "character", "id": character["id"], "order_index": 1},
+        ],
         "scene": {"world_seed": "왕국 원정"},
     }).json()
 

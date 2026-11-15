@@ -3,6 +3,9 @@ from app.core.config import get_settings
 
 
 def test_context_preview_reports_prompt_sections_and_selected_history(client, session):
+    world = client.post("/world-settings", json={
+        "title": "Synthetic league stage", "world_seed": "서열전 세계관",
+    }).json()
     character = client.post("/characters", json={
         "name": "세아",
         "description": "도장깨기 참가자",
@@ -11,6 +14,7 @@ def test_context_preview_reports_prompt_sections_and_selected_history(client, se
     }).json()
     room = client.post("/conversations", json={
         "mode": "user_character",
+        "world_setting_id": world["id"],
         "participants": [
             {"type": "user", "id": "user_001", "order_index": 0},
             {"type": "character", "id": character["id"], "order_index": 1},
@@ -173,11 +177,10 @@ def test_automatic_context_preview_reports_dangling_boundary_as_conflict(
             ],
         },
     ).json()
-    scene = SceneState(
-        conversation_id=room["id"],
-        last_compression_source_message_id="msg_missing_boundary",
-        summary="[Rolling Story Arc]\n- 이전 사건",
-    )
+    scene = session.get(SceneState, room["id"])
+    assert scene is not None
+    scene.last_compression_source_message_id = "msg_missing_boundary"
+    scene.summary = "[Rolling Story Arc]\n- 이전 사건"
     session.add(scene)
     session.add(
         Message(
