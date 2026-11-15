@@ -26,7 +26,7 @@
 .agent-toolbar > button { flex-shrink: 0; border-color: transparent; background: transparent; font-size: 12px; }
 .agent-advanced { flex: 1; min-width: 0; font-size: 12px; }
 .agent-transcript { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px 20px; scrollbar-gutter: stable; }
-.agent-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 180px; height: 100%; gap: 12px; color: var(--muted-foreground); }
+.agent-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; height: 100%; gap: 12px; color: var(--muted-foreground); }
 .agent-composer { flex-shrink: 0; padding: 10px 16px 14px; border-top: 1px solid var(--border); background: var(--card); }
 .agent-composer label { margin: 0; }
 .agent-composer textarea { resize: none; max-height: 120px; line-height: 1.5; border-radius: 12px; }
