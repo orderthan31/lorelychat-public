@@ -18,6 +18,9 @@ export const routeNames = {
   chatCommandNew: '/chat-commands/new',
   chatCommandDetail: '/chat-commands/$commandId',
   modelSettings: '/model-settings',
+  defaultModels: '/settings/models',
+  providers: '/settings/providers',
+  modelCatalog: '/settings/model-catalog',
   worldSettings: '/world-settings',
   worldSettingNew: '/world-settings/new',
   worldSettingDetail: '/world-settings/$worldSettingId',
@@ -47,7 +50,7 @@ export type LegacyRoute =
   | { page: 'chatCommands' }
   | { page: 'chatCommandNew' }
   | { page: 'chatCommandDetail'; id: string }
-  | { page: 'modelSettings' }
+  | { page: 'modelSettings'; section?: 'runtime' | 'providers' | 'models' }
   | { page: 'worldSettings' }
   | { page: 'worldSettingNew' }
   | { page: 'worldSettingDetail'; id: string }
@@ -84,7 +87,10 @@ export const routeDescriptors: RouteDescriptor[] = [
   { name: 'chatCommands', path: routeNames.chatCommands, title: '커맨드', toLegacyRoute: () => ({ page: 'chatCommands' }) },
   { name: 'chatCommandNew', path: routeNames.chatCommandNew, title: '새 커맨드', toLegacyRoute: () => ({ page: 'chatCommandNew' }) },
   { name: 'chatCommandDetail', path: routeNames.chatCommandDetail, title: '커맨드 상세', paramName: 'commandId', toLegacyRoute: (id = '') => ({ page: 'chatCommandDetail', id }) },
-  { name: 'modelSettings', path: routeNames.modelSettings, title: '모델 설정', toLegacyRoute: () => ({ page: 'modelSettings' }) },
+  { name: 'modelSettings', path: routeNames.modelSettings, title: 'settings.defaultModels', toLegacyRoute: () => ({ page: 'modelSettings', section: 'runtime' }) },
+  { name: 'defaultModels', path: routeNames.defaultModels, title: 'settings.defaultModels', toLegacyRoute: () => ({ page: 'modelSettings', section: 'runtime' }) },
+  { name: 'providers', path: routeNames.providers, title: 'settings.providers', toLegacyRoute: () => ({ page: 'modelSettings', section: 'providers' }) },
+  { name: 'modelCatalog', path: routeNames.modelCatalog, title: 'settings.modelCatalog', toLegacyRoute: () => ({ page: 'modelSettings', section: 'models' }) },
   { name: 'statistics', path: routeNames.statistics, title: '통계', toLegacyRoute: () => ({ page: 'statistics' }) },
 ];
 
@@ -108,6 +114,7 @@ export function parseRoute(pathname: string = window.location.pathname): LegacyR
 }
 
 export function pageTitle(route: LegacyRoute): UiMessageKey {
+  if (route.page === 'modelSettings') return route.section === 'providers' ? 'settings.providers' : route.section === 'models' ? 'settings.modelCatalog' : 'settings.defaultModels';
   const descriptor = routeDescriptors.find((item) => item.name === route.page);
   return descriptor?.title || '홈';
 }

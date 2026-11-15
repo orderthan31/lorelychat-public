@@ -80,6 +80,8 @@ const readingPositions = new Map<string, { top: number; following: boolean }>();
 export function AgentPanel() {
   const { t } = useI18n(); const s = useAgentStore();
   const session = s.sessions[s.selected];
+  const activeRequest = s.pending.find(p => p.request_id === s.activeMessage && p.session_id === s.selected);
+  const progress = activeRequest ? s.operations[activeRequest.request_id]?.progress : null;
   const sendBlock = !s.settings?.enabled ? 'agent.disabledHint' : !s.settings.llm_model_option_key ? 'agent.needModel' : s.working ? 'agent.working' : s.pending.length ? 'agent.uncertain' : session?.busy ? 'agent.working' : !s.input.trim() ? 'agent.needMessage' : null;
   const [draftId, setDraftId] = useState('');
   const transcript = useRef<HTMLDivElement>(null);
@@ -131,7 +133,7 @@ export function AgentPanel() {
     <form className="agent-composer" onSubmit={event => { event.preventDefault(); void agentActions.send(); }}>
       <label><span className="sr-only">{t('agent.message')}</span><textarea rows={2} placeholder={t('agent.needMessage')} value={s.input} onChange={e => useAgentStore.setState({ input: e.target.value })} /></label>
       <div className="agent-composer-actions">
-      {sendBlock && sendBlock !== 'agent.needMessage' && <p id="agent-send-status" role="status">{sendBlock === 'agent.working' ? <><AgentMark size={20} active /><span className="sr-only">{t(sendBlock)}</span></> : t(sendBlock)}</p>}
+      {sendBlock && sendBlock !== 'agent.needMessage' && <p id="agent-send-status" role="status">{sendBlock === 'agent.working' ? <><AgentMark size={20} active /><span className="agent-progress" data-agent-progress={progress?.stage}>{t(progress ? `agent.progress.${progress.stage}` as UiMessageKey : sendBlock)}</span></> : t(sendBlock)}</p>}
       {!!s.pending.length && !s.working && <button type="button" disabled={s.working} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button>}
       <button aria-describedby={sendBlock && sendBlock !== 'agent.needMessage' ? 'agent-send-status' : undefined} disabled={!!sendBlock} type="submit">{t('전송')}</button>
       </div>

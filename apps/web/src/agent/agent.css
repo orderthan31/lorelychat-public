@@ -79,3 +79,5 @@
 .agent-reference-preview img { width: 100%; max-height: 240px; object-fit: contain; }
 .agent-image-plan legend { font-weight: 600; }
 @media (max-width: 1099px) { .agent-layout { display: block; } }
+/* Runtime-confirmed progress; no timer-driven stages or percentages. */
+.agent-progress { min-width: 0; line-height: 1.4; overflow-wrap: anywhere; }

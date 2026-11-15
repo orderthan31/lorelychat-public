@@ -2,10 +2,10 @@ import './settings-ux.scss';
 import { useEffect, useMemo, useState } from 'react';
 import { VertexFields, VertexAccountEditor } from './VertexFields';
 import { validVertexConfiguration, vertexPayload, type VertexDraft } from './vertex';
-import { ChevronDown, ChevronLeft, ChevronRight, Cpu, KeyRound, Plus, PlugZap, RefreshCw, Save, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Plus, PlugZap, RefreshCw, Save, Trash2 } from 'lucide-react';
 import Swal from 'sweetalert2';
 import { modelProviderApi, type ModelOption, type ProviderAccount, type ProviderType } from '../../api/resources';
-import { Badge, Button, Input, Select, Switch, Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/atoms';
+import { Badge, Button, Input, Select, Switch } from '../../components/atoms';
 import { Field } from '../../components/molecules';
 import { RuntimeSettingsPanel, type RuntimeSettingValue } from '../../components/organisms';
 import { DecisionCapabilityHint } from '../../components/organisms/RuntimeSettings';
@@ -15,6 +15,7 @@ import type { Translator, UiMessageKey } from '../../i18n/core';
 import { useMediaMatch } from '../../hooks/useMediaMatch';
 
 export type ModelSettingsViewProps = {
+  section?: ModelSettingsSection;
   runtimeDefaultSetting?: RuntimeSettingValue;
   setRuntimeDefaultSetting?: (value: RuntimeSettingValue) => void;
   saveRuntimeDefaultSetting?: () => void;
@@ -51,12 +52,9 @@ const EMPTY_DRAFT: ProviderDraft = {
   vertex_auth_mode: 'service_account',
 };
 const MODEL_PAGE_SIZE_OPTIONS = [10, 20, 50];
-type ModelSettingsSection = 'runtime' | 'providers' | 'models';
+export type ModelSettingsSection = 'runtime' | 'providers' | 'models';
 type AccountSyncResult = { status: 'success' | 'error'; message: string };
 
-function isModelSettingsSection(value: string): value is ModelSettingsSection {
-  return value === 'runtime' || value === 'providers' || value === 'models';
-}
 
 async function confirmApiKeyClear(t: Translator, vertex = false) {
   const result = await Swal.fire({
@@ -121,7 +119,7 @@ function ManualCapabilityEditor({ option, disabled, save }: { option: ModelOptio
   </details>;
 }
 
-export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSetting, saveRuntimeDefaultSetting, refetchRuntimeDefaultSetting, busy = false }: ModelSettingsViewProps) {
+export function ModelSettingsView({ section = 'runtime', runtimeDefaultSetting, setRuntimeDefaultSetting, saveRuntimeDefaultSetting, refetchRuntimeDefaultSetting, busy = false }: ModelSettingsViewProps) {
   const { locale, t } = useI18n();
   const wideFilters = useMediaMatch('(min-width: 960px)');
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -146,7 +144,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
   const [syncingAccountId, setSyncingAccountId] = useState('');
   const [accountSyncResults, setAccountSyncResults] = useState<Record<string, AccountSyncResult>>({});
   const [message, setMessage] = useState('');
-  const [activeSection, setActiveSection] = useState<ModelSettingsSection>('runtime');
+
 
   const accountsByType = useMemo(() => {
     const map = new Map<ProviderType, ProviderAccount[]>();
@@ -205,21 +203,6 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
     loadModelProviderState();
   }, []);
 
-  useEffect(() => {
-    const syncSectionFromHash = () => {
-      const value = window.location.hash.replace(/^#/, '');
-      if (isModelSettingsSection(value)) setActiveSection(value);
-    };
-    syncSectionFromHash();
-    window.addEventListener('hashchange', syncSectionFromHash);
-    return () => window.removeEventListener('hashchange', syncSectionFromHash);
-  }, []);
-
-  function selectSection(value: string) {
-    if (!isModelSettingsSection(value)) return;
-    setActiveSection(value);
-    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${value}`);
-  }
 
   useEffect(() => {
     setModelPage(1);
@@ -434,24 +417,17 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
 
   return <section className="panel page model-settings-page grid gap-4" data-page="model-settings">
     <header className="settings-toolbar">
-      <h1 className="sr-only">{t('Provider / 모델 설정')}</h1>
+      <h1 className="sr-only">{t(section === 'providers' ? 'settings.providers' : section === 'models' ? 'settings.modelCatalog' : 'settings.defaultModels')}</h1>
       <details className="model-help"><summary>{t('인증과 데이터 전송')}</summary><p>{t('API Key는 저장 후 다시 표시되지 않습니다. 모델 실행에 필요한 대화 내용은 선택한 Provider로 전송됩니다.')}</p></details>
       {message ? <p className="context-muted" role="status" aria-live="polite">{message}</p> : null}
     </header>
 
-    <Tabs value={activeSection} onValueChange={selectSection} className="settings-tabs">
-      <TabsList aria-label={t('Provider / 모델 설정')} className="settings-tab-list">
-        <TabsTrigger value="runtime"><SlidersHorizontal aria-hidden="true" />{t('모델 설정')}</TabsTrigger>
-        <TabsTrigger value="providers"><KeyRound aria-hidden="true" />{t('Provider 관리')}</TabsTrigger>
-        <TabsTrigger value="models"><Cpu aria-hidden="true" />{t('활성 모델 목록')}</TabsTrigger>
-      </TabsList>
-
       <div className="min-w-0">
-        <TabsContent value="runtime" data-settings-section="runtime">
+        {section === 'runtime' && <div data-settings-section="runtime">
           <RuntimeSettingsPanel setting={runtimeDefaultSetting} onChange={setRuntimeDefaultSetting} onSave={saveRuntimeDefaultSetting} saving={busy || loading} title={t('모델 설정')} />
-        </TabsContent>
+        </div>}
 
-        <TabsContent value="providers" data-settings-section="providers">
+        {section === 'providers' && <div data-settings-section="providers">
     <section className="grid gap-4" data-provider-list>
           <details className="group settings-add" data-provider-add>
             <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('Provider 계정 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
@@ -524,9 +500,9 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
 
         </div>
     </section>
-        </TabsContent>
+        </div>}
 
-        <TabsContent value="models" data-settings-section="models">
+        {section === 'models' && <div data-settings-section="models">
     <section className="grid gap-3" data-model-list>
         <details className="group settings-add" data-model-add>
           <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('수동 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
@@ -576,8 +552,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
 
 
     </section>
-        </TabsContent>
+        </div>}
       </div>
-    </Tabs>
   </section>;
 }

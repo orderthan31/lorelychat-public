@@ -3,8 +3,8 @@ export type AgentSettings = {
   image_model_id: string | null; mcp_enabled: boolean;
   llm_accounts?: { id: string; alias: string; provider_type: string }[];
   llm_options: { key: string; label: string; provider_account_id: string; provider_type: string }[];
-  image_accounts: { id: string; alias: string; provider_type: string }[];
-  image_models: { id: string; label: string; provider_type: string; supports_reference: boolean; deprecated?: boolean; shutdown_date?: string | null; reference_unavailable_reason?: string }[];
+  image_accounts: { id: string; alias: string; provider_type: string; image_model_ids?: string[] }[];
+  image_models: { id: string; label: string; provider_type: string; supports_reference: boolean; max_count?: number; deprecated?: boolean; shutdown_date?: string | null; reference_unavailable_reason?: string }[];
 };
 export type AgentSettingsInput = Pick<AgentSettings, 'enabled' | 'llm_model_option_key' | 'image_provider_account_id' | 'image_model_id' | 'mcp_enabled'>;
 export type ContextSelection = { kind: 'character' | 'world'; id: string; fields: string[] };
@@ -15,7 +15,8 @@ export type AgentDraft = {
   preview_hash: string; status: 'draft' | 'approved' | 'committed' | 'conflict'; warnings: string[]; result: Record<string, unknown> | null;
 };
 export type AgentSession = { id: string; title: string; messages: { id: string; role: 'user' | 'assistant'; content: string }[]; drafts: AgentDraft[]; busy: boolean; last_error: string | null };
-export type AgentOperation = { request_id: string; status: 'completed' | 'running' | 'unknown' | 'failed'; kind: string; result: Record<string, unknown> | null; error: string | null };
+export type AgentProgress = { stage: 'model' | 'search' | 'read' | 'draft' | 'review' | 'image_context' | 'image_plan' | 'navigation'; sequence: number; round?: number | null };
+export type AgentOperation = { progress?: AgentProgress | null; request_id: string; status: 'completed' | 'running' | 'unknown' | 'failed'; kind: string; result: Record<string, unknown> | null; error: string | null };
 export type ImageCandidate = { id: string; label: string; kind: string; is_default: boolean; available: boolean; reason?: string };
 export type ImageContext = { has_existing_images: boolean; requires_choice: boolean; candidates: ImageCandidate[]; inventory_digest: string };
 export type ImageChoice = { version: number; mode: 'new' | 'reference' | ''; referenceId: string };

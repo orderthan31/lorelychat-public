@@ -15,6 +15,9 @@ characters with an OPTIONAL world. A world draft does not create a conversation
 or attach participants. These tools cannot create rooms or edit user personas,
 chat history, provider settings, TTS or default avatars. Agent LLM and image
 settings are independent of roleplay/compression/Decision/TTS model settings.
+Users may manually upload assets and configure voice or imagery in the resource
+editor while reviewing an Agent proposal. Those owner actions are not available
+to these authored-field tools and do not grant approval for paid image generation.
 
 For a genuine create/edit request, turn coherent requirements into an app-native
 APPROVABLE DRAFT using lore_stage_character or lore_stage_world, then inspect the

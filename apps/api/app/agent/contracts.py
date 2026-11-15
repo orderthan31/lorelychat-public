@@ -69,6 +69,10 @@ class ApprovalBody(StrictModel):
     preview_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
 class CommitBody(ApprovalBody):
     request_id: Identifier
+class CommitFormBody(CommitBody):
+    # Trusted native editor only; deliberately absent from TOOL_SCHEMAS.
+    manual_fields: dict[str, Any]
+    baseline_fields: dict[str, Any]
 class CommitInput(CommitBody):
     draft_id: Identifier
 class ClientInput(StrictModel):
@@ -133,12 +137,17 @@ class AgentSessionView(StrictModel):
     drafts: list[AgentDraftView]
     busy: bool
     last_error: str | None
+class OperationProgress(StrictModel):
+    stage: Literal['model','search','read','draft','review','image_context','image_plan','navigation']
+    sequence: int = Field(ge=1)
+    round: int | None = Field(default=None, ge=1)
 class OperationView(StrictModel):
     request_id: str
     status: Literal['completed','running','unknown','failed']
     kind: str
     result: dict[str, Any] | None
     error: str | None
+    progress: OperationProgress | None = None
 class ModelChoice(StrictModel):
     key: str
     label: str

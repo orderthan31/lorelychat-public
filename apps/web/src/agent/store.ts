@@ -21,13 +21,15 @@ export function proposalValueEqual(a: unknown, b: unknown): boolean {
   const left = Object.keys(a), right = Object.keys(b);
   return left.length === right.length && left.every(key => Object.prototype.hasOwnProperty.call(b, key) && proposalValueEqual(a[key], b[key]));
 }
+export const NATIVE_MANUAL_FIELDS = { character: ['avatar_url', 'tts_provider', 'tts_model', 'tts_voice_style', 'tts_sample_text'], world: ['thumbnail_url'] } as const;
 export function nativeProposalFields(draft: AgentDraft, form: Record<string, unknown>, initial: Record<string, unknown>) {
   if (draft.kind !== 'character' && draft.kind !== 'world') throw new Error('This proposal uses a separate review.');
   const allowed: readonly string[] = NATIVE_PROPOSAL_FIELDS[draft.kind];
   const fields: Record<string, unknown> = {};
   for (const key of new Set([...Object.keys(initial), ...Object.keys(form)])) {
     if (proposalValueEqual(form[key], initial[key])) continue;
-    if (!allowed.includes(key)) throw new Error('This proposal cannot save image or voice changes. Your edits have been retained.');
+    if ((NATIVE_MANUAL_FIELDS[draft.kind] as readonly string[]).includes(key)) continue;
+    if (!allowed.includes(key)) throw new Error('This proposal cannot save unsupported changes. Your edits have been retained.');
     fields[key] = form[key];
   }
   return fields;
@@ -36,6 +38,7 @@ function matchProposal(actual: AgentDraft, expected: AgentDraft) {
   if (actual.id !== expected.id || actual.kind !== expected.kind || actual.target_id !== expected.target_id || actual.base_revision !== expected.base_revision || actual.version !== expected.version || actual.preview_hash !== expected.preview_hash) throw new Error('The proposal changed. Reopen it before saving; your edits have been retained.');
 }
 export type AgentState = {
+  activeMessage: string | null;
   proposalRequest: NativeProposalRequest | null;
   open: boolean; settings: AgentSettings | null; settingsError: string; error: string;
   working: boolean; newChat: boolean; sessions: Record<string, AgentSession>; selected: string; input: string;
@@ -47,7 +50,7 @@ export type AgentState = {
   setOpen: (open: boolean) => void;
 };
 export const useAgentStore = create<AgentState>((set) => ({
-  proposalRequest: null,
+  activeMessage: null, proposalRequest: null,
   open: false, settings: null, settingsError: '', error: '', working: false, newChat: true,
   resources: [], imageChoices: {}, imageSelections: {}, sessions: {}, selected: '', input: '', contexts: [], drafts: {}, edits: {}, pending: recovered(), operations: {}, imageJobs: {},
   setOpen: open => set({ open }),
@@ -97,18 +100,58 @@ async function guarded(action: () => Promise<void>) {
   try { await action(); } catch (error) { set({ error: describe(error) }); }
   finally { set({ working: false }); }
 }
+// Each poll starts only after the preceding GET settles plus two seconds.
+// This lifetime belongs to the POST, not a panel mount or an animation timer.
+function pollMessage(id: string, sessionId: string) {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let controller: AbortController | undefined;
+  let sequence = 0;
+  const owns = () => !stopped && state().activeMessage === id && state().selected === sessionId;
+  const stop = () => { stopped = true; clearTimeout(timer); controller?.abort(); unsubscribe(); };
+  const unsubscribe = useAgentStore.subscribe(() => { if (!owns()) stop(); });
+  const poll = async () => {
+    if (!owns()) return;
+    controller = new AbortController();
+    try {
+      const operation = await agentApi.operation(id, controller.signal);
+      if (!owns() || operation.request_id !== id) return;
+      const progress = operation.progress;
+      const valid = operation.status === 'running' && progress && Number.isInteger(progress.sequence) && progress.sequence >= 1 && progress.sequence > sequence
+        && ['model', 'search', 'read', 'draft', 'review', 'image_context', 'image_plan', 'navigation'].includes(progress.stage)
+        && (progress.round == null || (Number.isInteger(progress.round) && progress.round >= 1));
+      if (valid) {
+        sequence = progress.sequence;
+        set(s => ({ operations: { ...s.operations, [id]: operation } }));
+      } else if (operation.status === 'unknown' || operation.status === 'completed' || operation.status === 'failed') {
+        set(s => ({ operations: { ...s.operations, [id]: { ...operation, progress: null } } }));
+      }
+      if (operation.status === 'completed' || operation.status === 'failed') { stop(); return; }
+    } catch { /* A missing receipt is not acceptance and never permits a retry POST. */ }
+    finally { if (owns()) timer = setTimeout(() => void poll(), 2000); }
+  };
+  timer = setTimeout(() => void poll(), 2000);
+  return stop;
+}
 export const agentActions = {
   openProposal(draft: AgentDraft) {
     if (state().working || (draft.kind !== 'character' && draft.kind !== 'world') || !['draft', 'approved'].includes(draft.status)) return;
     // Opening is local navigation intent only. The native editor performs GETs.
+    const current = state().proposalRequest;
+    if (current && current.draft.id === draft.id && current.draft.kind === draft.kind && current.draft.target_id === draft.target_id && current.draft.version === draft.version && current.draft.preview_hash === draft.preview_hash && current.draft.base_revision === draft.base_revision) {
+      set({ open: false }); return;
+    }
     set({ proposalRequest: { token: requestId(), draft }, open: false, error: '' });
   },
   closeProposal(token: string) {
     if (state().proposalRequest?.token === token) set({ proposalRequest: null });
   },
-  async saveProposal(expected: AgentDraft, form: Record<string, unknown>, initial: Record<string, unknown>, owns: () => boolean): Promise<AgentDraft> {
+  async saveProposal(expected: AgentDraft, form: Record<string, unknown>, initial: Record<string, unknown>, owns: () => boolean, baseline: Record<string, unknown> = initial): Promise<AgentDraft> {
     if (state().working || state().pending.length) throw new Error('An Agent request is unresolved. Check its result in Lore Agent before saving.');
     const fields = nativeProposalFields(expected, form, initial);
+    if (expected.kind !== 'character' && expected.kind !== 'world') throw new Error('Separate review required.');
+    const manualFields = Object.fromEntries(NATIVE_MANUAL_FIELDS[expected.kind].filter(key => !proposalValueEqual(form[key], initial[key])).map(key => [key, form[key]]));
+    const baselineFields = expected.target_id ? Object.fromEntries(NATIVE_PROPOSAL_FIELDS[expected.kind].map(key => [key, baseline[key]])) : {};
     const checkOwner = () => { if (!owns()) throw new Error('The editor changed. Saving was stopped.'); };
     checkOwner();
     set({ working: true, error: '' });
@@ -129,12 +172,14 @@ export const agentActions = {
       const id = reserve('commit', { draft_id: draft.id, ...(draft.session_id ? { session_id: draft.session_id } : {}) });
       let accepted = false;
       try {
-        const operation = await agentApi.commit(draft, id); accepted = true;
+        const operation = await agentApi.commitForm(draft, id, manualFields, baselineFields); accepted = true;
         set(s => ({ operations: { ...s.operations, [id]: operation } }));
-        const committed = await agentApi.draft(draft.id); acceptDraft(committed);
-        matchProposal(committed, draft);
         if (operation.request_id !== id) throw new Error('Save receipt could not be verified. Check the result in Lore Agent.');
         if (operation.status === 'failed') { forget(id); throw new Error('The proposal could not be saved. Check its result in Lore Agent.'); }
+        const committed = await agentApi.draft(draft.id); acceptDraft(committed);
+        // Owner commit may rebase a media-only target revision. Bind the new
+        // committed preview to the receipt, never relax the pre-dispatch CAS.
+        if (committed.id !== draft.id || committed.kind !== draft.kind || committed.target_id !== draft.target_id || operation.result?.draft_id !== committed.id || operation.result?.kind !== committed.kind || operation.result?.version !== committed.version || operation.result?.preview_hash !== committed.preview_hash) throw new Error('Save receipt could not be verified. Check the result in Lore Agent.');
         if (operation.status !== 'completed' || committed.status !== 'committed' || typeof committed.result?.id !== 'string' || committed.result.id !== operation.result?.id || (draft.target_id && committed.result.id !== draft.target_id)) throw new Error('Save result is unresolved. Check its result in Lore Agent; do not submit again.');
         forget(id);
         return committed;
@@ -179,11 +224,14 @@ export const agentActions = {
     }
     if (!state().settings?.enabled || !state().settings?.llm_model_option_key || state().pending.length || state().sessions[sessionId]?.busy) return;
     const id = reserve('message', { session_id: sessionId });
+    set({ activeMessage: id });
+    const stopPolling = pollMessage(id, sessionId);
     try {
       const session = await agentApi.message(sessionId, id, s.input, s.contexts);
       acceptSession(session); forget(id);
       if (state().input === s.input) set({ input: '' });
     } catch (error) { if (error instanceof AgentHttpError && error.status < 500) forget(id); throw error; }
+    finally { stopPolling(); if (state().activeMessage === id) set({ activeMessage: null }); }
   }),
   refresh: () => guarded(async () => {
     // Recovery is GET-only. Missing receipts never authorize replay.

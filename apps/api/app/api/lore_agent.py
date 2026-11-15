@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.routing import APIRoute
 from pydantic import ValidationError
 from app.agent.contracts import (AgentError, SettingsUpdate, RequestInput, MessageInput,
-    ReviseBody, ApprovalBody, CommitBody, ClientInput, RegistrationBody, NewImageChoiceInput,
+    ReviseBody, ApprovalBody, CommitBody, CommitFormBody, ClientInput, RegistrationBody, NewImageChoiceInput,
     AgentSettingsView, AgentSessionView, AgentDraftView, OperationView, ClientView, ImageJobView,
     Principal, SCOPES)
 from app.agent.service import AgentService
@@ -96,6 +96,10 @@ def approve(id: str,payload: ApprovalBody,principal=Depends(owner),service=Depen
 @router.post('/drafts/{id}/commit',response_model=OperationView)
 async def commit(id: str,payload: CommitBody,principal=Depends(owner),service=Depends(get_agent_service)):
     return await service.commit_draft(principal,id,payload.request_id,payload.expected_version,payload.preview_hash)
+
+@router.post('/drafts/{id}/commit-form',response_model=OperationView)
+def commit_form(id: str,payload: CommitFormBody,principal=Depends(owner),service=Depends(get_agent_service)):
+    return service.commit_form(principal,id,**payload.model_dump())
 
 @router.get('/operations/{request_id}',response_model=OperationView)
 def operation(request_id: str,principal=Depends(owner),service=Depends(get_agent_service)):

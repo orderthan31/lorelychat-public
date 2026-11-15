@@ -48,6 +48,9 @@ def list_image_models(provider_type):
         registry = json.loads(path.read_text())
     except (OSError, ValueError):
         return []
+    from app.agent import image_google
+    if provider_type in image_google.PROVIDERS:
+        return image_google.catalog(provider_type, registry)
     choices = []
     for model in _IMAGE_MODELS.get(provider_type, ()):
         key = model if provider_type == 'openai' else f'{provider_type}/{model}'
@@ -67,10 +70,53 @@ def list_image_models(provider_type):
     return choices
 
 
+def list_image_models_for_account(account):
+    """Filter image execution, not chat/media-input flags or saved selections."""
+    from app.agent.image_google import account_models
+    return account_models(account, list_image_models(account.provider_type))
+
+
+def build_image_overrides(account, secrets):
+    """Reuse registered account secrets and metadata; never create owner keys."""
+    from app.engine import vertex_auth
+    values = {'provider_account_id': account.id, 'provider': account.provider_type,
+              'api_key': secrets.get_secret(account.api_key_secret_ref), 'base_url': account.base_url}
+    if account.provider_type == 'vertex_ai':
+        values.update({key: getattr(account, key, None) for key in vertex_auth.FIELDS})
+        values['vertex_auth_mode'] = values['vertex_auth_mode'] or 'service_account'
+    return values
+
+
+def resolve_image_route_overrides(values):
+    """Image-only route; do not widen the chat/compression Vertex model guard."""
+    from types import SimpleNamespace
+    from app.agent import image_google
+    from app.engine import vertex_auth
+    provider, model = values.get('provider'), values.get('model')
+    if not values.get('provider_account_id') or model not in {m['id'] for m in list_image_models(provider)}:
+        raise ImagePlanError('Selected image account/model is unavailable')
+    if provider == 'vertex_ai':
+        try:
+            vertex_auth.validate_config(values.get('vertex_project'), values.get('vertex_location'),
+                values.get('vertex_auth_mode'), values.get('base_url'))
+            route = transport.Route(provider, provider, model,
+                f"https://{vertex_auth.endpoint_host(values['vertex_location'])}/v1",
+                values.get('api_key'), values.get('vertex_project'), values.get('vertex_location'),
+                values.get('vertex_auth_mode'))
+            image_google.validate_route(route)
+            return route
+        except ValueError:
+            raise ImagePlanError('Invalid Vertex image account or unsupported location') from None
+    route = transport.resolve_route(SimpleNamespace(overrides=values, provider=lambda: provider, model=lambda: model))
+    if provider in image_google.PROVIDERS:
+        image_google.validate_route(route)
+    return route
+
+
 def validate_plan(plan, route):
     allowed = {item['id']: item for item in list_image_models(route.provider)}
     if (plan.get('model_id') not in allowed or route.model != plan['model_id']
-            or route.sdk_provider != route.provider):
+            or route.sdk_provider != ('gemini' if route.provider == 'google' else route.provider)):
         raise ImagePlanError('Selected image model is not admitted')
     mode = plan.get('generation_mode', 'new')
     if mode not in {'new', 'reference'}:
@@ -90,6 +136,8 @@ def validate_plan(plan, route):
         raise ImagePlanError('Invalid image prompt')
     if type(plan.get('count')) is not int or not 1 <= plan['count'] <= 4:
         raise ImagePlanError('Invalid image count')
+    if plan['count'] > allowed[route.model].get('max_count', 4):
+        raise ImagePlanError('Selected image route supports one image per approved dispatch')
     options = plan.get('options') or {}
     if not isinstance(options, dict) or set(options) - {'size', 'quality'}:
         raise ImagePlanError('Unsupported image options')
@@ -178,9 +226,12 @@ class _ImageSendTransport(transport.SingleSendTransport):
 
 
 async def image_completion(route, plan, *, before_send, reference=None):
-    from openai import AsyncOpenAI
     options = validate_plan(plan, route)
     reference = verified_reference(plan, reference)
+    from app.agent import image_google
+    if route.provider in image_google.PROVIDERS:
+        return await image_google.completion(route, plan, before_send=before_send, reference=reference)
+    from openai import AsyncOpenAI
     if not route.api_key:
         raise ImagePlanError('Selected image account credential is required')
     sdk = transport.load_sdk()

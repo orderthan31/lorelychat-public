@@ -86,10 +86,9 @@ class AgentService:
         return resolve_route(SimpleNamespace(overrides=values,provider=lambda:values['provider_type'],model=lambda:values['model']))
 
     def resolve_image_route(self,principal,provider_account_id,model_id):
-        from types import SimpleNamespace
         from app.services import model_provider_service, provider_secret_service
-        from app.agent.image_generation import list_image_models
-        from app.engine.litellm_transport import resolve_route
+        from app.agent.image_generation import (list_image_models_for_account,
+            build_image_overrides, resolve_image_route_overrides)
         self.require_enabled(principal,'lore:image:generate')
         with self.engine.connect() as c:
             settings=self._settings(c)
@@ -97,10 +96,10 @@ class AgentService:
             raise AgentError('Image selection changed; stage and approve a new plan',409)
         with Session(self.engine) as session:
             account=model_provider_service.account_by_id(session,provider_account_id)
-            if not model_provider_service._configured(account) or model_id not in {m['id'] for m in list_image_models(account.provider_type)}:
+            if not model_provider_service._configured(account) or model_id not in {m['id'] for m in list_image_models_for_account(account)}:
                 raise AgentError('Selected image account/model is unavailable',422)
-            values={'provider_account_id':account.id,'provider':account.provider_type,'model':model_id,'api_key':provider_secret_service.get_secret(account.api_key_secret_ref),'base_url':account.base_url}
-        return resolve_route(SimpleNamespace(overrides=values,provider=lambda:values['provider'],model=lambda:values['model']))
+            values={**build_image_overrides(account,provider_secret_service),'model':model_id}
+        return resolve_image_route_overrides(values)
 
     def _settings(self, c):
         row = c.execute(select(m.settings.c.data).where(m.settings.c.id == 'settings')).scalar_one_or_none()
@@ -116,10 +115,14 @@ class AgentService:
             accounts = [a for a in list_accounts(s) if a.enabled and a.configured]
             chat_accounts = {o.provider_account_id for o in choices}
             data['llm_accounts'] = [{k: getattr(a, k) for k in ('id','alias','provider_type')} for a in accounts if a.id in chat_accounts]
-            from app.agent.image_generation import list_image_models
-            eligible = [a for a in accounts if list_image_models(a.provider_type)]
-            data['image_accounts'] = [{k: getattr(a, k) for k in ('id','alias','provider_type')} for a in eligible]
-            data['image_models'] = [model for provider in sorted({a.provider_type for a in eligible}) for model in list_image_models(provider)]
+            from app.agent.image_generation import list_image_models, list_image_models_for_account
+            available = {a.id: list_image_models_for_account(a) for a in accounts}
+            eligible = [a for a in accounts if available[a.id]]
+            data['image_accounts'] = [{**{k: getattr(a, k) for k in ('id','alias','provider_type')},
+                'image_model_ids': [model['id'] for model in available[a.id]]} for a in eligible]
+            data['image_models'] = [model for provider in sorted({a.provider_type for a in eligible})
+                for model in list_image_models(provider)
+                if any(a.provider_type == provider and model['id'] in {m['id'] for m in available[a.id]} for a in eligible)]
         return data
 
     def update_settings(self, payload):
@@ -131,9 +134,9 @@ class AgentService:
                 if data['llm_model_option_key'] and data['llm_model_option_key'] not in {o.key for o in active_options_for_runtime(s, 'chat')}:
                     raise AgentError('Inactive LLM selection', 422)
                 if data['image_provider_account_id'] or data['image_model_id']:
-                    from app.agent.image_generation import list_image_models
+                    from app.agent.image_generation import list_image_models_for_account
                     account = next((a for a in list_accounts(s) if a.id == data['image_provider_account_id'] and a.enabled and a.configured), None)
-                    if not account or data['image_model_id'] not in {x['id'] for x in list_image_models(account.provider_type)}:
+                    if not account or data['image_model_id'] not in {x['id'] for x in list_image_models_for_account(account)}:
                         raise AgentError('Invalid image selection', 422)
         with self._write() as c:
             exists = c.execute(select(m.settings.c.id)).first()
@@ -371,8 +374,57 @@ class AgentService:
             return await execute_image_plan(self,principal,draft_id,request_id,expected_version,preview_hash)
         return self._commit_domain(principal,draft_id,request_id,expected_version,preview_hash)
 
-    def _commit_domain(self,principal,draft_id,request_id,expected_version,preview_hash):
+    def commit_form(self,principal,draft_id,request_id,expected_version,preview_hash,manual_fields,baseline_fields):
+        """Explicit owner Save, never a tool entry point or ordinary CRUD follow-up."""
+        from app.agent.contracts import CommitFormBody
+        if not principal.is_owner or principal.id!='owner':
+            raise AgentError('Owner form commit required',403)
+        value=CommitFormBody(request_id=request_id,expected_version=expected_version,preview_hash=preview_hash,
+                             manual_fields=manual_fields,baseline_fields=baseline_fields)
+        bounded(value.manual_fields)
+        bounded(value.baseline_fields,1048576)
+        return self._commit_domain(principal,draft_id,request_id,expected_version,preview_hash,
+                                   form_context={'manual_fields':value.manual_fields,'baseline_fields':value.baseline_fields})
+
+    def _form_fields(self,d,context):
+        if d['kind'] not in ('character','world'):
+            raise AgentError('Native form commit supports character/world drafts only',422)
+        is_character=d['kind']=='character'
+        manual_allowed={'avatar_url','tts_provider','tts_model','tts_voice_style','tts_sample_text'} if is_character else {'thumbnail_url'}
+        authored=CHARACTER_FIELDS if is_character else WORLD_FIELDS
+        manual=context['manual_fields']; baseline=context['baseline_fields']
+        if not set(manual).issubset(manual_allowed):
+            raise AgentError('Unsupported manual form fields',422)
+        if set(baseline)!=(authored if d['target_id'] else set()):
+            raise AgentError('Complete authored editor baseline required for updates; empty baseline required for creates',422)
+        cls=CharacterUpdate if is_character else WorldSettingUpdate
+        # Exact allowlists precede validation: ordinary request models may ignore
+        # extras, but this boundary must never admit credentials or arbitrary attrs.
+        clean=cls.model_validate(manual,strict=True).model_dump(exclude_unset=True)
+        baseline=cls.model_validate(baseline,strict=True).model_dump(exclude_unset=True)
+        return clean,baseline
+
+    def _rebase_form(self,d,snapshot,revision,baseline):
+        # Full editor-open baseline catches competing authored changes outside
+        # the proposal. Its partial before snapshot also binds the original draft
+        # so reopening a stale proposal cannot authorize an authored overwrite.
+        if snapshot!=baseline or not isinstance(d['before'],dict) or any(snapshot.get(k)!=v for k,v in d['before'].items()):
+            raise AgentError('Authored fields changed since preview or editor baseline')
+        if revision!=d['base_revision']:
+            d.update(base_revision=revision,version=d['version']+1)
+            self._hash_draft(d)
+            # The owner explicitly approved the original preview and Save binds
+            # unchanged authored changes plus these manual fields in one journal.
+            d['_approval']={'owner':'owner','version':d['version'],'preview_hash':d['preview_hash'],'base_revision':revision}
+            self._approved(d,d['version'],d['preview_hash'])
+
+    def _commit_domain(self,principal,draft_id,request_id,expected_version,preview_hash,*,form_context=None):
         payload={'draft_id':draft_id,'expected_version':expected_version,'preview_hash':preview_hash}
+        if form_context is not None:
+            if not principal.is_owner or principal.id!='owner': raise AgentError('Owner form commit required',403)
+            # Hash raw validated request values, before DTO normalization. Even
+            # semantically equivalent but altered JSON must not reuse this key.
+            payload.update(operation='owner_form_commit',**form_context)
         conflict=False
         with self._write() as c:
             self._authorize(c,principal,'lore:commit')
@@ -381,13 +433,19 @@ class AgentService:
             d=self._get(c,m.drafts,draft_id,principal)
             self._match(d,expected_version,preview_hash)
             if d['status']=='committed':
+                if form_context is not None: raise AgentError('Draft already committed; reconcile the original request')
                 return self._receipt(c,principal,request_id,payload,d['kind'],d['result'])
             self._approved(d,expected_version,preview_hash)
+            manual,baseline=self._form_fields(d,form_context) if form_context is not None else ({},None)
             if d['target_id']:
                 kind=d['after'].get('target_kind','character') if d['kind']=='image_registration' else d['kind']
-                try: _,rev=self._entity(c,kind,d['target_id'])
-                except AgentError: rev=None
-                if rev!=d['base_revision']:
+                try: snapshot,rev=self._entity(c,kind,d['target_id'])
+                except AgentError:
+                    if form_context is not None: raise
+                    rev=None
+                if form_context is not None:
+                    self._rebase_form(d,snapshot,rev,baseline)
+                elif rev!=d['base_revision']:
                     d.update(status='conflict'); d.pop('_approval',None)
                     self._put(c,m.drafts,draft_id,d); conflict=True
             if not conflict:
@@ -399,13 +457,15 @@ class AgentService:
                     target=d['target_id'] or uid('char' if d['kind']=='character' else 'world')
                     if d['target_id']:
                         # Explicit CAS, even though BEGIN IMMEDIATE serializes writers.
-                        statement=t.update().where(t.c.id==target).where(text('agent_revision=:base_revision')).values(**d['changes'],updated_at=utc_now())
+                        statement=t.update().where(t.c.id==target).where(text('agent_revision=:base_revision')).values(**d['changes'],**manual,updated_at=utc_now())
                         changed=c.execute(statement,{'base_revision':d['base_revision']}).rowcount
                         if changed!=1: raise AgentError('Entity revision conflict')
                     else:
-                        obj=model(id=target,**d['after'])
+                        obj=model(id=target,**d['after'],**manual)
                         c.execute(t.insert().values(**obj.model_dump()))
                     result={'id':target,'kind':d['kind']}
+                    if form_context is not None:
+                        result.update(draft_id=draft_id,version=d['version'],preview_hash=d['preview_hash'])
                 d.update(status='committed',result=result); d.pop('_approval',None)
                 self._put(c,m.drafts,draft_id,d)
                 receipt=self._receipt(c,principal,request_id,payload,d['kind'],result)

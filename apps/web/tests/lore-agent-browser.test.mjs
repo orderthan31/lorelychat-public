@@ -208,7 +208,7 @@ try {
     assert.equal(state.writes.length, 0, 'opening settings never enables features or sends model calls');
     assert.ok(!state.reads.includes('/api/lore-agent/sessions'), 'OFF does not read sessions');
     await expect(settings.getByRole('switch', { name: t('agent.enable') })).toBeEnabled();
-    await settings.getByRole('switch', { name: t('agent.enable') }).check();
+    await settings.getByRole('switch', { name: t('agent.enable') }).focus(); await page.keyboard.press('Space');
     await expect(settings.getByRole('button', { name: t('agent.open'), exact: true })).toHaveCount(0);
     await settings.getByLabel(t('agent.llmAccount'), { exact: true }).selectOption('a');
     await settings.getByLabel(t('agent.llm'), { exact: true }).selectOption('agent-llm');
@@ -223,7 +223,7 @@ try {
     await settings.getByLabel(t('agent.imageAccount')).selectOption('a');
     await expect(settings.getByLabel(t('agent.imageModel'))).toHaveValue('');
     await settings.getByLabel(t('agent.imageModel')).selectOption('gpt-image-1.5');
-    await settings.getByRole('switch', { name: t('agent.mcpEnable') }).check();
+    await settings.getByRole('switch', { name: t('agent.mcpEnable') }).focus(); await page.keyboard.press('Space');
     await settings.getByRole('button', { name: t('저장'), exact: true }).click();
     await expect(settings.getByText(t('agent.saved'))).toBeVisible();
     assert.equal(state.settings.llm_model_option_key, 'agent-llm');
@@ -259,7 +259,7 @@ try {
     state.delayMessage = true;
     await panel.getByLabel(t('agent.message')).fill('Synthetic request');
     await panel.getByRole('button', { name: t('전송'), exact: true }).click();
-    await expect(panel.locator('#agent-send-status .sr-only')).toHaveText(t('agent.working'));
+    await expect(panel.locator('#agent-send-status .agent-progress')).toHaveText(t('agent.working'));
     await expect(panel.locator('#agent-send-status [data-agent-mark]')).toHaveCount(1);
     assert.equal(await panel.locator('#agent-send-status').evaluate(node => [...node.childNodes].filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join('').trim()), '', 'working indicator has no canned visible guide text');
     await expect(panel.locator('.agent-empty')).toHaveCount(0);
@@ -379,7 +379,7 @@ try {
     if (artifacts) await page.screenshot({ path: `${artifacts}/agent-${width}.png` });
     await panel.getByRole('button', { name: t('닫기'), exact: true }).click();
     await navigate('/settings/lore-agent');
-    await settings.getByRole('switch', { name: t('agent.enable') }).uncheck();
+    await settings.getByRole('switch', { name: t('agent.enable') }).focus(); await page.keyboard.press('Space');
     await settings.getByRole('button', { name: t('저장'), exact: true }).click();
     await expect(page.locator('.agent-launcher')).toHaveCount(0);
     assert.equal(state.settings.llm_model_option_key, 'agent-llm', 'master toggle preserves independent selection');

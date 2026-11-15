@@ -5,9 +5,9 @@ export class AgentHttpError extends Error {
   constructor(public status: number) { super(`Lore Agent · HTTP ${status}`); }
 }
 const pathId = (id: string) => encodeURIComponent(id);
-async function request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+async function request<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${API_BASE}/lore-agent${path}`, {
-    method, cache: 'no-store', credentials: 'same-origin', redirect: 'error',
+    method, signal, cache: 'no-store', credentials: 'same-origin', redirect: 'error',
     headers: { 'Cache-Control': 'no-store', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -25,7 +25,8 @@ export const agentApi = {
   revise: (draft: AgentDraft, fields: Record<string, unknown>) => request<AgentDraft>(`/drafts/${pathId(draft.id)}/revise`, 'POST', { expected_version: draft.version, fields }),
   approve: (draft: AgentDraft) => request<AgentDraft>(`/drafts/${pathId(draft.id)}/approve`, 'POST', { expected_version: draft.version, preview_hash: draft.preview_hash }),
   commit: (draft: AgentDraft, request_id: string) => request<AgentOperation>(`/drafts/${pathId(draft.id)}/commit`, 'POST', { request_id, expected_version: draft.version, preview_hash: draft.preview_hash }),
-  operation: (id: string) => request<AgentOperation>(`/operations/${pathId(id)}`),
+  commitForm: (draft: AgentDraft, request_id: string, manual_fields: Record<string, unknown>, baseline_fields: Record<string, unknown>) => request<AgentOperation>(`/drafts/${pathId(draft.id)}/commit-form`, 'POST', { request_id, expected_version: draft.version, preview_hash: draft.preview_hash, manual_fields, baseline_fields }),
+  operation: (id: string, signal?: AbortSignal) => request<AgentOperation>(`/operations/${pathId(id)}`, 'GET', undefined, signal),
   clients: () => request<McpClient[]>('/mcp/clients'),
   createClient: (name: string, scopes: McpScope[]) => request<{ client: McpClient; token: string }>('/mcp/clients', 'POST', { name, scopes }),
   revokeClient: (id: string) => request<void>(`/mcp/clients/${pathId(id)}`, 'DELETE'),

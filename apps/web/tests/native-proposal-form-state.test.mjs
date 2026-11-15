@@ -22,7 +22,8 @@ const api = {
     live.status = 'approved'; if (hold) await hold;
     return clone(live);
   },
-  commit: async (draft, request_id) => {
+  commitForm: async (draft, request_id, manual, baseline) => {
+    assert.ok(manual && baseline);
     calls.push('POST commit');
     assert.equal(live.status, 'approved'); assert.equal(draft.version, live.version); assert.equal(draft.preview_hash, live.preview_hash);
     const journal = JSON.parse(memory.get('lore-agent-request-recovery-v1'));
@@ -31,7 +32,7 @@ const api = {
     if (stale) throw new AgentHttpError(409);
     if (lost) throw new TypeError('Synthetic lost response');
     live.status = 'committed'; live.result = { id: 'new-world', kind: 'world' };
-    return { request_id, status: 'completed', kind: 'world', result: live.result };
+    return { request_id, status: 'completed', kind: 'world', result: { ...live.result, draft_id: live.id, version: live.version, preview_hash: live.preview_hash } };
   },
   sessions: async () => [],
   operation: async request_id => { calls.push('GET operation'); return { request_id, status: 'unknown', result: null }; },
@@ -52,6 +53,8 @@ assert.equal(calls.length, 0, 'CTA is only local intent, never a write');
 assert.equal(store.getState().open, false);
 assert.equal(store.getState().proposalRequest.draft.id, expected.id);
 const token = store.getState().proposalRequest.token;
+actions.openProposal(clone(expected));
+assert.equal(store.getState().proposalRequest.token, token, 'same exact request is idempotent');
 actions.openProposal({ ...expected, kind: 'image_generation' });
 assert.equal(store.getState().proposalRequest.token, token, 'image proposals keep the specialized review');
 const initial = { ...expected.after, thumbnail_url: '/unchanged.webp', metadata: { untouched: true } };
@@ -93,12 +96,35 @@ assert.equal(calls.includes('POST commit'), false, 'storage failure stops commit
 failStorage = false;
 
 expected = reset();
-assert.throws(() => nativeProposalFields(expected, { ...initial, thumbnail_url: '/changed.webp' }, initial), /cannot save image or voice/);
+assert.deepEqual(nativeProposalFields(expected, { ...initial, thumbnail_url: '/changed.webp' }, initial), {});
 const character = { ...expected, kind: 'character' };
 const baseline = { name: 'Existing', persona: 'Keep', avatar_url: '/portrait.webp', tts_provider: 'supertonic', trait_scores: { empathy: 50 }, unrelated: 'preserved' };
 assert.deepEqual(nativeProposalFields(character, { ...baseline, name: 'Edited' }, baseline), { name: 'Edited' });
-assert.throws(() => nativeProposalFields(character, { ...baseline, tts_provider: 'other' }, baseline), /cannot save/);
+assert.deepEqual(nativeProposalFields(character, { ...baseline, tts_provider: 'other' }, baseline), {});
+assert.throws(() => nativeProposalFields(character, { ...baseline, unrelated: 'changed' }, baseline), /cannot save/);
 assert.equal(proposalValueEqual({ a: 1, b: [2] }, { b: [2], a: 1 }), true);
 assert.equal(NATIVE_PROPOSAL_FIELDS.character.includes('avatar_url'), false);
 assert.equal(NATIVE_PROPOSAL_FIELDS.world.includes('thumbnail_url'), false);
+// Owner-only manual payloads never enter revise. A server media-only rebase is
+// accepted only through its exact receipt/readback, not the original preview.
+expected = reset();
+const originalCommit = api.commitForm;
+const rawBaseline = Object.fromEntries(NATIVE_PROPOSAL_FIELDS.character.map(k => [k, k === 'trait_scores' ? { empathy: 65 } : k.endsWith('_rules') ? [] : 'original']));
+Object.assign(live, { kind: 'character', target_id: 'new-world', base_revision: 1, after: { name: 'Proposal' } }); expected = clone(live);
+const originalForm = { ...rawBaseline, ...live.after, avatar_url: '/old.webp', tts_provider: 'supertonic', tts_model: 'supertonic-3', tts_voice_style: 'F2', tts_sample_text: 'old' };
+const manual = { avatar_url: '/new.webp', tts_provider: 'gemini', tts_model: 'user-selected', tts_voice_style: 'Kore', tts_sample_text: 'hello' };
+api.commitForm = async (draft, id, fields, baseline) => {
+  assert.deepEqual(fields, manual); assert.deepEqual(baseline, rawBaseline);
+  const result = await originalCommit(draft, id, fields, baseline);
+  live.base_revision = 2; live.version++; live.preview_hash = 'rebased';
+  result.result = { ...result.result, kind: 'character', version: live.version, preview_hash: live.preview_hash };
+  return result;
+};
+const rebased = await actions.saveProposal(expected, { ...originalForm, ...manual }, originalForm, () => true, rawBaseline);
+assert.equal(rebased.version, 2); assert.equal(calls.includes('POST revise'), false); assert.equal(store.getState().pending.length, 0);
+api.commitForm = async (...args) => { const op = await originalCommit(...args); op.result.preview_hash = 'wrong'; return op; };
+expected = reset();
+await assert.rejects(actions.saveProposal(expected, expected.after, expected.after, () => true), /receipt/);
+assert.equal(store.getState().pending.length, 1, 'mismatched readback keeps the journal and cannot imply success');
+api.commitForm = originalCommit;
 console.log('PASS native proposal production owner: local-only CTA, exact revised approval/commit, durable receipt, duplicate/stale/CAS rejection, unknown GET-only recovery, route ownership, unsupported fields retained/rejected.');

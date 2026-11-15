@@ -42,7 +42,7 @@ try {
       if (req.method() !== 'GET') return route.abort();
       return route.continue();
     });
-    await page.goto(`${origin}/${external ? 'model-settings' : 'settings-fixture'}#providers`);
+    await page.goto(`${origin}/${external ? 'settings/providers' : 'settings-fixture#providers'}`);
     await expect(page.locator('[data-provider-account-card]')).toHaveCount(1);
     const providerAdd = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: t('Provider 계정 추가') }) });
     const top = await providerAdd.locator('summary').boundingBox();
@@ -60,7 +60,7 @@ try {
     await expect(page.locator('[data-provider-account-card]').filter({ hasText: 'Created synthetic account' })).toHaveCount(1);
     await expect(providerAdd.getByLabel(t('API Key'), { exact: true })).toHaveValue('');
     assert.equal(writes[0].body.alias, 'Created synthetic account');
-    await page.locator('[role=tab][id$="-trigger-models"]').click();
+    if (external) await page.goto(`${origin}/settings/model-catalog`); else await page.evaluate(() => { location.hash = 'models'; });
     await page.evaluate(() => scrollTo(0,0));
     const filterToggle = page.locator('[data-model-filter-toggle]');
     if (await filterToggle.isVisible()) await filterToggle.click();
@@ -81,7 +81,7 @@ try {
     await expect(page.locator('[data-model-row]').filter({ hasText: 'Created synthetic model' })).toHaveCount(1);
     const payload = writes.at(-1).body;
     assert.equal(payload.model, 'synthetic-manual'); assert.equal(payload.supports_chat, true); assert.equal('input_modalities' in payload, false);
-    await page.locator('[role=tab][id$="-trigger-runtime"]').click();
+    if (external) await page.goto(`${origin}/settings/models`); else await page.evaluate(() => { location.hash = 'runtime'; });
     const runtime = page.locator('[data-settings-section=runtime]');
     const compression = runtime.locator('label').filter({ has: page.getByText(t('압축 방식'), { exact: true }) }).locator('select');
     await expect(compression).toHaveValue('quality');

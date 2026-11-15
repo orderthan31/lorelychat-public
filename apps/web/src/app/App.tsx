@@ -403,6 +403,8 @@ export function App() {
     }
   }
   async function uploadWorldThumbnail(file) {
+    const visit = routeWork.capture();
+    const reviewToken = worldReview ? nativeProposal.review?.token : null;
     const { setBusy, setStatus, setWorldSettingDraft } = ownUI('uploadWorldThumbnail');
     if (!file) return;
     setBusy(true);
@@ -410,7 +412,11 @@ export function App() {
       const formData = new FormData();
       formData.append('file', file);
       const result = await settingsApi.uploadWorldThumbnail(formData) as any;
-      setWorldSettingDraft((current) => ({ ...normalizeWorld(current), thumbnail_url: result.thumbnail_url || '' }));
+      if (!visit.current) return;
+      if (reviewToken) {
+        if (useAgentStore.getState().proposalRequest?.token !== reviewToken) return;
+        nativeProposal.setForm(current => ({ ...current, thumbnail_url: result.thumbnail_url || '' }));
+      } else setWorldSettingDraft((current) => ({ ...normalizeWorld(current), thumbnail_url: result.thumbnail_url || '' }));
       setStatus(t('세계관 썸네일 업로드 완료'));
     } catch (error) {
       setStatus(`${t('세계관 썸네일 업로드 실패 ·')} ${error.message}`);
@@ -984,6 +990,7 @@ export function App() {
     } finally { setBusy(false); }
   }
   async function uploadAvatar(file, updateDraft) {
+    const reviewToken = characterReview ? nativeProposal.review?.token : null;
     const operationVisit = routeWork.capture();
     const { setBusy, setStatus } = ownUI('uploadAvatar');
     if (!file) return;
@@ -993,6 +1000,7 @@ export function App() {
       formData.append('file', file);
       const uploaded = await characterMutations.uploadAvatar.mutateAsync(formData) as any;
       if (!operationVisit.current) return;
+      if (reviewToken && useAgentStore.getState().proposalRequest?.token !== reviewToken) return;
       updateDraft('avatar_url', uploaded.avatar_url);
       setStatus(t('아바타 업로드 완료. 저장을 눌러 캐릭터에 반영하세요.'));
     } catch (error) {
@@ -1034,13 +1042,20 @@ export function App() {
     };
   }
   async function createCharacterAsset() {
-    if (draft.id !== routeId) return;
+    if (editorCharacterDraft.id !== routeId) return;
+    const reviewToken = characterReview ? nativeProposal.review?.token : null;
+    const chooseDefault = !!assetDraft.is_default;
     const operationVisit = routeWork.capture();
     const { setBusy, setStatus, setAssetDraft } = ownUI('createCharacterAsset');
     if (!routeId || !assetDraft.label.trim() || !assetDraft.image_url.trim()) return;
     setBusy(true);
     try {
-      await characterMutations.createAsset.mutateAsync({ id: routeId, payload: normalizeAssetDraft() });
+      const payload = normalizeAssetDraft();
+      if (reviewToken) payload.is_default = false;
+      const created = await characterMutations.createAsset.mutateAsync({ id: routeId, payload }) as { image_url?: string };
+      if (operationVisit.current && reviewToken && chooseDefault && useAgentStore.getState().proposalRequest?.token === reviewToken && typeof created.image_url === 'string') {
+        nativeProposal.setForm(current => ({ ...current, avatar_url: created.image_url }));
+      }
       setAssetDraft({ label: '', description: '', image_url: '', tags: '', mood_tags: '', scene_tags: '', outfit_tags: '', pose_tags: '', expression_tags: '', priority: 50, enabled: true, is_default: false });
       if (!operationVisit.current) return;
       await Promise.all([loadCharacterAssets(routeId), loadCharacters()]);
@@ -1048,7 +1063,9 @@ export function App() {
     } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function uploadCharacterAsset(file) {
-    if (draft.id !== routeId) return;
+    if (editorCharacterDraft.id !== routeId) return;
+    const reviewToken = characterReview ? nativeProposal.review?.token : null;
+    const chooseDefault = !!assetDraft.is_default;
     const operationVisit = routeWork.capture();
     const { setBusy, setStatus } = ownUI('uploadCharacterAsset');
     if (!file || !routeId) return;
@@ -1066,8 +1083,11 @@ export function App() {
       formData.append('expression_tags', assetDraft.expression_tags || '');
       formData.append('priority', String(assetDraft.priority || 50));
       formData.append('enabled', String(assetDraft.enabled !== false));
-      formData.append('is_default', String(!!assetDraft.is_default));
-      await characterMutations.uploadAsset.mutateAsync({ id: routeId, formData });
+      formData.append('is_default', String(!reviewToken && chooseDefault));
+      const created = await characterMutations.uploadAsset.mutateAsync({ id: routeId, formData }) as { image_url?: string };
+      if (operationVisit.current && reviewToken && chooseDefault && useAgentStore.getState().proposalRequest?.token === reviewToken && typeof created.image_url === 'string') {
+        nativeProposal.setForm(current => ({ ...current, avatar_url: created.image_url }));
+      }
       if (!operationVisit.current) return;
       await Promise.all([loadCharacterAssets(routeId), loadCharacters()]);
       setStatus(t('에셋 업로드 완료'));
@@ -1100,6 +1120,11 @@ export function App() {
     } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function setDefaultCharacterAsset(assetId) {
+    if (characterReview) {
+      const asset = characterAssets.find(item => item.id === assetId);
+      if (asset && nativeProposal.form?.id === routeId) nativeProposal.setForm(current => ({ ...current, avatar_url: asset.image_url }));
+      return;
+    }
     if (draft.id !== routeId || !characterAssets.some(asset => asset.id === assetId)) return;
     const operationVisit = routeWork.capture();
     const { setBusy, setStatus } = ownUI('setDefaultCharacterAsset');
@@ -1678,6 +1703,7 @@ export function App() {
   const selectedMultiCharacterIds = multiCharacterIds.filter(Boolean);
   const canStartConversation = selectedMultiCharacterIds.length >= 1 && new Set(selectedMultiCharacterIds).size === selectedMultiCharacterIds.length;
   const headerActions = (() => {
+    if (route.page === 'modelSettings' || route.page === 'agentSettings') return <Button type="button" variant="ghost" onClick={() => navigate('/settings')}>{t('설정')}</Button>;
     if (route.page === 'home') return <Button type="button" onClick={() => navigate('/conversations/new')}>{t('새 대화방')}</Button>;
     if (route.page === 'conversations') return <Button type="button" onClick={() => navigate('/conversations/new')}>{t('새 대화방')}</Button>;
     if (route.page === 'conversationNew') return <Button type="button" disabled={busy || !canStartConversation} onClick={startConversationRoom}>{t(busy ? '생성 중…' : '대화 시작')}</Button>;
@@ -1715,7 +1741,7 @@ export function App() {
 
     {route.page === 'settings' && <SettingsView navigate={navigate} />}
     {route.page === 'agentSettings' && <AgentSettingsView />}
-    {route.page === 'modelSettings' && <ModelSettingsView runtimeDefaultSetting={runtimeDefaultSetting} setRuntimeDefaultSetting={setRuntimeDefaultSetting} saveRuntimeDefaultSetting={saveRuntimeDefaultSetting} refetchRuntimeDefaultSetting={refetchRuntimeDefaultSetting} busy={busy} />}
+    {route.page === 'modelSettings' && <ModelSettingsView section={route.section} runtimeDefaultSetting={runtimeDefaultSetting} setRuntimeDefaultSetting={setRuntimeDefaultSetting} saveRuntimeDefaultSetting={saveRuntimeDefaultSetting} refetchRuntimeDefaultSetting={refetchRuntimeDefaultSetting} busy={busy} />}
     {route.page === 'statistics' && <StatisticsView conversations={conversations} />}
 
     {route.page === 'conversations' && <ResourceListBoundary variant="media"><ConversationsListView conversations={conversations} busy={busy} navigate={navigate} openConversation={openConversation} deleteConversation={deleteConversation} loadConversations={loadConversations} allCharacters={characters} worldSettings={worldSettings} /></ResourceListBoundary>}

@@ -111,15 +111,15 @@ try {
       await expect(card.getByRole('button', { name: t('Vertex 설정 저장'), exact: true })).toBeDisabled();
       await expect(card.getByRole('button', { name: t('저장된 JSON 제거'), exact: true })).toBeDisabled();
       // Unmount the owner before completion, then ensure the next visit has no late secret.
-      await page.locator('[role=tab][id$="-trigger-models"]').click();
+      await page.evaluate(() => { location.hash = 'models'; });
       await page.evaluate(async () => { await window.releaseVertexRead(); window.restoreVertexRead(); });
-      await page.locator('[role=tab][id$="-trigger-providers"]').click();
+      await page.evaluate(() => { location.hash = 'providers'; });
       await card.locator('summary').click();
       await expect(card).toContainText(t('파일 내용과 이름은 표시하지 않습니다. 기존 인증 정보는 새 파일을 저장할 때만 교체됩니다.'));
       assert.equal(writes.length, writesBeforeFileRead);
     }
     if (check) { await page.close(); break; }
-    await page.locator('[role=tab][id$="-trigger-runtime"]').click();
+    await page.evaluate(() => { location.hash = 'runtime'; });
     const runtime = page.locator('[data-settings-section=runtime]');
     const runtimeSelect = key => runtime.locator('label').filter({ has: page.getByText(t(key), { exact: true }) }).locator('select');
     await runtimeSelect('채팅 Provider').selectOption('synthetic-vertex');
@@ -131,7 +131,7 @@ try {
     await expect(runtimeSelect('TTS 모델')).toHaveValue('tts-option');
     await expect(runtimeSelect('TTS 모델').locator('option')).toHaveCount(2);
     await expect(runtimeSelect('의사결정 Provider')).toBeDisabled();
-    await page.locator('[role=tab][id$="-trigger-providers"]').click();
+    await page.evaluate(() => { location.hash = 'providers'; });
     await card.locator('summary').click();
     await card.getByLabel(t('Google Cloud 프로젝트 ID')).fill('changed-project');
     await card.getByRole('button', { name: t('Vertex 설정 저장'), exact: true }).click();
@@ -187,7 +187,7 @@ try {
     const createPayload = writes.find(write => write.path === '/api/model-provider-accounts').body;
     assert.equal(createPayload.vertex_auth_mode, 'adc');
     assert.equal('api_key' in createPayload, false); assert.equal('base_url' in createPayload, false);
-    await page.locator('[role=tab][id$="-trigger-models"]').click();
+    await page.evaluate(() => { location.hash = 'models'; });
     const capabilityFilter = page.locator('[data-model-filter-fields] label').filter({ has: page.getByText(t('용도'), { exact: true }) }).locator('select');
     const filterToggle = page.locator('[data-model-filter-toggle]');
     if (await filterToggle.isVisible() && await filterToggle.getAttribute('aria-expanded') === 'false') await filterToggle.click();

@@ -159,11 +159,11 @@ export function WorldSettingsDetailView({ reviewMode = false, changedFields = []
             </div>
           </div>
           <div className="grid gap-2">
-            <Field label={t('세계관 썸네일 URL')}><Input disabled={reviewMode} value={draft.thumbnail_url || ''} onChange={(e) => updateDraft({ thumbnail_url: e.target.value })} placeholder={t('이미지 URL 또는 /uploads/...')} /></Field>
+            <Field label={t('세계관 썸네일 URL')}><Input value={draft.thumbnail_url || ''} onChange={(e) => updateDraft({ thumbnail_url: e.target.value })} placeholder={t('이미지 URL 또는 /uploads/...')} /></Field>
             <div className="grid grid-cols-2 gap-2">
-              <input id="world-thumbnail-upload" type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" aria-label={t('세계관 썸네일')} disabled={busy || reviewMode} onChange={(e) => { const file = e.target.files?.[0] || null; uploadWorldThumbnail(file); e.currentTarget.value = ''; }} />
-              <Button type="button" variant="secondary" disabled={busy || reviewMode} onClick={() => document.getElementById('world-thumbnail-upload')?.click()}>{t(busy ? '업로드 중…' : '파일 업로드')}</Button>
-              <Button type="button" variant="ghost" disabled={busy || reviewMode || !draft.thumbnail_url} onClick={() => updateDraft({ thumbnail_url: '' })}>{t('썸네일 비우기')}</Button>
+              <input id="world-thumbnail-upload" type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" aria-label={t('세계관 썸네일')} disabled={busy} onChange={(e) => { const file = e.target.files?.[0] || null; uploadWorldThumbnail(file); e.currentTarget.value = ''; }} />
+              <Button type="button" variant="secondary" disabled={busy} onClick={() => document.getElementById('world-thumbnail-upload')?.click()}>{t(busy ? '업로드 중…' : '파일 업로드')}</Button>
+              <Button type="button" variant="ghost" disabled={busy || !draft.thumbnail_url} onClick={() => updateDraft({ thumbnail_url: '' })}>{t('썸네일 비우기')}</Button>
             </div>
             <small className="text-xs leading-relaxed text-muted-foreground">{t('파일은 5MB 이하 jpg/png/webp/gif만 가능합니다. 업로드 성공 시 URL 입력칸에 자동 반영됩니다.')}</small>
           </div>

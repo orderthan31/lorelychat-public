@@ -1,4 +1,4 @@
-import { Cpu, Languages, NotebookTabs } from 'lucide-react';
+import { Cpu, KeyRound, Languages, List, NotebookTabs, SlidersHorizontal } from 'lucide-react';
 import { Select } from '../../components/atoms';
 import { SettingsNavItem } from '../../components/molecules';
 import { useI18n } from '../../i18n/I18nProvider';
@@ -16,7 +16,9 @@ export function SettingsView({ navigate }: SettingsViewProps) {
     icon: typeof Cpu;
   }> = [
     { path: '/settings/lore-agent', label: 'agent.title', icon: Cpu },
-    { path: '/model-settings', label: '모델 설정', icon: Cpu },
+    { path: '/settings/models', label: 'settings.defaultModels', icon: SlidersHorizontal },
+    { path: '/settings/providers', label: 'settings.providers', icon: KeyRound },
+    { path: '/settings/model-catalog', label: 'settings.modelCatalog', icon: List },
     { path: '/presets', label: '프리셋', icon: NotebookTabs },
   ];
 

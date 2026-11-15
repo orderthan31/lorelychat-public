@@ -8,7 +8,7 @@ import { agentActions, NATIVE_PROPOSAL_FIELDS, proposalValueEqual, useAgentStore
 import type { AgentDraft } from './types';
 
 type Form = Record<string, any>;
-type Review = { token: string; draft: AgentDraft; initial: Form; baseline: Form; form: Form };
+type Review = { token: string; draft: AgentDraft; initial: Form; baseline: Form; authoredBaseline: Form; form: Form };
 export function proposalRoute(draft: AgentDraft) {
   const character = draft.kind === 'character';
   return { page: character ? (draft.target_id ? 'characterDetail' : 'characterNew') : (draft.target_id ? 'worldSettingDetail' : 'worldSettingNew'), id: draft.target_id || '', path: `/${character ? 'characters' : 'world-settings'}/${draft.target_id ? encodeURIComponent(draft.target_id) : 'new'}` };
@@ -30,6 +30,8 @@ export function useNativeProposal(route: { page: string; id?: string }, navigate
   const [review, setReview] = useState<Review | null>(null);
   const [error, setError] = useState('');
   const arrived = useRef<string | null>(null);
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
   const target = request ? proposalRoute(request.draft) : null;
   const matches = !!target && route.page === target.page && (route.id || '') === target.id;
   useEffect(() => {
@@ -37,8 +39,8 @@ export function useNativeProposal(route: { page: string; id?: string }, navigate
     arrived.current = null;
     setReview(null); setError('');
     const next = proposalRoute(request.draft);
-    if (route.page !== next.page || (route.id || '') !== next.id) navigate(next.path);
-  }, [request?.token, navigate]);
+    if (route.page !== next.page || (route.id || '') !== next.id) navigateRef.current(next.path);
+  }, [request?.token]);
   useEffect(() => {
     if (!request) return;
     if (!matches) {
@@ -55,21 +57,24 @@ export function useNativeProposal(route: { page: string; id?: string }, navigate
       if (!owns()) return;
       if (draft.id !== expected.id || draft.kind !== expected.kind || draft.target_id !== expected.target_id || draft.version !== expected.version || draft.preview_hash !== expected.preview_hash || draft.base_revision !== expected.base_revision || !['draft', 'approved'].includes(draft.status)) throw new Error('The proposal changed. Reopen it in Lore Agent.');
       let baseline: Form;
+      let authoredBaseline: Form = {};
       if (draft.kind === 'character') {
         const entity = draft.target_id ? await characterApi.get(draft.target_id) as Form : {};
+        authoredBaseline = entity;
         baseline = { ...EMPTY_CHARACTER, forbidden_rules: [...DEFAULT_FORBIDDEN_RULES], ...entity, trait_scores: { ...DEFAULT_TRAIT_SCORES, ...(entity.trait_scores || {}) } };
       } else {
         const worlds = draft.target_id ? await settingsApi.worldSettings() as Form[] : [];
-        baseline = { ...emptyWorld, ...(draft.target_id ? worlds.find(world => world.id === draft.target_id) : {}) };
+        authoredBaseline = (draft.target_id ? worlds.find(world => world.id === draft.target_id) : {}) || {};
+        baseline = { ...emptyWorld, ...authoredBaseline };
       }
       const initial = prefillProposal(draft, baseline);
-      if (owns()) setReview({ token: request.token, draft, initial, baseline, form: initial });
+      if (owns()) setReview({ token: request.token, draft, initial, baseline, authoredBaseline, form: initial });
     })().catch(error => { if (owns()) setError(error instanceof Error ? error.message : 'The proposal could not be loaded.'); });
     return () => { active = false; };
   }, [request?.token, route.page, route.id, matches, routeWork]);
   const current = matches && review?.token === request?.token ? review : null;
   const setForm: Dispatch<SetStateAction<Form>> = value => setReview(old => {
-    if (!old || old.token !== useAgentStore.getState().proposalRequest?.token || useAgentStore.getState().working || useAgentStore.getState().pending.length) return old;
+    if (!old || old.token !== request?.token || old.token !== useAgentStore.getState().proposalRequest?.token || useAgentStore.getState().working || useAgentStore.getState().pending.length) return old;
     return { ...old, form: typeof value === 'function' ? value(old.form) : value };
   });
   const changedFields = current?.draft.target_id && (current.draft.kind === 'character' || current.draft.kind === 'world')
@@ -83,7 +88,7 @@ export function useNativeProposal(route: { page: string; id?: string }, navigate
       if (!current || !request || !matches) throw new Error('The proposal has not finished loading.');
       const visit = routeWork.capture();
       return agentActions.saveProposal(current.draft, current.form, current.initial,
-        () => visit.current && useAgentStore.getState().proposalRequest?.token === current.token);
+        () => visit.current && useAgentStore.getState().proposalRequest?.token === current.token, current.authoredBaseline);
     },
   };
 }

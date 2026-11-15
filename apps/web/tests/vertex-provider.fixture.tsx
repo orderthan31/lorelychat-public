@@ -6,12 +6,14 @@ import type { RuntimeSettingValue } from '../src/components/organisms/RuntimeSet
 import { I18nProvider } from '../src/i18n/I18nProvider';
 import '../src/styles.css';
 function Fixture() {
+  const [section, setSection] = useState<'runtime' | 'providers' | 'models'>(() => location.hash === '#providers' ? 'providers' : 'runtime');
+  useEffect(() => { const sync = () => setSection(location.hash === '#providers' ? 'providers' : location.hash === '#models' ? 'models' : 'runtime'); window.addEventListener('hashchange', sync); return () => window.removeEventListener('hashchange', sync); }, []);
   const [setting, setSetting] = useState<RuntimeSettingValue>();
   async function refetch() {
     setSetting(await (await fetch('/api/runtime-settings/default')).json());
   }
   useEffect(() => { void refetch(); }, []);
-  return <ModelSettingsView runtimeDefaultSetting={setting} setRuntimeDefaultSetting={setSetting} refetchRuntimeDefaultSetting={refetch} />;
+  return <ModelSettingsView section={section} runtimeDefaultSetting={setting} setRuntimeDefaultSetting={setSetting} refetchRuntimeDefaultSetting={refetch} />;
 }
 function CharacterFixture() {
   const [draft, setDraft] = useState<CharacterDraft>({ name: 'Synthetic', tts_provider: 'supertonic' });
