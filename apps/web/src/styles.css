@@ -37,3 +37,4 @@
 @import "./styles/pages/_features.scss";
 @import "./styles/themes/_light.scss";
 @import "./styles/themes/_dark.scss";
+@import "./styles/pages/_adaptive-workspaces.scss";

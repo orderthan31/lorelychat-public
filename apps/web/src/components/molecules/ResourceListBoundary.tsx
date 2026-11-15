@@ -28,16 +28,15 @@ function MediaCardSkeleton() {
   </article>;
 }
 
-function HomeRailSkeleton({ media = false }: { media?: boolean }) {
-  return <section className="recommend-rail">
-    <div className="recommend-rail-head"><Skeleton className="h-5 w-32" /><Skeleton className="h-8 w-16 rounded-lg" /></div>
-    <div className="recommend-scroll pointer-events-none overflow-hidden" aria-hidden="true">
-      <div className="flex w-max gap-2.5 pr-3">
-        {Array.from({ length: 4 }, (_, index) => <article key={index} className="w-44 overflow-hidden rounded-xl border border-border bg-card sm:w-52">
-          <Skeleton className={cn('w-full rounded-none', media ? 'aspect-[16/10]' : 'aspect-square')} />
-          <span className="grid gap-2 p-3"><Skeleton className="h-4 w-2/3" /><Skeleton className="h-3 w-4/5" /></span>
-        </article>)}
-      </div>
+function HomeSectionSkeleton({ recent = false }: { recent?: boolean }) {
+  return <section className="home-section" aria-hidden="true">
+    <div className="home-section-head"><Skeleton className="h-5 w-32" /><Skeleton className="h-8 w-16 rounded-lg" /></div>
+    <div className={recent ? 'home-room-list' : 'home-resource-list'}>
+      {Array.from({ length: recent ? 6 : 3 }, (_, index) => <div key={index} className={recent ? 'home-room-link' : 'home-resource-link'}>
+        <Skeleton className={recent ? 'h-14 w-14 rounded-lg' : 'h-11 w-11 rounded-lg'} />
+        <span className="home-row-copy"><Skeleton className="h-4 w-2/3" /><Skeleton className="h-3 w-4/5" /></span>
+        <Skeleton className="h-4 w-4" />
+      </div>)}
     </div>
   </section>;
 }
@@ -45,10 +44,8 @@ function HomeRailSkeleton({ media = false }: { media?: boolean }) {
 export function ResourceListSkeleton({ variant = 'row', count = 6 }: { variant?: ResourceSkeletonVariant; count?: number }) {
   const { t } = useI18n();
   if (variant === 'home') return <section className="page home-dashboard" role="status" aria-live="polite" aria-label={t('불러오는 중…')} aria-busy="true" data-resource-list-skeleton="home">
-    <HomeRailSkeleton media />
-    <HomeRailSkeleton />
-    <HomeRailSkeleton media />
-    <div className="home-quick-grid" aria-hidden="true">{Array.from({ length: 4 }, (_, index) => <Skeleton key={index} className="h-14 rounded-xl" />)}</div>
+    <HomeSectionSkeleton recent />
+    <div className="home-resources"><HomeSectionSkeleton /><HomeSectionSkeleton /></div>
   </section>;
 
   const CardSkeleton = variant === 'media' ? MediaCardSkeleton : RowCardSkeleton;

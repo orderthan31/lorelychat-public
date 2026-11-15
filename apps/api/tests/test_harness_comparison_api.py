@@ -20,7 +20,11 @@ def settings_reset():
 
 def seed(client, session):
     char=client.post('/characters', json={'name':'Canon','persona':'AUTHORED CARD'}).json()
-    room=client.post('/conversations', json={'mode':'user_character','genre_mode':'slice_of_life','participants':[
+    # World-bearing fixtures must explicitly select one; null now means no world.
+    world=client.post('/world-settings', json={'title':'Synthetic comparison world',
+        'genre_mode':'slice_of_life','world_seed':'AUTHORED WORLD'}).json()
+    room=client.post('/conversations', json={'mode':'user_character','genre_mode':'slice_of_life',
+        'world_setting_id':world['id'],'participants':[
         {'type':'user','id':'user_001'}, {'type':'character','id':char['id']}]}).json()
     start=datetime.now(timezone.utc)-timedelta(days=1)
     rows=[]

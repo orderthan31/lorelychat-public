@@ -5,7 +5,8 @@ import { characterApi } from '../../api/resources';
 import { LIST_PAGE_SIZE } from '../../constants/domain';
 import { avatarUrlFor } from '../../utils/assets';
 import { useUiStore } from '../../stores/uiStore';
-import { Input } from '../../components/atoms';
+import { Button, Input } from '../../components/atoms';
+import { ResourceWorkspace } from '../../components/molecules/ResourceWorkspace';
 import { Pager, ResourceCard, ResourceListPendingBar } from '../../components/molecules';
 import { useI18n } from '../../i18n/I18nProvider';
 import { formatNamedAction, formatProfileImageAlt } from '../../i18n/core';
@@ -29,6 +30,7 @@ export function CharactersListView({ characters = [], navigate }: CharactersList
   const [queryInput, setQueryInput] = useState('');
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const pageQuery = useSuspenseQuery({
     queryKey: ['characters', 'page', page, query],
@@ -37,6 +39,7 @@ export function CharactersListView({ characters = [], navigate }: CharactersList
   const pageData = pageQuery.data;
   const visibleCharacters = pageData.items as CharacterListItem[];
   const total = pageData.total;
+  const selected = visibleCharacters.find(character => character.id === selectedId);
   const updateQuery = (value: string) => {
     setQueryInput(value);
     startTransition(() => { setQuery(value); setPage(1); });
@@ -45,6 +48,12 @@ export function CharactersListView({ characters = [], navigate }: CharactersList
     <h1 className="sr-only">{t('캐릭터 목록')}</h1>
     <Input aria-label={t('캐릭터 검색')} value={queryInput} onChange={(e) => updateQuery(e.target.value)} placeholder={t('캐릭터명, 설명, 페르소나 검색')} />
     <ResourceListPendingBar pending={isPending || pageQuery.isFetching} />
+    <ResourceWorkspace selectionKey={selected?.id} onClear={() => setSelectedId(null)} selection={selected && <>
+      <WebpImage className="resource-preview-image" src={avatarUrlFor(selected, theme)} alt={formatProfileImageAlt(selected.name || t('캐릭터'), locale)} />
+      <h2>{selected.name || t('이름 없는 캐릭터')}</h2>
+      <p className="resource-preview-prose">{selected.description || selected.persona}</p>
+      <Button type="button" onClick={() => navigate(`/characters/${selected.id}`)}>{t('편집')}</Button>
+    </>}>
     <div className={`grid items-stretch gap-2 transition-opacity sm:grid-cols-2 xl:grid-cols-3 ${isPending ? 'opacity-60' : 'opacity-100'}`}>{visibleCharacters.map((c) => <ResourceCard
       key={c.id}
       title={c.name || t('이름 없는 캐릭터')}
@@ -52,9 +61,12 @@ export function CharactersListView({ characters = [], navigate }: CharactersList
       media={<WebpImage className="h-full w-full object-cover object-top" src={avatarUrlFor(c, theme)} alt={formatProfileImageAlt(c.name || t('캐릭터'), locale)} />}
       openLabel={formatNamedAction(c.name || t('캐릭터'), 'open', locale)}
       onOpen={() => navigate(`/characters/${c.id}`)}
+      meta={<span className="resource-open-hint">{t('편집')} <span aria-hidden="true">→</span></span>}
+      onPreview={() => setSelectedId(c.id)} previewLabel={t('미리보기')} selected={selected?.id === c.id}
     />)}
       {!visibleCharacters.length && <div className="rounded-xl border border-dashed border-border py-10 text-center text-sm text-muted-foreground">{t('검색 결과가 없습니다.')}</div>}
     </div>
+    </ResourceWorkspace>
     <Pager page={pageData.page || page} total={total} onPage={(nextPage) => startTransition(() => setPage(nextPage))} />
   </section>;
 }

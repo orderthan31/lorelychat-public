@@ -263,7 +263,7 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
 
     preview_query = "\n".join(filter(None, [
         f"genre={genre_mode}",
-        scene.world_seed if scene else "",
+        scene.world_seed if scene and conversation and conversation.world_setting_id else "",
         scene.current_conflict if scene and not full_history else "",
         scene.summary if scene and not full_history else "",
         messages[-1].content if messages else "",
@@ -346,6 +346,7 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
         comparison_options=comparison)
     if characters:
         harness = prompts.build_multi_character_prompt_harness(
+            include_world=bool(conversation and conversation.world_setting_id),
             comparison_options=comparison,
             total_budget_tokens=room_prompt_budget,
             command_overlay_plan=panel_plan,
@@ -373,9 +374,11 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
         ledger = harness.ledger
     else:
         raw_sections = [
-            prompts.PromptSection("scene", "Scene", prompts.build_scene_text(scene), "scene_state", "current_room_scene", 360, True),
-            prompts.PromptSection("genre_mode", "Genre mode", prompts.build_genre_mode_policy(genre_mode), "conversation.genre_mode", f"genre_route:{genre_mode or 'battle'}", 180, True),
+            prompts.PromptSection("scene", "Scene", prompts.build_scene_text(scene,
+                include_world=bool(conversation and conversation.world_setting_id)), "scene_state", "current_room_scene", 360, True),
         ]
+        if conversation and conversation.world_setting_id:
+            raw_sections.append(prompts.PromptSection("genre_mode", "Genre mode", prompts.build_genre_mode_policy(genre_mode), "conversation.genre_mode", f"genre_route:{genre_mode or 'battle'}", 180, True))
         for domain_section in genre_domain_service.get_context_sections(session, conversation):
             if domain_section.included:
                 raw_sections.append(prompts.PromptSection(domain_section.key, domain_section.title, domain_section.content, "genre_domain.context_sections", f"genre_route:{genre_mode}", 320, False))

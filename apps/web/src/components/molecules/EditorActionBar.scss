@@ -1,0 +1,34 @@
+/* Scoped editor layout. Stick at the top on phones too: no fixed keyboard/footer overlap. */
+.editor-action-bar {
+  position: sticky;
+  top: var(--editor-action-top, 0px);
+  z-index: 20;
+  align-self: start;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 0;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  > button { min-height: 44px; min-width: 44px; height: auto; white-space: normal; }
+  > button:first-child { margin-right: auto; }
+}
+.editor-surface {
+  min-width: 0;
+  align-content: start;
+  input, select, textarea, summary { scroll-margin-block: var(--editor-scroll-margin, 150px) 24px; }
+  .character-tabs { flex-wrap: wrap; }
+  .character-tabs button { min-height: 44px; }
+}
+.editor-columns, .editor-command-columns { display: grid; gap: 24px; min-width: 0; align-items: start; }
+.editor-columns > *, .editor-command-columns > * { min-width: 0; }
+@media (min-width: 1024px) {
+  .editor-columns { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .editor-command-columns { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); }
+  .editor-command-primary textarea { min-height: 300px; }
+}
+.chat-settings-embedded { position: static; overflow: visible; width: 100%; min-width: 0; max-height: none; }
+.chat-settings-embedded .editor-action-bar { top: 0; }
+

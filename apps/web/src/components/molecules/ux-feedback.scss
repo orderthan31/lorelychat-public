@@ -1,0 +1,45 @@
+.ux-operation-feedback,
+.ux-detail-error {
+  color: var(--foreground);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  margin-block: 0.5rem;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  p { margin: 0 0 0.5rem; }
+}
+.ux-operation-toast {
+  position: fixed;
+  z-index: 100;
+  inset-inline: 1rem;
+  top: max(1rem, env(safe-area-inset-top));
+  width: fit-content;
+  max-width: min(32rem, calc(100vw - 2rem));
+  margin-inline: auto;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 16%);
+  overflow-wrap: anywhere;
+  p { margin: 0; min-width: 0; }
+  button { flex-shrink: 0; min-width: 44px; min-height: 44px; }
+}
+.ux-detail-skeleton {
+  min-width: 0;
+  width: 100%;
+  padding: 1rem;
+  box-sizing: border-box;
+  .ux-detail-loading-label { display: block; margin-bottom: 1rem; color: var(--muted-foreground); }
+  .ux-detail-placeholder-layout { display: grid; gap: 1.25rem; }
+  .ux-detail-placeholder { background: var(--muted); border-radius: 0.75rem; }
+  .ux-detail-placeholder--heading { height: 2rem; width: 60%; }
+  .ux-detail-placeholder--body { height: 5.5rem; }
+  .ux-detail-placeholder--action { height: 3.5rem; }
+}

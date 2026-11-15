@@ -1,8 +1,10 @@
+import { EditorActionBar } from '../../components/molecules/EditorActionBar';
+import { EditorHelp } from '../../components/molecules/EditorHelp';
 import { useState, useTransition } from 'react';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import { settingsApi } from '../../api/resources';
 import { LIST_PAGE_SIZE } from '../../constants/domain';
-import { Badge } from '../../components/atoms';
+
 import { Button } from '../../components/atoms';
 
 import { Input } from '../../components/atoms';
@@ -25,11 +27,6 @@ const POSTPROCESS_CONTEXT_OPTIONS: { value: PostprocessContextOption; label: str
   { value: 'turn_messages', label: '현재 턴 메시지', description: '유저/source 메시지와 1차 응답 메시지' },
 ];
 
-const targetLabels: Record<string, string> = {
-  first_bubble: '처음에 후처리 전용 버블 삽입',
-  last_bubble: '마지막에 후처리 전용 버블 삽입',
-  all_bubbles: '기존 모든 버블에 확률적으로 끼워넣기',
-};
 
 type Navigate = (path: string) => void;
 
@@ -65,6 +62,7 @@ function PostprocessContextSelector({ selected, onChange }: { selected: Postproc
   };
   return <section className="grid gap-2">
     <strong className="text-sm font-semibold text-foreground">{t('후속프롬프트 참고 컨텍스트')}</strong>
+    <EditorHelp summary={t('설명')}><dl>{POSTPROCESS_CONTEXT_OPTIONS.map(option => <div key={option.value}><dt>{t(option.label as UiMessageKey)}</dt><dd>{t(option.description as UiMessageKey)}</dd></div>)}</dl></EditorHelp>
     <div className="divide-y divide-border border-y border-border sm:grid sm:grid-cols-2 sm:divide-y-0">
       {POSTPROCESS_CONTEXT_OPTIONS.map((option) => {
         const checked = values.has(option.value);
@@ -72,7 +70,6 @@ function PostprocessContextSelector({ selected, onChange }: { selected: Postproc
           <input className="mt-1 h-4 w-4 accent-primary" type="checkbox" checked={checked} onChange={() => toggle(option.value)} />
           <span className="grid gap-0.5">
             <span className="text-sm font-semibold">{t(option.label as UiMessageKey)}</span>
-            <span className="text-xs leading-relaxed">{t(option.description as UiMessageKey)}</span>
           </span>
         </label>;
       })}
@@ -122,10 +119,20 @@ function CommandForm({ draft, updateDraft, saveChatCommand, deleteChatCommand, b
   const target = draft.postprocess_target || 'last_bubble';
   const canSave = !!draft.name?.trim() && (!!draft.generation_prompt?.trim() || !!draft.postprocess_prompt?.trim() || !!draft.prompt?.trim());
 
-  return <FormSection title={isNew ? t('새 커맨드 등록') : `${draft.name || t('커맨드')} · ${t('상세')}`}>
+  return <section className="editor-surface grid gap-3">
+    <EditorActionBar label={t('페이지 액션')}>
+      <Button type="button" disabled={busy || !canSave} onClick={saveChatCommand}>{t(busy ? '저장 중…' : '저장')}</Button>
+      {!isNew && draft.id && <Button type="button" variant="destructive" onClick={() => deleteChatCommand(draft)}>{t('삭제')}</Button>}
+    </EditorActionBar>
+    <FormSection title={isNew ? t('새 커맨드 등록') : `${draft.name || t('커맨드')} · ${t('상세')}`}>
+      <p className="context-muted">{t('커맨드명과 생성 또는 후처리 프롬프트를 입력하세요.')}</p>
       <label>{t('커맨드명')}<Input value={draft.name || ''} onChange={(e) => { const name = e.target.value.replace(/^!/, ''); updateDraft({ name, display_name: name }); }} placeholder={t('예: 방송마지막')} /></label>
       <label>{t('설명')}<Input value={draft.description || ''} onChange={(e) => updateDraft({ description: e.target.value })} placeholder={t('자동완성에 표시할 설명')} /></label>
+      <div className="editor-command-columns">
+      <div className="editor-command-primary">
       <TextareaWithExpand label={t('메시지 생성 프롬프트')} rows={5} value={draft.generation_prompt || ''} onChange={(value) => updateDraft({ generation_prompt: value, prompt: draft.postprocess_prompt || value })} placeholder={t('메시지를 만들 때 적용할 지시')} />
+      </div>
+      <div className="grid min-w-0 gap-3">
       <TextareaWithExpand label={t('후처리 프롬프트')} rows={7} value={draft.postprocess_prompt || ''} onChange={(value) => updateDraft({ postprocess_prompt: value, prompt: value || draft.generation_prompt || '' })} placeholder={t('생성된 메시지에 적용할 후처리 지시')} />
       <PostprocessBlockTypeSelector selected={draft.postprocess_block_types ?? []} onChange={(value) => updateDraft({ postprocess_block_types: value })} />
       <PostprocessContextSelector selected={draft.context_sources ?? (draft.postprocess_context_options?.length ? draft.postprocess_context_options : DEFAULT_POSTPROCESS_CONTEXT_OPTIONS)} onChange={(value) => updateDraft({ context_sources: value })} />
@@ -139,12 +146,12 @@ function CommandForm({ draft, updateDraft, saveChatCommand, deleteChatCommand, b
         </label>
         {target === 'all_bubbles' && <label>{t('메시지별 적용 확률 (%)')}<Input type="number" min="0" max="100" value={draft.postprocess_probability ?? 100} onChange={(e) => updateDraft({ postprocess_probability: Math.max(0, Math.min(100, Number(e.target.value || 0))) })} /></label>}
       </div>
-      <Switch checked={draft.enabled !== false} onChange={(e) => updateDraft({ enabled: e.target.checked })} label={t('채팅에서 사용')} />
-      <div className="form-action-row">
-        <Button type="button" disabled={busy || !canSave} onClick={saveChatCommand}>{t(busy ? '저장 중…' : '저장')}</Button>
-        {!isNew && draft.id && <Button type="button" variant="destructive" onClick={() => deleteChatCommand(draft)}>{t('삭제')}</Button>}
       </div>
-  </FormSection>;
+      </div>
+      <Switch checked={draft.enabled !== false} onChange={(e) => updateDraft({ enabled: e.target.checked })} label={t('채팅에서 사용')} />
+
+  </FormSection>
+  </section>;
 }
 
 function ChatCommandsList({ navigate }: { navigate: Navigate }) {
@@ -174,7 +181,7 @@ function ChatCommandsList({ navigate }: { navigate: Navigate }) {
         key={command.id || command.name}
         title={`!${command.name}`}
         description={command.description || command.postprocess_prompt || command.generation_prompt || command.prompt || t('설명 없음')}
-        meta={<><Badge variant={command.enabled === false ? 'outline' : 'secondary'}>{t(command.enabled === false ? '비활성' : '활성')}</Badge><span className="min-w-0 flex-1 truncate">{t('후처리')}: {t(targetLabels[command.postprocess_target || 'last_bubble'] as UiMessageKey)}{command.postprocess_target === 'all_bubbles' ? ` · ${command.postprocess_probability ?? 100}%` : ''}</span></>}
+        meta={command.enabled === false ? <span>{t('비활성')}</span> : undefined}
         openLabel={formatNamedAction(`!${command.name}`, 'open', locale)}
         onOpen={() => navigate(`/chat-commands/${command.id}`)}
       />)}

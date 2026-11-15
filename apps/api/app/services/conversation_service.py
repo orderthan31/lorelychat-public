@@ -114,6 +114,8 @@ def opening_line_from_scene_data(scene_data: dict) -> str:
 
 def create_conversation(session: Session, payload: ConversationCreate) -> Conversation:
     world_setting = session.get(WorldSetting, payload.world_setting_id) if payload.world_setting_id else None
+    if payload.world_setting_id is not None and world_setting is None:
+        raise ValueError("World setting not found")
     effective_genre_mode = normalize_genre_mode(world_setting.genre_mode if world_setting else payload.genre_mode)
     scene_data = scene_payload_from_world_setting(world_setting, payload.scene)
     conversation = Conversation(
@@ -135,22 +137,22 @@ def create_conversation(session: Session, payload: ConversationCreate) -> Conver
             role=participant.role,
             order_index=participant.order_index if participant.order_index is not None else idx,
         ))
-    if scene_data or payload.scene:
-        user_description = user_description_from_scene(payload.scene)
-        if user_description:
-            scene_data["user_description"] = user_description
-        session.add(SceneState(conversation_id=conversation.id, **scene_data))
-        opening_line = opening_line_from_scene_data(scene_data)
-        first_character_id = first_character_participant_id(payload.participants)
-        if opening_line and first_character_id:
-            session.add(Message(
-                id=f"msg_{uuid4().hex[:12]}",
-                conversation_id=conversation.id,
-                speaker_type="character",
-                speaker_id=first_character_id,
-                content=opening_line,
-                metadata_={"source": "world_setting_opening_line" if world_setting else "room_opening_line"},
-            ))
+    # Scene/history state is independent of the optional world.
+    user_description = user_description_from_scene(payload.scene)
+    if user_description:
+        scene_data["user_description"] = user_description
+    session.add(SceneState(conversation_id=conversation.id, **scene_data))
+    opening_line = opening_line_from_scene_data(scene_data)
+    first_character_id = first_character_participant_id(payload.participants)
+    if opening_line and first_character_id:
+        session.add(Message(
+            id=f"msg_{uuid4().hex[:12]}",
+            conversation_id=conversation.id,
+            speaker_type="character",
+            speaker_id=first_character_id,
+            content=opening_line,
+            metadata_={"source": "world_setting_opening_line" if world_setting else "room_opening_line"},
+        ))
     session.commit()
     session.refresh(conversation)
     return conversation
@@ -937,6 +939,9 @@ def update_conversation(session: Session, conversation_id: str, payload: Convers
         return None
     data = payload.model_dump(exclude_unset=True)
     now = datetime.now(timezone.utc)
+    if "world_setting_id" in data and data["world_setting_id"] is not None:
+        if not data["world_setting_id"] or not session.get(WorldSetting, data["world_setting_id"]):
+            raise ValueError("World setting not found")
     if "title" in data and data["title"] is not None:
         title = data["title"].strip()
         if title:
@@ -946,10 +951,7 @@ def update_conversation(session: Session, conversation_id: str, payload: Convers
     if "genre_mode" in data and data["genre_mode"] is not None:
         conversation.genre_mode = normalize_genre_mode(data["genre_mode"])
     if "world_setting_id" in data:
-        world_setting_id = (data.get("world_setting_id") or "").strip() or None
-        if world_setting_id and not session.get(WorldSetting, world_setting_id):
-            world_setting_id = None
-        conversation.world_setting_id = world_setting_id
+        conversation.world_setting_id = data["world_setting_id"]
     if "tts_enabled" in data and data["tts_enabled"] is not None:
         conversation.tts_enabled = bool(data["tts_enabled"])
     if "participants" in data and payload.participants is not None:
@@ -3805,6 +3807,10 @@ async def update_scene_orchestration_summary(
         if participant.participant_type == "character" and participant.role
     }
     prompt_settings = system_prompt_service.prompt_settings_map()
+    if not conversation or not conversation.world_setting_id:
+        prompt_settings = system_prompt_service.without_world_defaults(prompt_settings)
+        if not official_domain_context:
+            genre_mode = None
     # Capture each selected compressor's own metadata before ending the read
     # transaction. Fallback admission is recomputed for its actual stage inputs.
     from app.services.context_management_service import resolve_model_context_capacity

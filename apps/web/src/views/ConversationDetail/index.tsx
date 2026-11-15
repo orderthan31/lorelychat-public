@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, type CSSProperties } from 'react';
 import { BubbleList } from '../../components/organisms';
 import { MessageSelectionToolbar } from '../../components/organisms/MessageSelectionToolbar';
 import { Badge, Button } from '../../components/atoms';
@@ -6,6 +6,7 @@ import { useI18n } from '../../i18n/I18nProvider';
 import { BattleControls } from './BattleControls';
 import { ConversationComposer } from './ConversationComposer';
 import type { ConversationDetailViewProps } from './contracts';
+import { CONVERSATION_CHAT_MAX_WIDTH, CONVERSATION_PANEL_MIN_WIDTH } from '../../hooks/useConversationPanelLayout';
 export type { ConversationDetailViewProps } from './contracts';
 
 export function ConversationDetailView(props: ConversationDetailViewProps) {
@@ -29,8 +30,9 @@ export function ConversationDetailView(props: ConversationDetailViewProps) {
   }, [messageSelectionMode, busy, clearMessageSelection]);
 
   return (
+    <div ref={props.workspaceRef} className={`chat-workspace${props.panelDocked && props.panelOpen ? ' has-docked-panel' : ''}`} style={{ '--chat-max-width': `${CONVERSATION_CHAT_MAX_WIDTH}px`, '--chat-panel-width': `${props.panelWidth || CONVERSATION_PANEL_MIN_WIDTH}px` } as CSSProperties}>
     <section className="chat-shell page">
-      <ConversationHeader {...props} />
+      <div className="chat-header-region"><ConversationHeader {...props} />{props.feedback}</div>
       <div className="chat-body-wrap">
         <BubbleList
           messages={messages}
@@ -63,6 +65,7 @@ export function ConversationDetailView(props: ConversationDetailViewProps) {
           </Button>
         )}
       </div>
+      <div className="chat-footer">
       <BattleControls {...props} visible={!messageSelectionMode} />
       {messageSelectionMode ? (
         <MessageSelectionToolbar
@@ -75,15 +78,18 @@ export function ConversationDetailView(props: ConversationDetailViewProps) {
           onDelete={deleteSelectedMessages}
         />
       ) : <ConversationComposer {...props} />}
+      </div>
     </section>
+    {props.sidePanel}
+    </div>
   );
 }
 
 type ConversationHeaderProps = Pick<ConversationDetailViewProps,
   'conversation' | 'selectedConversationId' | 'status' | 'navigate' |
-  'openConversationContextDrawer' | 'chatCommands' | 'clearActiveCommand'>;
+  'openConversationContextDrawer' | 'panelOpen' | 'chatCommands' | 'clearActiveCommand'>;
 
-function ConversationHeader({ conversation, selectedConversationId, status, navigate, openConversationContextDrawer, chatCommands = [], clearActiveCommand }: ConversationHeaderProps) {
+function ConversationHeader({ conversation, selectedConversationId, status, navigate, openConversationContextDrawer, panelOpen, chatCommands = [], clearActiveCommand }: ConversationHeaderProps) {
   const { t } = useI18n();
   const activeCommandIds = Array.isArray(conversation?.active_command_ids) && conversation.active_command_ids.length
     ? conversation.active_command_ids
@@ -103,7 +109,7 @@ function ConversationHeader({ conversation, selectedConversationId, status, navi
             </Badge>
           );
         })}
-        <Button type="button" variant="ghost" size="icon" className="chat-header-button chat-context-button" aria-label={t('대화 흐름 열기')} onClick={openConversationContextDrawer}>☰</Button>
+        <Button type="button" variant="ghost" size="icon" className="chat-header-button chat-context-button" aria-label={t(panelOpen ? '대화 정보 닫기' : '대화 흐름 열기')} aria-expanded={panelOpen} onClick={openConversationContextDrawer}>☰</Button>
       </div>
     </header>
   );

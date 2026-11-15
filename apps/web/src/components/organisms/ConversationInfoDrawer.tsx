@@ -1,5 +1,5 @@
 import { WebpImage } from '../atoms/WebpImage';
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { avatarUrlFor } from '../../utils/assets';
 import { useUiStore } from '../../stores/uiStore';
 import { Button } from '../atoms';
@@ -22,10 +22,15 @@ type SceneContext = Record<string, unknown> & { summary?: string; relationship_a
 type MemoryItem = Record<string, unknown> & { id?: string; character_id?: string; memory_type?: string; importance?: number; content?: string };
 type ConversationContext = { scene?: SceneContext; memories?: MemoryItem[] };
 type UserMemoryDraft = { content?: string; character_id?: string; importance?: number; [key: string]: unknown };
-type DrawerTab = 'manage' | 'state' | 'battle' | 'memory';
+export type DrawerTab = 'manage' | 'state' | 'battle' | 'memory' | 'settings';
 
 export type ConversationInfoDrawerProps = {
   open: boolean;
+  docked?: boolean;
+  settingsContent?: ReactNode;
+  feedbackContent?: ReactNode;
+  activeTab?: DrawerTab;
+  onTabChange?: (tab: DrawerTab) => void;
   onClose?: () => void;
   context?: ConversationContext | null;
   loading?: boolean;
@@ -47,12 +52,56 @@ export type ConversationInfoDrawerProps = {
   busy?: boolean;
 };
 
-export function ConversationInfoDrawer({ open, onClose, context, loading, conversation, participants, characters, participantName, onRenameConversation, onInviteCharacter, onRemoveCharacter, onUpdateCharacterRole, battleState, onUpdateSceneSummary, userMemoryDraft, onUserMemoryDraftChange, onCreateUserMemory, onUpdateMemory, onDeleteMemory, busy = false }: ConversationInfoDrawerProps) {
+export function ConversationInfoDrawer({ open, docked = false, settingsContent, feedbackContent, activeTab, onTabChange, onClose, context, loading, conversation, participants, characters, participantName, onRenameConversation, onInviteCharacter, onRemoveCharacter, onUpdateCharacterRole, battleState, onUpdateSceneSummary, userMemoryDraft, onUserMemoryDraftChange, onCreateUserMemory, onUpdateMemory, onDeleteMemory, busy = false }: ConversationInfoDrawerProps) {
   const { locale, t } = useI18n();
   const theme = useUiStore((state) => state.theme);
   const [titleDraft, setTitleDraft] = useState('');
   const [inviteCharacterId, setInviteCharacterId] = useState('');
-  const [activeDrawerTab, setActiveDrawerTab] = useState<DrawerTab>('manage');
+  const [localTab, setLocalTab] = useState<DrawerTab>('manage');
+  const requestedTab = activeTab ?? localTab;
+  const activeDrawerTab = (requestedTab === 'settings' && !settingsContent) || (requestedTab === 'battle' && conversation?.genre_mode !== 'battle') ? 'manage' : requestedTab;
+  const setActiveDrawerTab = (tab: DrawerTab) => { setLocalTab(tab); onTabChange?.(tab); };
+  const panelRef = useRef<HTMLElement | null>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (!open || docked || !panel) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const inerted: Array<[HTMLElement, boolean]> = [];
+    // Inert only existing background branches, leaving later nested dialogs usable.
+    let branch: HTMLElement = panel;
+    while (branch.parentElement && branch !== document.body) {
+      for (const sibling of Array.from(branch.parentElement.children)) {
+        if (sibling instanceof HTMLElement && sibling !== branch && !sibling.classList.contains('context-drawer-backdrop')) {
+          inerted.push([sibling, sibling.inert]); sibling.inert = true;
+        }
+      }
+      branch = branch.parentElement;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const focusables = () => Array.from(panel.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], [tabindex]')).filter(node => node.tabIndex >= 0 && !node.matches(':disabled') && node.getClientRects().length > 0);
+    (focusables()[0] || panel).focus();
+    const keydown = (event: KeyboardEvent) => {
+      // SweetAlert / nested primitive dialogs own their own keyboard lifecycle.
+      if (document.querySelector('.swal2-container, [data-radix-popper-content-wrapper]')) return;
+      if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); closeRef.current?.(); }
+      if (event.key === 'Tab') {
+        const nodes = focusables();
+        const first = nodes[0] || panel; const last = nodes[nodes.length - 1] || panel;
+        if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && (document.activeElement === last || !panel.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
+      }
+    };
+    document.addEventListener('keydown', keydown, true);
+    return () => {
+      document.removeEventListener('keydown', keydown, true);
+      inerted.forEach(([node, wasInert]) => { node.inert = wasInert; });
+      document.body.style.overflow = previousOverflow;
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [open, docked]);
   const [editingMemoryId, setEditingMemoryId] = useState('');
   const [memoryEditDraft, setMemoryEditDraft] = useState<UserMemoryDraft>({});
   const [editingSceneSummary, setEditingSceneSummary] = useState(false);
@@ -61,11 +110,11 @@ export function ConversationInfoDrawer({ open, onClose, context, loading, conver
     if (open) setTitleDraft(conversation?.title || '');
   }, [open, conversation?.id, conversation?.title]);
   useEffect(() => {
-    if (open) setActiveDrawerTab('manage');
+    setLocalTab('manage');
     setEditingMemoryId('');
     setMemoryEditDraft({});
     setEditingSceneSummary(false);
-  }, [open, conversation?.id]);
+  }, [conversation?.id]);
   useEffect(() => {
     if (!editingSceneSummary) setSceneSummaryDraft(context?.scene?.summary || '');
   }, [context?.scene?.summary, editingSceneSummary]);
@@ -83,7 +132,7 @@ export function ConversationInfoDrawer({ open, onClose, context, loading, conver
   const relationshipArchetypeLabel = RELATIONSHIP_ARCHETYPE_PRESETS.find((preset) => preset.key === String(scene?.relationship_archetype || ''))?.label ? t(RELATIONSHIP_ARCHETYPE_PRESETS.find((preset) => preset.key === String(scene?.relationship_archetype || ''))!.label as UiMessageKey) : t('기본 관계');
   const isBattleConversation = conversation?.genre_mode === 'battle';
   const drawerTabs: Array<[DrawerTab, string]> = [
-    ['manage', t('관리')], ['state', t('상태')], ...(isBattleConversation ? ([['battle', t('배틀')]] as Array<[DrawerTab, string]>) : []), ['memory', t('유저노트')],
+    ['manage', t('관리')], ['state', t('상태')], ...(isBattleConversation ? ([['battle', t('배틀')]] as Array<[DrawerTab, string]>) : []), ['memory', t('유저노트')], ...(settingsContent ? ([['settings', t('채팅 설정')]] as Array<[DrawerTab, string]>) : []),
   ];
   const submitTitle = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -173,13 +222,14 @@ export function ConversationInfoDrawer({ open, onClose, context, loading, conver
       return <div className="context-card" key={`memory-${participant.id}`}><strong>{participantName(participant.id)}</strong>{items.length ? <ul className="memory-list">{items.map(renderMemoryItem)}</ul> : <p className="context-muted">{t('저장된 캐릭터별 유저노트 없음')}</p>}</div>;
     })}</section>
   </div>;
-  const panels: Record<DrawerTab, ReactNode> = { manage: managementPanel, state: statePanel, battle: battlePanel, memory: memoryPanel };
+  const panels: Record<DrawerTab, ReactNode> = { manage: managementPanel, state: statePanel, battle: battlePanel, memory: memoryPanel, settings: settingsContent };
   if (!open) return null;
   return <>
-    <button type="button" aria-label={t('대화 정보 닫기')} className="context-drawer-backdrop" onClick={onClose}></button>
-    <aside className="context-drawer open" data-modernized="대화 정보 드로어 design-system primitive marker">
+    {!docked && <button type="button" tabIndex={-1} aria-hidden="true" className="context-drawer-backdrop" onClick={onClose}></button>}
+    <aside ref={panelRef} tabIndex={-1} role={docked ? undefined : "dialog"} aria-modal={docked ? undefined : true} aria-label={t('대화방 정보')} className={`context-drawer open${docked ? ' context-drawer--docked' : ''}`} data-modernized="대화 정보 드로어 design-system primitive marker">
       <header className="context-drawer-head"><div><strong>{t('대화방 정보')}</strong><small>{conversation?.title || conversation?.id || t('현재 대화방')}</small></div><Button type="button" variant="ghost" size="icon" className="drawer-close" aria-label={t('대화 정보 닫기')} onClick={onClose}>×</Button></header>
       <div className="context-drawer-body">
+        {feedbackContent}
         {loading && <p className="context-muted">{t('불러오는 중…')}</p>}
         <nav className="drawer-tab-bar" aria-label={t('대화방 정보 영역')}>{drawerTabs.map(([key, label]) => <Button type="button" key={key} variant={activeDrawerTab === key ? 'default' : 'ghost'} size="sm" aria-pressed={activeDrawerTab === key} onClick={() => setActiveDrawerTab(key)}>{label}</Button>)}</nav>
         <div className="drawer-tab-content">

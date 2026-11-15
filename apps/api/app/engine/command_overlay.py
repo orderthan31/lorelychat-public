@@ -73,14 +73,14 @@ def build_plan(commands, protocol=None):
     return plan
 
 
-def instructions(plan, protocol):
+def instructions(plan, protocol, *, include_world=True):
     if not plan or not plan.eligible:
         return ''
     lines = [
         'Auxiliary command panels: keep the complete primary scene and its existing speaker/body grammar unchanged. '
         'Never shorten the primary prose to fit panels. Panels are independent command-owned UI, not character speech. '
         'Use only public events in the primary turn, never private <t> thoughts. '
-        'Reuse the already supplied scene/world/cast and source turn; do not repeat those inputs or character dialogue. '
+        f'Reuse the already supplied {"scene/world/cast" if include_world else "scene/cast"} and source turn; do not repeat those inputs or character dialogue. '
         'Insertion first/last is a UI position, not a scene start/end. Follow each explicit command constraint below.'
     ]
     if protocol == 'tagged_text':
@@ -91,7 +91,8 @@ def instructions(plan, protocol):
         lines.append('Compact extension: {"replies":[existing who/text/emotion bubbles],"panels":[{"key":"K1","blocks":[typed blocks]}]}. '
                      'replies MUST be first, panels last. No content/action/thought fields in this extension. Each exact alias occurs once.')
     for alias, command in plan.eligible.items():
-        lines.append(f'{alias}: insert={command.postprocess_target}; context={",".join(command.postprocess_context_options or [])}; '
+        context_options = [item for item in (command.postprocess_context_options or []) if include_world or item != 'world']
+        lines.append(f'{alias}: insert={command.postprocess_target}; context={",".join(context_options)}; '
                      f'constraint={command.postprocess_prompt or command.prompt}')
         if protocol == 'free_body_json':
             lines.append('Block shape examples (choose as needed): ' + json.dumps(block_examples(command.postprocess_block_types), ensure_ascii=False))

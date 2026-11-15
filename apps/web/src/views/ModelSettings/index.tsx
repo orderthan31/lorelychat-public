@@ -1,3 +1,4 @@
+import './settings-ux.scss';
 import { useEffect, useMemo, useState } from 'react';
 import { VertexFields, VertexAccountEditor } from './VertexFields';
 import { validVertexConfiguration, vertexPayload, type VertexDraft } from './vertex';
@@ -11,6 +12,7 @@ import { DecisionCapabilityHint } from '../../components/organisms/RuntimeSettin
 import { useI18n } from '../../i18n/I18nProvider';
 import { formatUiCount } from '../../i18n/core';
 import type { Translator, UiMessageKey } from '../../i18n/core';
+import { useMediaMatch } from '../../hooks/useMediaMatch';
 
 export type ModelSettingsViewProps = {
   runtimeDefaultSetting?: RuntimeSettingValue;
@@ -121,6 +123,8 @@ function ManualCapabilityEditor({ option, disabled, save }: { option: ModelOptio
 
 export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSetting, saveRuntimeDefaultSetting, refetchRuntimeDefaultSetting, busy = false }: ModelSettingsViewProps) {
   const { locale, t } = useI18n();
+  const wideFilters = useMediaMatch('(min-width: 960px)');
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [accounts, setAccounts] = useState<ProviderAccount[]>([]);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT);
@@ -154,9 +158,6 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
     return map;
   }, [accounts]);
 
-  const enabledChatCount = modelOptions.filter((option) => option.enabled && option.supports_chat).length;
-  const enabledCompressionCount = modelOptions.filter((option) => option.enabled && option.supports_compression).length;
-  const enabledTtsCount = modelOptions.filter((option) => option.enabled && option.supports_tts).length;
   const filteredModelOptions = useMemo(() => {
     const query = modelQuery.trim().toLowerCase();
     return modelOptions.filter((option) => {
@@ -432,29 +433,18 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
   }
 
   return <section className="panel page model-settings-page grid gap-4" data-page="model-settings">
-    <header className="grid gap-2 border-b border-border pb-4">
-      <h1 className="m-0 text-xl font-bold tracking-tight text-foreground">{t('Provider / 모델 설정')}</h1>
-      <p className="m-0 text-xs leading-relaxed text-muted-foreground">{t('API Key는 저장 후 다시 표시되지 않습니다. 모델 실행에 필요한 대화 내용은 선택한 Provider로 전송됩니다.')}</p>
-      {message ? <p className="context-muted">{message}</p> : null}
+    <header className="settings-toolbar">
+      <h1 className="sr-only">{t('Provider / 모델 설정')}</h1>
+      <details className="model-help"><summary>{t('인증과 데이터 전송')}</summary><p>{t('API Key는 저장 후 다시 표시되지 않습니다. 모델 실행에 필요한 대화 내용은 선택한 Provider로 전송됩니다.')}</p></details>
+      {message ? <p className="context-muted" role="status" aria-live="polite">{message}</p> : null}
     </header>
 
-    <Tabs value={activeSection} onValueChange={selectSection} className="grid min-w-0 gap-3 min-[960px]:grid-cols-[230px_minmax(0,1fr)] min-[960px]:items-start">
-      <div className="sticky top-[58px] z-20 -mx-1 overflow-hidden border-b border-border bg-background/92 px-1 py-1.5 backdrop-blur min-[960px]:top-[72px] min-[960px]:mx-0 min-[960px]:border-b-0 min-[960px]:border-r min-[960px]:bg-transparent min-[960px]:pr-3">
-        <TabsList aria-label={t('Provider / 모델 설정')} className="w-full justify-start gap-1 overflow-x-auto rounded-xl bg-card/90 p-1 min-[960px]:grid min-[960px]:overflow-visible min-[960px]:bg-transparent min-[960px]:p-0">
-          <TabsTrigger value="runtime" className="min-w-max justify-start gap-2 px-3 min-[960px]:min-w-0 min-[960px]:px-3 min-[960px]:py-3">
-            <SlidersHorizontal className="size-4 shrink-0" aria-hidden="true" />
-            <span className="grid min-w-0 text-left"><strong>{t('모델 설정')}</strong><small className="hidden font-medium text-muted-foreground min-[960px]:block">{t('기본 채팅/압축/TTS')}</small></span>
-          </TabsTrigger>
-          <TabsTrigger value="providers" className="min-w-max justify-start gap-2 px-3 min-[960px]:min-w-0 min-[960px]:px-3 min-[960px]:py-3">
-            <KeyRound className="size-4 shrink-0" aria-hidden="true" />
-            <span className="grid min-w-0 text-left"><strong>{t('Provider 관리')}</strong><small className="hidden font-medium text-muted-foreground min-[960px]:block">{formatUiCount(accounts.length, 'accounts', locale)}</small></span>
-          </TabsTrigger>
-          <TabsTrigger value="models" className="min-w-max justify-start gap-2 px-3 min-[960px]:min-w-0 min-[960px]:px-3 min-[960px]:py-3">
-            <Cpu className="size-4 shrink-0" aria-hidden="true" />
-            <span className="grid min-w-0 text-left"><strong>{t('활성 모델 목록')}</strong><small className="hidden font-medium text-muted-foreground min-[960px]:block">{formatUiCount(modelOptions.length, 'items', locale)}</small></span>
-          </TabsTrigger>
-        </TabsList>
-      </div>
+    <Tabs value={activeSection} onValueChange={selectSection} className="settings-tabs">
+      <TabsList aria-label={t('Provider / 모델 설정')} className="settings-tab-list">
+        <TabsTrigger value="runtime"><SlidersHorizontal aria-hidden="true" />{t('모델 설정')}</TabsTrigger>
+        <TabsTrigger value="providers"><KeyRound aria-hidden="true" />{t('Provider 관리')}</TabsTrigger>
+        <TabsTrigger value="models"><Cpu aria-hidden="true" />{t('활성 모델 목록')}</TabsTrigger>
+      </TabsList>
 
       <div className="min-w-0">
         <TabsContent value="runtime" data-settings-section="runtime">
@@ -463,15 +453,31 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
 
         <TabsContent value="providers" data-settings-section="providers">
     <section className="grid gap-4" data-provider-list>
-      <header><h2 className="m-0 text-lg font-bold text-foreground">{t('Provider 관리')}</h2></header>
+          <details className="group settings-add" data-provider-add>
+            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('Provider 계정 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
+            <div className="mt-3 grid gap-2.5">
+              <Field label={t('Provider')}><Select value={draft.provider_type} onChange={(e) => setDraft((current) => ({ ...current, provider_type: e.target.value as ProviderType, api_key: '' }))}>{PROVIDERS.map((provider) => <option key={provider.type} value={provider.type}>{provider.label}</option>)}</Select></Field>
+              {draft.provider_type === 'xai' ? <div className="border-l-2 border-accent px-3 text-sm text-muted-foreground" data-xai-provider-help>
+                {t('xAI 공식 API(')}<code>https://api.x.ai/v1</code>{t(')에서 Grok 모델 목록을 불러옵니다. 계정 저장 후 사용할 모델만 활성화하면 됩니다.')}
+              </div> : null}
+              <Field label={t('별칭')}><Input value={draft.alias} placeholder={draft.provider_type === 'vertex_ai' ? 'Vertex AI' : t(draft.provider_type === 'xai' ? '개인 Grok' : '개인 Gemini')} onChange={(e) => setDraft((current) => ({ ...current, alias: e.target.value }))} /></Field>
+              {draft.provider_type === 'openai_compatible' ? <>
+                <Field label={t('Preset')}><Select value={draft.preset} onChange={(e) => setDraft((current) => ({ ...current, preset: e.target.value }))}><option value="">{t('Custom')}</option><option value="local_gemma">Local Gemma</option><option value="lm_studio">LM Studio</option><option value="ollama">Ollama</option><option value="vllm">vLLM</option></Select></Field>
+                <Field label={t('Base URL')}><Input value={draft.base_url} placeholder="http://127.0.0.1:1234/v1" onChange={(e) => setDraft((current) => ({ ...current, base_url: e.target.value }))} /></Field>
+              </> : null}
+              {draft.provider_type === 'vertex_ai' ? <VertexFields value={draft} disabled={loading} onChange={patch => setDraft(current => ({ ...current, ...patch }))} /> : <Field label={t('API Key')}><Input type="password" value={draft.api_key} placeholder={draft.provider_type === 'openai_compatible' ? t('선택 사항') : draft.provider_type === 'xai' ? t('xAI API Key') : t('저장 후 다시 표시되지 않음')} onChange={(e) => setDraft((current) => ({ ...current, api_key: e.target.value }))} /></Field>}
+              <Button type="button" disabled={loading || (draft.provider_type === 'vertex_ai' && !validVertexConfiguration(draft))} onClick={saveProviderAccount}><Save className="size-4" aria-hidden="true" />{t(loading ? '처리 중...' : 'Provider 저장')}</Button>
+            </div>
+          </details>
         <div className="grid gap-4">
           <div className="divide-y divide-border border-y border-border">
-            {PROVIDERS.map((provider) => {
+            {!accounts.length && <p className="context-muted py-3">{t('아직 등록된 계정이 없습니다.')}</p>}
+            {PROVIDERS.filter((provider) => accountsByType.get(provider.type)?.length).map((provider) => {
               const providerAccounts = accountsByType.get(provider.type) || [];
               return <section key={provider.type} className="grid gap-2 py-4">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <h3 className="m-0 text-base font-black text-foreground">{provider.label}</h3>
-                  {statusBadge(t, providerAccounts[0])}
+
                 </div>
                 <div className="mt-3 grid gap-2">
                   {providerAccounts.length ? providerAccounts.map((account) => {
@@ -479,8 +485,8 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
                     return <article key={account.id} className="grid gap-2 border-t border-border py-3 first:border-t-0 first:pt-0" data-provider-account-card>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="min-w-0">
-                        <p className="m-0 font-bold text-foreground">{account.alias}</p>
-                        <p className="context-muted">{t(account.provider_type === 'vertex_ai' ? '인증 방식' : 'Key')} {account.provider_type === 'vertex_ai' ? (account.vertex_auth_mode === 'adc' ? t('서버 ADC') : t(account.api_key_status === 'set' ? '서비스 계정 JSON 등록됨' : '미등록')) : account.api_key_status === 'set' ? account.api_key_hint || t('등록됨') : t('미등록')} · {t('활성')} {account.active_model_count || 0}</p>
+                        <div className="flex flex-wrap items-center gap-2"><p className="m-0 font-bold text-foreground">{account.alias}</p>{statusBadge(t, account)}</div>
+                        {(account.provider_type === 'vertex_ai' || account.api_key_hint) && <p className="context-muted">{t(account.provider_type === 'vertex_ai' ? '인증 방식' : 'Key')} {account.provider_type === 'vertex_ai' ? (account.vertex_auth_mode === 'adc' ? t('서버 ADC') : t(account.api_key_status === 'set' ? '서비스 계정 JSON 등록됨' : '미등록')) : account.api_key_status === 'set' ? account.api_key_hint || t('등록됨') : t('미등록')}</p>}
                       </div>
                       <Button type="button" size="sm" variant="secondary" disabled={loading || !account.configured} data-provider-refresh-account={account.id} onClick={() => syncModels(account)}>
                         <RefreshCw className={`size-3.5 ${syncingAccountId === account.id ? 'animate-spin' : ''}`} aria-hidden="true" />
@@ -515,35 +521,33 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
             })}
           </div>
 
-          <details className="group border-t border-border pt-3">
-            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('Provider 계정 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
-            <div className="mt-3 grid gap-2.5">
-              <Field label={t('Provider')}><Select value={draft.provider_type} onChange={(e) => setDraft((current) => ({ ...current, provider_type: e.target.value as ProviderType, api_key: '' }))}>{PROVIDERS.map((provider) => <option key={provider.type} value={provider.type}>{provider.label}</option>)}</Select></Field>
-              {draft.provider_type === 'xai' ? <div className="border-l-2 border-accent px-3 text-sm text-muted-foreground" data-xai-provider-help>
-                {t('xAI 공식 API(')}<code>https://api.x.ai/v1</code>{t(')에서 Grok 모델 목록을 불러옵니다. 계정 저장 후 사용할 모델만 활성화하면 됩니다.')}
-              </div> : null}
-              <Field label={t('별칭')}><Input value={draft.alias} placeholder={draft.provider_type === 'vertex_ai' ? 'Vertex AI' : t(draft.provider_type === 'xai' ? '개인 Grok' : '개인 Gemini')} onChange={(e) => setDraft((current) => ({ ...current, alias: e.target.value }))} /></Field>
-              {draft.provider_type === 'openai_compatible' ? <>
-                <Field label={t('Preset')}><Select value={draft.preset} onChange={(e) => setDraft((current) => ({ ...current, preset: e.target.value }))}><option value="">{t('Custom')}</option><option value="local_gemma">Local Gemma</option><option value="lm_studio">LM Studio</option><option value="ollama">Ollama</option><option value="vllm">vLLM</option></Select></Field>
-                <Field label={t('Base URL')}><Input value={draft.base_url} placeholder="http://127.0.0.1:1234/v1" onChange={(e) => setDraft((current) => ({ ...current, base_url: e.target.value }))} /></Field>
-              </> : null}
-              {draft.provider_type === 'vertex_ai' ? <VertexFields value={draft} disabled={loading} onChange={patch => setDraft(current => ({ ...current, ...patch }))} /> : <Field label={t('API Key')}><Input type="password" value={draft.api_key} placeholder={draft.provider_type === 'openai_compatible' ? t('선택 사항') : draft.provider_type === 'xai' ? t('xAI API Key') : t('저장 후 다시 표시되지 않음')} onChange={(e) => setDraft((current) => ({ ...current, api_key: e.target.value }))} /></Field>}
-              <Button type="button" disabled={loading || (draft.provider_type === 'vertex_ai' && !validVertexConfiguration(draft))} onClick={saveProviderAccount}><Save className="size-4" aria-hidden="true" />{t(loading ? '처리 중...' : 'Provider 저장')}</Button>
-            </div>
-          </details>
+
         </div>
     </section>
         </TabsContent>
 
         <TabsContent value="models" data-settings-section="models">
     <section className="grid gap-3" data-model-list>
-      <header className="flex flex-wrap items-center justify-between gap-3"><h2 className="m-0 text-lg font-bold text-foreground">{t('활성 모델 목록')}</h2><span className="text-xs tabular-nums text-muted-foreground">{filteredModelOptions.length} / {modelOptions.length}</span></header>
-        <div className="grid gap-2 border-b border-border pb-3 min-[520px]:grid-cols-2 min-[920px]:grid-cols-[minmax(220px,1fr)_minmax(160px,.7fr)_minmax(150px,.6fr)_minmax(150px,.6fr)_100px]">
-          <Field className="min-[520px]:col-span-2 min-[920px]:col-span-1" label={t('검색')}><Input value={modelQuery} placeholder={t('모델명, provider, 계정')} onChange={(e) => setModelQuery(e.target.value)} /></Field>
+        <details className="group settings-add" data-model-add>
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('수동 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
+          <div className="model-manual-fields">
+            <Field label={t('Provider 계정')}><Select value={selectedAccountId} onChange={(e) => { setSelectedAccountId(e.target.value); setManualCapability('chat'); }}><option value="">{t('계정 선택')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.alias}</option>)}</Select></Field>
+            <Field label={t('용도')}><Select value={manualCapability} onChange={(e) => setManualCapability(e.target.value as typeof manualCapability)}><option value="chat">{t('채팅')} · {t('압축')}</option>{accounts.find(account => account.id === selectedAccountId)?.provider_type !== 'vertex_ai' && <option value="decision">{t('의사결정')}</option>}</Select></Field>
+            {manualCapability === 'decision' && <CapabilityEditor modalities={manualInputs} mimes={manualMimes} disabled={loading} onChange={(m, f) => { setManualInputs(m); setManualMimes(f); setManualInputsEdited(true); }} />}
+            <Field label={t('모델 ID')}><Input value={manualModel} placeholder="gemma-local" onChange={(e) => setManualModel(e.target.value)} /></Field>
+            <Field label={t('표시명')}><Input value={manualLabel} placeholder="Local Gemma" onChange={(e) => setManualLabel(e.target.value)} /></Field>
+            <Button type="button" variant="secondary" disabled={loading || (manualCapability === 'decision' && manualInputsEdited && accounts.find((account) => account.id === selectedAccountId)?.provider_type !== 'openrouter' && !!manualInputs?.includes('image') && !manualMimes?.length)} onClick={createManualModel}><Plus className="size-4" aria-hidden="true" />{t('수동 추가')}</Button>
+          </div>
+        </details>
+        <div className="model-search-toolbar">
+          <Field label={t('검색')}><Input value={modelQuery} placeholder={t('모델명, provider, 계정')} onChange={(e) => setModelQuery(e.target.value)} /></Field>
+          {!wideFilters && <Button type="button" variant="ghost" data-model-filter-toggle aria-expanded={filtersOpen} aria-controls="model-filter-fields" onClick={() => setFiltersOpen(open => !open)}>{t('필터')}</Button>}
+        </div>
+        <div className="model-filter-fields" id="model-filter-fields" data-model-filter-fields hidden={!wideFilters && !filtersOpen}>
           <Field label={t('Provider 계정')}><Select value={modelProviderFilter} onChange={(e) => setModelProviderFilter(e.target.value)}><option value="">{t('전체 계정')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.alias}</option>)}</Select></Field>
           <Field label={t('용도')}><Select value={modelCapabilityFilter} onChange={(e) => setModelCapabilityFilter(e.target.value as typeof modelCapabilityFilter)}><option value="runtime">{t('런타임 가능')}</option><option value="chat">{t('채팅')}</option><option value="compression">{t('압축')}</option><option value="tts">{t('TTS')}</option><option value="decision">{t('의사결정')}</option><option value="none">{t('런타임 제외')}</option><option value="all">{t('전체')}</option></Select></Field>
           <Field label={t('상태')}><Select value={modelStatusFilter} onChange={(e) => setModelStatusFilter(e.target.value as typeof modelStatusFilter)}><option value="all">{t('전체')}</option><option value="enabled">{t('활성')}</option><option value="disabled">{t('비활성')}</option></Select></Field>
-          <Field label={t('페이지')}><Select value={String(modelPageSize)} onChange={(e) => setModelPageSize(Number(e.target.value))}>{MODEL_PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{formatUiCount(size, 'items', locale)}</option>)}</Select></Field>
+
         </div>
         <div className="divide-y divide-border border-y border-border">
           {visibleModelOptions.length ? visibleModelOptions.map((option) => <div key={option.id} className="grid min-h-[72px] grid-cols-[minmax(0,1fr)_48px] items-center gap-2 py-2" data-model-row>
@@ -551,15 +555,15 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
               <div className="grid min-w-0 gap-0.5">
                 <h3 className="m-0 min-w-0 truncate text-sm font-bold leading-5 text-foreground" title={option.display_label}>{option.display_label}</h3>
                 <p className="m-0 truncate font-mono text-[11px] leading-4 text-muted-foreground" title={option.model}>{option.model}</p>
-                <p className="m-0 truncate text-[11px] leading-4 text-muted-foreground">{[option.supports_chat ? t('채팅') : '', option.supports_compression ? t('압축') : '', option.supports_tts ? t('TTS') : '', option.supports_decision ? t('의사결정') : '', !option.supports_chat && !option.supports_compression && !option.supports_tts && !option.supports_decision ? t('런타임 제외') : '', option.model_family, option.source].filter(Boolean).join(' · ')}</p>
-                {option.supports_decision && <DecisionCapabilityHint option={option} />}
-                {option.supports_decision && <ManualCapabilityEditor option={option} disabled={loading} save={(m, f) => saveCapabilities(option, m, f)} />}
+                <p className="m-0 truncate text-[11px] leading-4 text-muted-foreground">{[option.supports_chat ? t('채팅') : '', option.supports_compression ? t('압축') : '', option.supports_tts ? t('TTS') : '', option.supports_decision ? t('의사결정') : '', !option.supports_chat && !option.supports_compression && !option.supports_tts && !option.supports_decision ? t('런타임 제외') : ''].filter(Boolean).join(' · ')}</p>
+                {option.supports_decision && <details className="model-help"><summary>{t('이미지 지원 정보')}</summary><DecisionCapabilityHint option={option} /><ManualCapabilityEditor option={option} disabled={loading} save={(m, f) => saveCapabilities(option, m, f)} /></details>}
               </div>
             </div>
             {option.source === 'manual' && ['google', 'openrouter', 'openai', 'openai_compatible'].includes(option.provider_type) ? <Switch compact checked={!!option.supports_decision} disabled={loading} label={t('의사결정')} onChange={() => toggleModelOption(option, true)} /> : null}
             <Switch compact checked={!!option.enabled} disabled={loading} aria-label={`${option.display_label} ${t(option.enabled ? '비활성화' : '활성화')}`} title={t(option.enabled ? '비활성화' : '활성화')} onChange={() => toggleModelOption(option)} />
           </div>) : <div className="py-8 text-center text-sm text-muted-foreground">{t(modelOptions.length ? '조건에 맞는 모델이 없습니다.' : 'Provider 계정을 저장한 뒤 모델 목록을 불러오면 여기에 표시됩니다.')}</div>}
         </div>
+        <div className="model-page-size"><Field label={t('표시 개수')}><Select value={String(modelPageSize)} onChange={(e) => setModelPageSize(Number(e.target.value))}>{MODEL_PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{formatUiCount(size, 'items', locale)}</option>)}</Select></Field></div>
         {filteredModelOptions.length ? <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
           <p className="context-muted">{t('페이지')} {Math.min(modelPage, modelPageCount)} / {modelPageCount}</p>
           <div className="flex gap-2">
@@ -569,17 +573,7 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
         </div>
           : null}
 
-        <details className="group mt-1 border-t border-border pt-2">
-          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 font-bold text-foreground [&::-webkit-details-marker]:hidden"><span className="flex items-center gap-2"><Plus className="size-4" aria-hidden="true" />{t('수동 추가')}</span><ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" /></summary>
-          <div className="mt-2 grid gap-2.5 min-[760px]:grid-cols-[minmax(160px,.7fr)_minmax(130px,.55fr)_minmax(0,1fr)_minmax(0,1fr)_auto] min-[760px]:items-end">
-            <Field label={t('Provider 계정')}><Select value={selectedAccountId} onChange={(e) => { setSelectedAccountId(e.target.value); setManualCapability('chat'); }}><option value="">{t('계정 선택')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.alias}</option>)}</Select></Field>
-            <Field label={t('용도')}><Select value={manualCapability} onChange={(e) => setManualCapability(e.target.value as typeof manualCapability)}><option value="chat">{t('채팅')} · {t('압축')}</option>{accounts.find(account => account.id === selectedAccountId)?.provider_type !== 'vertex_ai' && <option value="decision">{t('의사결정')}</option>}</Select></Field>
-            {manualCapability === 'decision' && <CapabilityEditor modalities={manualInputs} mimes={manualMimes} disabled={loading} onChange={(m, f) => { setManualInputs(m); setManualMimes(f); setManualInputsEdited(true); }} />}
-            <Field label={t('모델 ID')}><Input value={manualModel} placeholder="gemma-local" onChange={(e) => setManualModel(e.target.value)} /></Field>
-            <Field label={t('표시명')}><Input value={manualLabel} placeholder="Local Gemma" onChange={(e) => setManualLabel(e.target.value)} /></Field>
-            <Button type="button" variant="secondary" disabled={loading || (manualCapability === 'decision' && manualInputsEdited && accounts.find((account) => account.id === selectedAccountId)?.provider_type !== 'openrouter' && !!manualInputs?.includes('image') && !manualMimes?.length)} onClick={createManualModel}><Plus className="size-4" aria-hidden="true" />{t('수동 추가')}</Button>
-          </div>
-        </details>
+
     </section>
         </TabsContent>
       </div>

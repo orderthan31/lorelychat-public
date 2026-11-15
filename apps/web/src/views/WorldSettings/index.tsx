@@ -1,3 +1,4 @@
+import { EditorActionBar } from '../../components/molecules/EditorActionBar';
 import { WebpImage } from '../../components/atoms/WebpImage';
 import { useEffect, useState, useTransition } from 'react';
 import { useSuspenseQuery } from '@tanstack/react-query';
@@ -91,7 +92,7 @@ export function WorldSettingsListView({ worldSettings = [], navigate, loadWorldS
         key={world.id || world.title}
         title={world.title || t('이름 없는 세계관')}
         description={world.description || world.world_seed || t('설명 없음')}
-        meta={<><span>{t(world.enabled === false ? '비활성' : '활성')}</span><span>·</span><span>{t(genreModeLabel(world.genre_mode) as UiMessageKey)}</span></>}
+        meta={<><span>{t(genreModeLabel(world.genre_mode) as UiMessageKey)}</span>{world.enabled === false && <span>{t('비활성')}</span>}</>}
         media={<WebpImage className={`h-full w-full object-cover ${world.thumbnail_url ? '' : 'object-contain bg-surface-muted p-1.5'}`} src={world.thumbnail_url ? conversationThumbnailUrlFor(world, theme) : lorelyAppIconUrlForTheme(theme)} alt={t('세계관 썸네일')} />}
         openLabel={formatNamedAction(world.title || t('세계관'), 'open', locale)}
         onOpen={() => navigate(`/world-settings/${world.id}`)}
@@ -134,9 +135,20 @@ export function WorldSettingsDetailView({ route, worldSettings = [], loading = f
   }, [isNew, route.id, current?.id, draft.id, setWorldSettingDraft]);
 
   if (!isNew && (!current || draft.id !== route.id)) return <section role={loadError || (!loading && !current) ? 'alert' : 'status'}><p>{loadError || (loading || current ? t('불러오는 중…') : t('세계관을 찾을 수 없습니다.'))}</p><Button onClick={onRetry}>{t('재시도')}</Button><Button onClick={() => navigate('/world-settings')}>{t('목록으로')}</Button></section>;
-  return <section className="panel page grid gap-3" data-modernized="세계관 상세 separated marker">
+  return <section className="panel page grid gap-3 editor-surface" data-modernized="세계관 상세 separated marker">
+    <EditorActionBar label={t('페이지 액션')}>
+      <Button type="button" disabled={busy || !canSave} onClick={saveWorldSetting}>{t(busy ? '저장 중…' : '저장')}</Button>
+      {draft.id && <Button type="button" variant="destructive" onClick={() => deleteWorldSetting(draft)}>{t('삭제')}</Button>}
+    </EditorActionBar>
     <FormSection title={draft.id ? formatNamedAction(draft.title || t('세계관'), 'edit', locale) : t('새 세계관 등록')}>
+        <p className="context-muted">{t('세계관 이름과 세계관/규칙은 필수입니다.')}</p>
+        <div className="editor-columns">
+        <FormSection title={t('기본')}>
         <Field label={t('세계관 이름')}><Input value={draft.title || ''} onChange={(e) => updateDraft({ title: e.target.value })} placeholder={t('예: 사내 비밀 프로젝트실')} /></Field>
+        <Field label={t('설명')}><Input value={draft.description || ''} onChange={(e) => updateDraft({ description: e.target.value })} placeholder={t('목록에서 구분하기 위한 짧은 설명')} /></Field>
+        <GenreModeField value={draft.genre_mode || DEFAULT_GENRE_MODE} onChange={(value) => updateDraft({ genre_mode: value })} />
+        </FormSection>
+        <FormSection title={t('이미지')}>
         <div className="grid gap-3 sm:grid-cols-[148px_minmax(0,1fr)] sm:items-start">
           <div className="overflow-hidden rounded-xl border border-border bg-background">
             <div className="aspect-square w-full">
@@ -153,18 +165,19 @@ export function WorldSettingsDetailView({ route, worldSettings = [], loading = f
             <small className="text-xs leading-relaxed text-muted-foreground">{t('파일은 5MB 이하 jpg/png/webp/gif만 가능합니다. 업로드 성공 시 URL 입력칸에 자동 반영됩니다.')}</small>
           </div>
         </div>
-        <Field label={t('설명')}><Input value={draft.description || ''} onChange={(e) => updateDraft({ description: e.target.value })} placeholder={t('목록에서 구분하기 위한 짧은 설명')} /></Field>
-        <GenreModeField value={draft.genre_mode || DEFAULT_GENRE_MODE} onChange={(value) => updateDraft({ genre_mode: value })} />
+        </FormSection>
+        </div>
+        <FormSection title={t('첫 상황')}>
         <div className="grid two"><Field label={t('시작 장소')}><Input value={draft.location || ''} onChange={(e) => updateDraft({ location: e.target.value })} /></Field><Field label={t('시작 분위기')}><Input value={draft.mood || ''} onChange={(e) => updateDraft({ mood: e.target.value })} /></Field></div>
         <div className="grid two"><Field label={t('방 대화 톤')}><Select value={draft.tone_preset || ''} onChange={(e) => updateDraft({ tone_preset: e.target.value })}>{ROOM_TONE_PRESETS.map((preset) => <option key={preset.key || 'default'} value={preset.key}>{t(preset.label as UiMessageKey)} · {t(preset.hint as UiMessageKey)}</option>)}</Select></Field><Field label={t('관계 진행 타입')}><Select value={draft.relationship_archetype || ''} onChange={(e) => updateDraft({ relationship_archetype: e.target.value })}>{RELATIONSHIP_ARCHETYPE_PRESETS.map((preset) => <option key={preset.key || 'default'} value={preset.key}>{t(preset.label as UiMessageKey)} · {t(preset.hint as UiMessageKey)}</option>)}</Select></Field></div>
-        <TextareaWithExpand label={t('세계관/규칙')} rows={5} value={draft.world_seed || ''} onChange={(value) => updateDraft({ world_seed: value })} placeholder={t('방의 기본 전제, 세계 규칙, 분위기, 금지할 전개 등을 적어주세요.')} />
         <div className="grid two"><TextareaWithExpand label={t('첫 상황')} rows={3} value={draft.opening_scene || ''} onChange={(value) => updateDraft({ opening_scene: value })} placeholder={t('방 시작 장면')} /><TextareaWithExpand label={t('첫 대사')} rows={3} value={draft.opening_line || ''} onChange={(value) => updateDraft({ opening_line: value })} placeholder={t('첫 캐릭터 버블로 넣을 대사')} /></div>
+        </FormSection>
+        <FormSection title={t('세계관/규칙')}>
+        <TextareaWithExpand label={t('세계관/규칙')} rows={5} value={draft.world_seed || ''} onChange={(value) => updateDraft({ world_seed: value })} placeholder={t('방의 기본 전제, 세계 규칙, 분위기, 금지할 전개 등을 적어주세요.')} />
         <TextareaWithExpand label={t('주요 압축포인트')} rows={3} value={draft.compression_focus || ''} onChange={(value) => updateDraft({ compression_focus: value })} placeholder={t('압축 시 반드시 유지할 단서/관계 변화/장면 앵커')} />
         <Switch checked={draft.enabled !== false} onChange={(e) => updateDraft({ enabled: e.target.checked })} label={t('활성화')} />
-        <div className="form-action-row">
-          <Button type="button" disabled={busy || !canSave} onClick={saveWorldSetting}>{t(busy ? '저장 중…' : '저장')}</Button>
-          {draft.id && <Button type="button" variant="destructive" onClick={() => deleteWorldSetting(draft)}>{t('삭제')}</Button>}
-        </div>
+
+        </FormSection>
     </FormSection>
   </section>;
 }

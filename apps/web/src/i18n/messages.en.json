@@ -419,6 +419,8 @@
   "세계관 선택": "Select a world",
   "세계관 선택 완료": "Lore selected",
   "세계관 선택 필요": "Lore selection required",
+  "세계관 (선택)": "Lore (optional)",
+  "세계관 없음": "No lore",
   "세계관 선택은 필수입니다.": "Lore selection is required.",
   "세계관 썸네일": "Lore thumbnail",
   "세계관 썸네일 업로드 실패 ·": "Lore thumbnail upload failed ·",
@@ -1058,5 +1060,18 @@
   "허용 형식 확인 전에는 텍스트만 전송합니다.": "Only text is sent until accepted formats are verified.",
   "수동 지정은 공식 문서로 확인하세요. 네이티브 이미지 입력에는 허용 형식이 필요합니다.": "Verify manual settings against official documentation. Native image input requires accepted formats.",
   "없음": "None",
-  "이미지 기능 수동 편집": "Edit image capabilities manually"
+  "이미지 기능 수동 편집": "Edit image capabilities manually",
+  "미리보기": "Preview",
+  "선택 상세": "Selection details",
+  "필터": "Filters",
+  "표시 개수": "Items per page",
+  "이미지 지원 정보": "Image capabilities",
+  "인증과 데이터 전송": "Credentials and data transfer",
+  "대화는 선택한 공급자로 전송됩니다.": "Conversations are sent to your selected provider.",
+  "갱신 중…": "Refreshing…",
+  "커맨드명과 생성 또는 후처리 프롬프트를 입력하세요.": "Enter a command name and a generation or post-processing prompt.",
+  "대화 이어가기": "Continue chat",
+  "새 대화방을 만들어 대화를 시작하세요.": "Create a chat room to start a conversation.",
+  "역할 안내": "Role guide",
+  "세계관 (필수)": "World (required)"
 }

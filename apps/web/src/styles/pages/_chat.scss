@@ -1,6 +1,27 @@
 /* Conversation view, chat shell, bubbles, media frames, drawers, composer, chat-specific responsive rules. */
+.chat-workspace { width: 100%; min-width: 0; height: 100dvh; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
+.chat-workspace.has-docked-panel { grid-template-columns: minmax(0, 1fr) var(--chat-panel-width, 320px); }
+.chat-workspace > .chat-shell { width: 100%; max-width: var(--chat-max-width, 960px); margin-inline: auto; height: 100%; border: 0; }
+.chat-footer { min-width: 0; position: relative; }
+.chat-workspace .composer { position: relative; bottom: auto; width: 100%; min-width: 0; padding-bottom: max(8px, env(safe-area-inset-bottom, 0px)); }
+.chat-workspace .chat-header-actions { max-width: min(46vw, 260px); flex-wrap: wrap; }
+.chat-workspace .chat-header { min-height: 56px; }
+.chat-workspace .chat-shell { grid-template-rows: auto minmax(0, 1fr) auto; }
+.chat-workspace .active-command-badge { min-width: 0; max-width: 100%; }
+.chat-workspace .active-command-badge > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.context-drawer.context-drawer--docked { position: relative; inset: auto; z-index: auto; width: 100%; min-width: 0; height: 100%; min-height: 0; transform: none; transition: none; box-shadow: none; }
+.context-drawer.context-drawer--docked .context-drawer-head { padding: 8px 12px; min-height: 56px; }
+.context-drawer.context-drawer--docked .drawer-tab-content { padding-bottom: max(16px, env(safe-area-inset-bottom, 0px)); scroll-padding-bottom: 16px; }
+.context-drawer .drawer-tab-bar button { min-height: 44px; }
+.context-drawer .context-section, .context-drawer .context-card, .context-drawer .drawer-tab-panel { min-width: 0; overflow-wrap: anywhere; }
+.context-drawer .context-summary { overflow-wrap: anywhere; }
+.context-drawer .memory-compose-actions { flex-wrap: wrap; }
+.context-drawer .memory-compose-actions > * { min-width: 0; max-width: 100%; }
+/* Backdrop must cover the existing composer z-index (85), not sit beneath it. */
+.chat-workspace > .context-drawer-backdrop { z-index: 89; }
+
 .shell:has(.chat-shell) { width: 100%; max-width: none; height: 100dvh; padding: 0; overflow: hidden; }
-.chat-shell { height: 100dvh; min-height: 0; display: grid; grid-template-rows: 56px minmax(0, 1fr) auto; gap: 0; padding: 0; border-radius: 0; border-left: 0; border-right: 0; box-shadow: none; overflow: hidden; }
+.chat-shell { min-width: 0; height: 100dvh; min-height: 0; display: grid; grid-template-rows: 56px minmax(0, 1fr) auto; gap: 0; padding: 0; border-radius: 0; border-left: 0; border-right: 0; box-shadow: none; overflow: hidden; }
 .chat-header { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 8px; align-items: center; border-bottom: 1px solid var(--line); padding: 6px 8px; min-height: 56px; }
 .chat-header-button { width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 999px; display: inline-grid; place-items: center; line-height: 1; }
 .chat-back-button { font-size: 26px; padding-bottom: 2px; }

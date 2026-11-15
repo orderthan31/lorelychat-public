@@ -1,0 +1,27 @@
+.chat-loading {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  width: 100%;
+  min-height: 100dvh;
+  box-sizing: border-box;
+  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1rem, env(safe-area-inset-bottom));
+  color: var(--muted-foreground);
+}
+.chat-loading-content {
+  display: grid;
+  justify-items: center;
+  gap: .25rem;
+  font-size: .8125rem;
+  line-height: 1.5;
+}
+.chat-loading-mark {
+  display: block;
+  width: 96px;
+  height: 96px;
+}
+.shell:has(> .chat-loading) {
+  width: 100%;
+  max-width: none;
+  padding: 0;
+}

@@ -1,5 +1,5 @@
 import { Cpu, Languages, NotebookTabs } from 'lucide-react';
-import { AnimatedSettingsMark, Select } from '../../components/atoms';
+import { Select } from '../../components/atoms';
 import { SettingsNavItem } from '../../components/molecules';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { AppLocale, UiMessageKey } from '../../i18n/core';
@@ -21,13 +21,10 @@ export function SettingsView({ navigate }: SettingsViewProps) {
 
   return <section className="page settings-hub grid gap-4" data-page="settings-hub">
     <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
-      <div className="flex min-w-0 items-center gap-3">
-        <AnimatedSettingsMark className="size-12 shrink-0" label={t('설정')} />
-        <h1 className="text-xl font-bold tracking-tight text-foreground">{t('설정')}</h1>
-      </div>
+      <h1 className="sr-only">{t('설정')}</h1>
       <label className="flex min-w-[180px] items-center gap-2">
         <Languages className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="sr-only">{t('표시 언어')}</span>
+        <span>{t('표시 언어')}</span>
         <Select aria-label={t('표시 언어')} value={locale} onChange={(event) => setLocale(event.target.value as AppLocale)}>
           <option value="ko">한국어</option>
           <option value="en">English</option>

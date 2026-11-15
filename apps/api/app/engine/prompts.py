@@ -449,34 +449,32 @@ def format_room_tone_preset(tone_preset: str | None) -> str:
     return f"Room tone preset: {key}\nRoom tone guidance: {guidance}"
 
 
-def build_scene_text(scene_state: SceneState | None, *, include_summary: bool = True, include_opening: bool = True) -> str:
+def build_scene_text(scene_state: SceneState | None, *, include_summary: bool = True,
+                     include_opening: bool = True, include_world: bool | None = None) -> str:
     if not scene_state:
         return ""
+    if include_world is None:
+        include_world = bool(scene_state.world_seed)
     story_arc = (scene_state.summary or "").strip() if include_summary else ""
-    tone_text = format_room_tone_preset(getattr(scene_state, "tone_preset", None))
-    relationship_text = format_relationship_archetype(getattr(scene_state, "relationship_archetype", None))
-    lines = [
-        "[Room origin and fixed policy]",
-        f"Fixed room world setting / origin premise: {scene_state.world_seed or ''}",
-        tone_text,
-        relationship_text,
+    policy = [
+        f"Fixed room world setting / origin premise: {scene_state.world_seed}" if include_world and scene_state.world_seed else "",
+        format_room_tone_preset(getattr(scene_state, "tone_preset", None)),
+        format_relationship_archetype(getattr(scene_state, "relationship_archetype", None)),
     ]
+    lines = ["[Room origin and fixed policy]", *filter(None, policy)] if any(policy) else []
     if not story_arc and include_opening:
-        opening_scene = getattr(scene_state, "opening_scene", None) or ""
-        opening_line = getattr(scene_state, "opening_line", None) or ""
-        lines.extend([
-            f"Initial location: {scene_state.location or ''}",
-            f"Initial mood: {scene_state.mood or ''}",
-            f"Opening scene hook: {opening_scene}",
-            f"Opening line / first character beat: {opening_line}",
-            "Opening rule: Establish this hook once. Do not repeat the opening line verbatim after the room is already underway.",
-        ])
+        opening = [f"{label}: {value}" for label, value in (
+            ("Initial location", scene_state.location),
+            ("Initial mood", scene_state.mood),
+            ("Opening scene hook", getattr(scene_state, "opening_scene", None)),
+            ("Opening line / first character beat", getattr(scene_state, "opening_line", None)),
+        ) if value]
+        if opening:
+            lines.extend(opening)
+            lines.append("Opening rule: Establish this hook once. Do not repeat the opening line verbatim after the room is already underway.")
     elif story_arc:
-        lines.extend([
-            "[Past story]",
-            story_arc,
-        ])
-    return "\n".join(line for line in lines if line)
+        lines.extend(["[Past story]", story_arc])
+    return "\n".join(lines)
 
 def conversation_history_title(scene_state: SceneState | None) -> str:
     if scene_state and scene_state.summary and scene_state.last_compression_source_message_id:
@@ -575,7 +573,10 @@ def build_multi_character_prompt_harness(
     context_management_mode: str = "legacy",
     command_overlay_plan=None,
     comparison_options: ComparisonOptions | None = None,
+    include_world: bool | None = None,
 ) -> PromptHarness:
+    if include_world is None:
+        include_world = bool(scene_state and scene_state.world_seed)
     comparison = comparison_options or ComparisonOptions.from_settings(get_settings())
     full_history = comparison.context_policy == "full_history"
     has_durable_history = bool(recent_messages or (scene_state and (
@@ -624,8 +625,11 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
         output_rules += "\n" + prompt_setting(prompt_settings, "free_body_output_rules", free_body.DEFAULT_FREE_BODY_RULES)
         if min_output_tokens:
             output_rules += f"\nDesired prose richness: approximately {min_output_tokens} output tokens, within the existing output budget; no filler or forced bubble count."
+    if not include_world and base_rules in {DEFAULT_GENERATION_CORE_CONTRACT, free_body.DEFAULT_FREE_BODY_CORE}:
+        # Only adapt shipped policy; never strip words from authored input.
+        base_rules = base_rules.replace("appearance, world, and room", "appearance and room").replace("World setting defines the stage. ", "").replace("appearance, genre policy, or background lore", "appearance or background")
     from app.engine.command_overlay import instructions as overlay_instructions
-    panel_instructions = overlay_instructions(command_overlay_plan, protocol)
+    panel_instructions = overlay_instructions(command_overlay_plan, protocol, include_world=include_world)
     character_cards_budget = max(2600, approx_tokens(character_cards) + 100)
     output_rules_budget = max(620, approx_tokens(output_rules) + 80)
 
@@ -633,8 +637,8 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
         PromptSection("base_rules", "Generation core contract", base_rules, "backend.system_prompt_registry.generation_core_contract", "always_required", 520, True),
         PromptSection("output_rules", "Output contract", output_rules, "runtime.response_contract", "json_contract", output_rules_budget, True),
         PromptSection("character_cards", "Active character cards", character_cards, "conversation.participants.character_cards", "active_room_participants", character_cards_budget, True),
-        PromptSection("scene", "Room world and past story", build_scene_text(scene_state,
-            include_summary=not full_history, include_opening=not full_history or not has_durable_history), "scene_state", "durable_room_context", 1800, True),
+        PromptSection("scene", "Room world and past story" if include_world else "Room scene and past story", build_scene_text(scene_state,
+            include_world=include_world, include_summary=not full_history, include_opening=not full_history or not has_durable_history), "scene_state", "durable_room_context", 1800, True),
         PromptSection("directive", "Current directive", directive or "", "message.directive", "current_user_intent", 180, bool(directive)),
         PromptSection(
             "recent_messages",
@@ -654,6 +658,9 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
         PromptSection("offstage_actor_recall", "Relevant offstage actor", offstage_actor_context or "", "domain_actor.offstage_recall", "router:offstage_actor_context", 320, False),
         PromptSection("genre_mode", "Genre routing", build_genre_mode_policy(genre_mode), "conversation.genre_mode", f"genre_route:{genre_mode or 'battle'}", 120, False),
     ]
+    if not include_world:
+        sections = [section for section in sections if section.key != "genre_mode"
+                    and not (section.key == "official_domain_state" and not official_domain_context)]
     provider_section = provider_roleplay_rendering_section(
         provider_type=provider_type,
         prompt_settings=prompt_settings,

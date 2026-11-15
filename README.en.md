@@ -11,6 +11,8 @@ Lorechat is a **self-hosted, mobile-first character chat runtime** for creating 
 
 - Character cards and world-setting management
 - One-to-one and multi-character chat rooms
+- Conversation and unsent-draft preservation during same-room refreshes, with a collapsible adaptive control panel
+- Persistent save actions in long editors, recoverable load errors, and brief completion notifications
 - Multi-bubble responses with action, dialogue, thought, and emotion fields
 - Persistent conversation context, scene state, relationships, and character memory
 - Runtime provider/model configuration and deterministic mock mode

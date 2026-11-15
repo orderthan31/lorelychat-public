@@ -67,7 +67,7 @@ assert.match(keyframes, /prefers-reduced-motion: reduce/);
 assert.match(formSection, /data-form-section/);
 assert.match(formSection, /border-t border-border/);
 assert.doesNotMatch(formSection, /shadow-|rounded-2xl|rounded-3xl|bg-card/);
-assert.match(settings, /<AnimatedSettingsMark/);
+assert.doesNotMatch(settings, /<AnimatedSettingsMark/); // Keep settings task-focused, not a decorative hero.
 assert.match(settings, /<SettingsNavItem/);
 assert.match(settings, /divide-y divide-border border-y border-border/);
 assert.doesNotMatch(settings, /md:grid-cols-2|CardDescription|bg-gradient-to/);
@@ -75,7 +75,11 @@ assert.match(modelSettings, /<Tabs value=\{activeSection\}/);
 assert.match(modelSettings, /data-settings-section="runtime"/);
 assert.match(modelSettings, /data-settings-section="providers"/);
 assert.match(modelSettings, /data-settings-section="models"/);
-assert.match(modelSettings, /sticky top-\[58px\]/);
+// Settings use one compact tab strip under the existing navigation, not a
+// second sticky sidebar/hero. Actual Add reachability is browser-tested.
+assert.match(modelSettings, /<TabsList[^>]*className="settings-tab-list"/);
+assert.match(modelSettings, /<h1 className="sr-only">/);
+assert.doesNotMatch(modelSettings, /<h1[^>]*text-xl/);
 assert.match(button, /default: 'min-h-11/);
 assert.match(button, /icon: 'size-11 min-h-11 min-w-11/);
 assert.match(input, /min-h-11/);

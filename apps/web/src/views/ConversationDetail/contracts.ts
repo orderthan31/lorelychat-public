@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from 'react';
+import type { ReactNode, Ref, Dispatch, SetStateAction } from 'react';
 import type { BubbleListProps } from '../../components/organisms/BubbleList';
 import type { RuntimeSettingValue } from '../../components/organisms/RuntimeSettings';
 import type { BattleState } from '../../components/organisms/ConversationInfoDrawer';
@@ -43,6 +43,7 @@ export type ConversationComposerProps = ConversationComposerOptions & Conversati
   setSpeakerId: Setter<string>;
   speakerOptions: string[];
   participantName: (id?: string) => string;
+  onOpenPanelSettings?: () => void;
   chatSettingsOpen: boolean;
   setChatSettingsOpen: Setter<boolean>;
   conversationRuntimeSetting: RuntimeSettingValue;
@@ -58,6 +59,12 @@ export type ConversationComposerProps = ConversationComposerOptions & Conversati
   chatCommands?: ChatCommandItem[];
 };
 export type ConversationDetailViewProps = ConversationComposerProps & BattleControlsProps & {
+  sidePanel?: ReactNode;
+  feedback?: ReactNode;
+  workspaceRef?: Ref<HTMLDivElement>;
+  panelDocked?: boolean;
+  panelOpen?: boolean;
+  panelWidth?: number;
   selectedConversationId: string;
   status: string;
   navigate: (path: string) => void;

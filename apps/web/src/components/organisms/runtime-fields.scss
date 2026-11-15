@@ -1,0 +1,15 @@
+/* Fields follow their actual editor/panel width, not the browser's width. */
+.runtime-settings-container {
+  container: runtime-settings / inline-size;
+  min-width: 0;
+}
+.runtime-settings-container .runtime-setting-fields {
+  grid-template-columns: minmax(0, 1fr);
+  > * { grid-column: 1 / -1; min-width: 0; }
+}
+@container runtime-settings (min-width: 561px) {
+  .runtime-settings-container .runtime-setting-fields {
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, .75fr);
+    > label { grid-column: auto; }
+  }
+}

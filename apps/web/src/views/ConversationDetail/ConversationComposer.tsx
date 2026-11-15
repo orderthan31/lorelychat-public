@@ -8,7 +8,7 @@ import type { ConversationComposerProps } from './contracts';
 export function ConversationComposer({
   conversation, setConversation, busy, sendConversationMessage,
   speakerId, setSpeakerId, speakerOptions, participantName,
-  chatSettingsOpen, setChatSettingsOpen, conversationRuntimeSetting, inheritedThinkingLevel,
+  onOpenPanelSettings, chatSettingsOpen, setChatSettingsOpen, conversationRuntimeSetting, inheritedThinkingLevel,
   setConversationRuntimeSetting, saveConversationRuntimeSetting,
   renderChatImages, setRenderChatImages, compressConversationNow,
   composerTextareaRef, compose, setCompose, resizeComposerTextarea,
@@ -18,6 +18,21 @@ export function ConversationComposer({
   // Selection temporarily unmounts the form, not its draft. Restore multiline
   // height even when the text did not change while the toolbar was visible.
   useLayoutEffect(() => { resizeComposerTextarea(); }, [resizeComposerTextarea]);
+  useLayoutEffect(() => {
+    const node = composerTextareaRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') return;
+    let previousWidth = node.getBoundingClientRect().width;
+    let resizeFrame = 0;
+    const observer = new ResizeObserver(() => {
+      const width = node.getBoundingClientRect().width;
+      if (width === previousWidth) return;
+      previousWidth = width;
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => { resizeFrame = 0; resizeComposerTextarea(node); });
+    });
+    observer.observe(node);
+    return () => { observer.disconnect(); cancelAnimationFrame(resizeFrame); };
+  }, [composerTextareaRef, resizeComposerTextarea]);
   const enabledChatCommands = chatCommands.filter((command) => command.enabled !== false);
   const commandBody = compose.startsWith('!') ? compose.slice(1) : '';
   const commandAutocompleteActive = compose.startsWith('!') && commandBody.trim().length === commandBody.length && !/\s/.test(commandBody);
@@ -40,8 +55,8 @@ export function ConversationComposer({
         {speakerOptions.map((id) => <option key={id} value={id}>{participantName(id)}</option>)}
       </Select>
       <div className="composer-input-wrap">
-        <button type="button" className="chat-settings-button" aria-label={t('채팅 설정')} title={t('채팅 설정')} onClick={() => setChatSettingsOpen((open) => !open)}>⚙</button>
-        <ChatSettingsBubble
+        <button type="button" className="chat-settings-button" aria-label={t('채팅 설정')} title={t('채팅 설정')} onClick={() => onOpenPanelSettings ? onOpenPanelSettings() : setChatSettingsOpen((open) => !open)}>⚙</button>
+        {!onOpenPanelSettings && <ChatSettingsBubble
           open={chatSettingsOpen}
           setting={conversationRuntimeSetting}
           inheritedThinkingLevel={inheritedThinkingLevel}
@@ -54,7 +69,7 @@ export function ConversationComposer({
           ttsEnabled={!!conversation?.tts_enabled}
           onTtsEnabledChange={(enabled) => setConversation((current) => ({ ...(current || {}), tts_enabled: enabled }))}
           onCompressNow={compressConversationNow}
-        />
+        />}
         {commandSuggestions.length > 0 && <>
           <div className="command-autocomplete-backdrop" aria-hidden="true" />
           <div className="command-autocomplete" role="listbox" aria-label={t('활성 가능한 커맨드 목록')}>

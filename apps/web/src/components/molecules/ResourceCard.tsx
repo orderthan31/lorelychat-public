@@ -11,6 +11,9 @@ export type ResourceCardProps = {
   media?: ReactNode;
   actions?: ReactNode;
   onOpen: () => void;
+  onPreview?: () => void;
+  previewLabel?: string;
+  selected?: boolean;
   openLabel?: string;
   className?: string;
 };
@@ -24,6 +27,9 @@ export function ResourceCard({
   media,
   actions,
   onOpen,
+  onPreview,
+  previewLabel,
+  selected = false,
   openLabel,
   className,
 }: ResourceCardProps) {
@@ -33,8 +39,10 @@ export function ResourceCard({
     className={cn(
       'group relative h-full min-w-0 overflow-hidden rounded-xl border border-border bg-card text-foreground shadow-[0_1px_2px_rgba(15,23,42,.06)] transition-colors hover:border-primary/45',
       className,
+      onPreview && 'resource-card-with-preview',
     )}
     data-resource-card={variant}
+    data-selected={selected || undefined}
   >
     <button
       type="button"
@@ -58,6 +66,7 @@ export function ResourceCard({
         {meta && <span className="mt-auto flex w-full min-w-0 items-center justify-between gap-3 overflow-hidden pt-0.5 text-xs leading-4 text-muted-foreground">{meta}</span>}
       </span>
     </button>
+    {onPreview && <button type="button" className="resource-preview-toggle" data-resource-preview aria-pressed={selected} onClick={onPreview}>{previewLabel}</button>}
     {actions && <div className="absolute right-2 top-2 z-10 flex items-center gap-1" data-resource-actions>{actions}</div>}
   </article>;
 }

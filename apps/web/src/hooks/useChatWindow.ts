@@ -1,17 +1,28 @@
 import { useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { chatWindow, messageOffsets, rowAtOffset, type WindowMessage } from '../utils/chatWindow';
 
+const SCROLL_INTENT_EVENT = 'chat-scroll-intent';
+
+// Tell the measured window the intent, not just a one-frame pixel position.
+// Its tail can grow after Markdown, fonts and images finish laying out.
+export function setChatScrollIntent(node: HTMLElement, intent: 'latest' | 'preserve') {
+  node.dispatchEvent(new CustomEvent(SCROLL_INTENT_EVENT, { detail: intent }));
+  if (intent === 'latest') node.scrollTop = node.scrollHeight;
+}
+
 // Keep the complete data history; only Markdown/media DOM is windowed.
-// Measured heights preserve native scrollbar navigation, including old pages.
 export function useChatWindow(messages: WindowMessage[], threadRef: RefObject<HTMLDivElement>) {
   const listRef = useRef<HTMLDivElement>(null);
   const heights = useRef(new Map<string, number>());
   const [measurement, setMeasurement] = useState(0);
   const [viewport, setViewport] = useState({ top: 0, height: 800 });
+  const viewportRef = useRef(viewport);
+  const followingLatest = useRef(true);
+  const lastScrollTop = useRef(0);
   const offsets = useMemo(() => messageOffsets(messages, heights.current), [messages, measurement]);
   const range = chatWindow(offsets, viewport.top, viewport.height);
   const previous = useRef({ messages, offsets });
-
+  const mounted = useRef(false);
 
   const readViewport = () => {
     const node = threadRef.current;
@@ -19,6 +30,8 @@ export function useChatWindow(messages: WindowMessage[], threadRef: RefObject<HT
     if (!node || !list) return;
     const top = node.getBoundingClientRect().top - list.getBoundingClientRect().top;
     const height = node.clientHeight;
+    lastScrollTop.current = node.scrollTop;
+    viewportRef.current = { top, height };
     setViewport((old) => old.top === top && old.height === height ? old : { top, height });
   };
 
@@ -26,20 +39,22 @@ export function useChatWindow(messages: WindowMessage[], threadRef: RefObject<HT
     const node = threadRef.current;
     const list = listRef.current;
     if (!node || !list) return;
-    // Preserve a message ID + intra-row offset across both prepend and height
-    // refinements. Native overflow anchoring is disabled to avoid double deltas.
     const old = previous.current;
-    if (old.offsets !== offsets && old.messages.length) {
-      const index = rowAtOffset(old.offsets, viewport.top);
+    // Initial entry is an intent that survives estimated -> measured rows.
+    // Snapshot replacement/prepend instead retains an ID + intra-row offset;
+    // the caller may explicitly request latest after committing an append.
+    if (followingLatest.current && (!mounted.current || !old.messages.length || old.messages === messages)) {
+      node.scrollTop = node.scrollHeight;
+    } else if (old.offsets !== offsets && old.messages.length) {
+      const index = rowAtOffset(old.offsets, viewportRef.current.top);
       const anchorId = old.messages[index]?.id;
       const nextIndex = old.messages === messages ? index : messages.findIndex((message) => message.id === anchorId);
       if (nextIndex >= 0) {
         const delta = offsets[nextIndex] - old.offsets[index];
         if (delta) node.scrollTop += delta;
       }
-      // Measured media growth at the tail should retain the latest view.
-      if (old.messages === messages && viewport.top + viewport.height >= old.offsets[old.offsets.length - 1] - 24) node.scrollTop = node.scrollHeight;
     }
+    mounted.current = true;
     previous.current = { messages, offsets };
     readViewport();
   }, [messages, offsets]);
@@ -47,11 +62,28 @@ export function useChatWindow(messages: WindowMessage[], threadRef: RefObject<HT
   useLayoutEffect(() => {
     const node = threadRef.current;
     if (!node) return;
-    let frame = 0;
     const update = () => {
-      if (!frame) frame = requestAnimationFrame(() => { frame = 0; readViewport(); });
+      // Only an actual move upward relinquishes tail following. Measurement
+      // growth is not a user scroll, and our own writes update this ref first.
+      if (node.scrollTop < lastScrollTop.current - 1) followingLatest.current = false;
+      else if (node.scrollHeight - node.scrollTop - node.clientHeight <= 24) followingLatest.current = true;
+      readViewport();
+    };
+    const intent = (event: Event) => {
+      followingLatest.current = (event as CustomEvent).detail === 'latest';
+      if (followingLatest.current) node.scrollTop = node.scrollHeight;
+      readViewport();
+    };
+    const wheel = (event: WheelEvent) => { if (event.deltaY < 0) followingLatest.current = false; };
+    const touch = () => { followingLatest.current = false; };
+    const key = (event: KeyboardEvent) => {
+      if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey)) followingLatest.current = false;
     };
     node.addEventListener('scroll', update, { passive: true });
+    node.addEventListener(SCROLL_INTENT_EVENT, intent);
+    node.addEventListener('wheel', wheel, { passive: true });
+    node.addEventListener('touchmove', touch, { passive: true });
+    node.addEventListener('keydown', key);
     let width = node.clientWidth;
     const resize = new ResizeObserver(() => {
       if (width !== node.clientWidth) {
@@ -59,10 +91,18 @@ export function useChatWindow(messages: WindowMessage[], threadRef: RefObject<HT
         heights.current.clear();
         setMeasurement((value) => value + 1);
       }
-      update();
+      if (followingLatest.current) node.scrollTop = node.scrollHeight;
+      readViewport();
     });
     resize.observe(node);
-    return () => { node.removeEventListener('scroll', update); resize.disconnect(); cancelAnimationFrame(frame); };
+    return () => {
+      node.removeEventListener('scroll', update);
+      node.removeEventListener(SCROLL_INTENT_EVENT, intent);
+      node.removeEventListener('wheel', wheel);
+      node.removeEventListener('touchmove', touch);
+      node.removeEventListener('keydown', key);
+      resize.disconnect();
+    };
   }, [threadRef]);
 
   useLayoutEffect(() => {

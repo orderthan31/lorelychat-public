@@ -5,7 +5,7 @@ import { ResourceListPendingBar } from '../../components/molecules';
 import { settingsApi } from '../../api/resources';
 import { queryKeys } from '../../hooks/useBootstrapResources';
 import { PRESET_TYPE_LABELS } from '../../constants/domain';
-import { Badge } from '../../components/atoms';
+
 import { Input } from '../../components/atoms';
 import { useI18n } from '../../i18n/I18nProvider';
 import { formatNamedAction, type UiMessageKey } from '../../i18n/core';
@@ -57,7 +57,7 @@ export function PresetsView({
       key={preset.id}
       title={preset.title || t('이름 없는 프리셋')}
       description={preset.content || preset.description || t('내용 없음')}
-      meta={<><Badge>{t((PRESET_TYPE_LABELS[preset.preset_type || ''] || preset.preset_type || '프리셋') as UiMessageKey)}</Badge><Badge variant="outline">{t(preset.enabled ? '활성' : '비활성')}</Badge></>}
+      meta={<><span>{t((PRESET_TYPE_LABELS[preset.preset_type || ''] || preset.preset_type || '프리셋') as UiMessageKey)}</span>{preset.enabled === false && <span>{t('비활성')}</span>}</>}
       openLabel={formatNamedAction(preset.title || t('프리셋'), 'open', locale)}
       onOpen={() => navigate(`/presets/${preset.id}`)}
     />)}</div>

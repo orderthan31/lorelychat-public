@@ -322,3 +322,26 @@ def prompt_settings_map() -> dict[str, str]:
 def default_prompt_settings_map() -> dict[str, str]:
     """Backward-compatible alias for isolated tests and tooling."""
     return prompt_settings_map()
+
+
+def without_world_defaults(settings: dict[str, str]) -> dict[str, str]:
+    """Scope known shipped policy to a character-only room, without editing data.
+
+    Authored overrides remain byte-identical. This is not a prose/keyword filter
+    over user notes, cards, commands, history or the rolling Arc.
+    """
+    defaults = prompt_settings_map()
+    result = dict(settings)
+    for key in ("source_priority_rules", "compression_source_scope_rules"):
+        if result.get(key) == defaults[key]:
+            result[key] = "\n".join(line for line in defaults[key].splitlines()
+                                    if not line.startswith(("**World Setting**", "If **World Setting**", "**Genre Mode Policy**")))
+    key = "chat_command_postprocess_source_priority"
+    if result.get(key) == defaults[key]:
+        result[key] = defaults[key].replace("**Stored SceneState** and **World Setting** are", "**Stored SceneState** is")
+    key = "compression_scene_base"
+    if result.get(key) == defaults[key]:
+        result[key] = defaults[key].replace("fixed world setting, ", "").replace("world/card exposition", "card exposition")
+    if result.get("genre_mode_policy_scope") == defaults["genre_mode_policy_scope"]:
+        result["genre_mode_policy_scope"] = ""
+    return result

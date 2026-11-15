@@ -155,7 +155,10 @@ def _scene_compression_lock(conversation_id: str) -> threading.Lock:
 
 @router.post("", response_model=ConversationRead)
 def create_conversation(payload: ConversationCreate, session: Session = Depends(get_session)):
-    conversation = conversation_service.create_conversation(session, payload)
+    try:
+        conversation = conversation_service.create_conversation(session, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return conversation_service.serialize_conversation_for_list(session, conversation)
 
 
@@ -174,7 +177,10 @@ def get_conversation(conversation_id: str, session: Session = Depends(get_sessio
 
 @router.patch("/{conversation_id}", response_model=ConversationRead)
 def update_conversation(conversation_id: str, payload: ConversationUpdate, session: Session = Depends(get_session)):
-    conversation = conversation_service.update_conversation(session, conversation_id, payload)
+    try:
+        conversation = conversation_service.update_conversation(session, conversation_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conversation_service.serialize_conversation_for_list(session, conversation)
@@ -1475,7 +1481,7 @@ async def generate_replies_from_message(
         nonlocal latest_offstage_context
         base_recall_query = "\n".join(filter(None, [
             f"genre={genre_mode}",
-            current_scene.world_seed,
+            current_scene.world_seed if conversation.world_setting_id else "",
             current_scene.current_conflict if not full_history else "",
             current_scene.summary if not full_history else "",
             runtime_message_text,
@@ -1492,6 +1498,7 @@ async def generate_replies_from_message(
         chat_command_service.prepare_combined_context(session, panel_plan, conversation_id, current_scene,
             comparison_options=comparison)
         return prompts.build_multi_character_prompt_harness(
+            include_world=bool(conversation.world_setting_id),
             comparison_options=comparison,
             command_overlay_plan=panel_plan,
             characters=room_characters,
@@ -1581,7 +1588,7 @@ async def generate_replies_from_message(
             )
             # Subtract only the complete rendered Arc, not the scene section:
             # rendering an empty Arc would reactivate dormant opening fields.
-            fixed_scene_text = prompts.build_scene_text(current_scene)
+            fixed_scene_text = prompts.build_scene_text(current_scene, include_world=bool(conversation.world_setting_id))
             rendered_arc = (current_scene.summary or "").strip()
             if rendered_arc:
                 fixed_scene_text = fixed_scene_text.removesuffix(rendered_arc)

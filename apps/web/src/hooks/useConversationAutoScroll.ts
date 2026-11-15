@@ -1,5 +1,6 @@
 import { useEffect, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import type { LegacyRoute } from '../router/legacyRouter';
+import { setChatScrollIntent } from './useChatWindow';
 
 type ScrollMode = 'idle' | 'initial' | 'append' | 'prepend' | 'preserve';
 type MessageLike = { id?: string | null; [key: string]: unknown };
@@ -50,8 +51,9 @@ export function useConversationAutoScroll({
 
     if (skipNextAutoScrollRef.current || explicitMode === 'prepend' || explicitMode === 'preserve') {
       skipNextAutoScrollRef.current = false;
+      if (node) setChatScrollIntent(node, 'preserve');
     } else if (shouldStickToBottom) {
-      if (node) node.scrollTop = node.scrollHeight;
+      if (node) setChatScrollIntent(node, 'latest');
       else chatEndRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
       setShowJumpToLatest(false);
     }

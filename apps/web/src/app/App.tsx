@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Swal from 'sweetalert2';
 import withReactContent from 'sweetalert2-react-content';
 import 'sweetalert2/dist/sweetalert2.min.css';
@@ -22,6 +22,11 @@ import { useUiStore } from '../stores/uiStore';
 import { useI18n } from '../i18n/I18nProvider';
 import { formatDangerConfirmation, formatUiCount } from '../i18n/core';
 import { Button } from '../components/atoms';
+import { OperationFeedback, isCompletionFeedback } from '../components/molecules/OperationFeedback';
+import { useConversationPanelLayout } from '../hooks/useConversationPanelLayout';
+import type { DrawerTab } from '../components/organisms/ConversationInfoDrawer';
+import { ChatSettingsBubble } from '../components/organisms/RuntimeSettings';
+import { ResourceDetailFeedback } from '../components/molecules/ResourceDetailFeedback';
 import { Field, GenreModeField, ResourceListBoundary, TextareaWithExpand } from '../components/molecules';
 import { CharacterCardPreviewModal } from '../components/organisms';
 import { AvatarPreviewModal } from '../components/organisms';
@@ -186,7 +191,9 @@ export function App() {
   const renderChatImages = useUiStore((state) => state.renderChatImages);
   const setRenderChatImages = useUiStore((state) => state.setRenderChatImages);
   const [userMemoryDraft, setUserMemoryDraft] = useState<any>({ character_id: '__room__', memory_type: 'user_note', content: '', importance: 5 });
-  const [status, setStatus] = useState(() => t('준비됨'));
+  const [status, setStatus] = useState('');
+  const invitePendingRef = useRef(new Set<string>());
+  const dismissStatus = useCallback((expected: string) => setStatus(current => current === expected ? '' : current), []);
   const [busy, setBusy] = useState(false);
   const [roomLoadError, setRoomLoadError] = useState('');
   const [resourceReloadKey, setResourceReloadKey] = useState(0);
@@ -196,6 +203,7 @@ export function App() {
   useLayoutEffect(() => {
     const visit = routeWork.enter(`${route.page}:${'id' in route ? route.id : ''}`);
     setBusy(false);
+    setStatus(current => isCompletionFeedback(current, t) ? current : '');
     return () => visit.cancel();
   }, [route.page, 'id' in route ? route.id : '']);
   // Guard every completion, including setters passed an updater and late finally.
@@ -231,6 +239,19 @@ export function App() {
   const routeId = appRoute.id || '';
   const resourceRouteIdRef = useRef(routeId); resourceRouteIdRef.current = routeId;
   const selectedConversationId = route.page === 'conversationDetail' ? routeId : '';
+  const chatPanel = useConversationPanelLayout(selectedConversationId);
+  const [chatPanelTab, setChatPanelTab] = useState<DrawerTab>('manage');
+  const chatPanelReady = route.page === 'conversationDetail' && !!selectedConversationId && conversation?.id === selectedConversationId;
+  useEffect(() => { setChatPanelTab('manage'); }, [selectedConversationId]);
+  useEffect(() => { setContextDrawerOpen(chatPanelReady && chatPanel.open); }, [chatPanelReady, chatPanel.open, setContextDrawerOpen]);
+  useEffect(() => {
+    if (!chatPanelReady || !chatPanel.open) return;
+    const visit = roomWork.capture();
+    let active = true;
+    void Promise.all([loadConversationContext(selectedConversationId), loadBattleState(selectedConversationId)])
+      .catch(error => { if (active && visit.current) setStatus(String(error?.message || error)); });
+    return () => { active = false; };
+  }, [chatPanelReady, chatPanel.open, selectedConversationId]);
   const selectedConversationIdRef = useRef('');
   selectedConversationIdRef.current = selectedConversationId;
   const characterById = useMemo(() => new Map(characters.map((c) => [c.id, c])), [characters]);
@@ -452,9 +473,14 @@ export function App() {
       setStatus(`${t('활성 커맨드 해제 실패 ·')} ${error.message}`);
     } finally { setBusy(false); }
   }
-  async function openConversationContextDrawer() {
-    setContextDrawerOpen(true);
-    await Promise.all([loadConversationContext(), loadBattleState()]);
+  function openConversationContextDrawer() {
+    if (!chatPanel.open) setChatPanelTab('manage');
+    chatPanel.setOpen(!chatPanel.open);
+  }
+  function openConversationPanelSettings() {
+    setChatSettingsOpen(false);
+    setChatPanelTab('settings');
+    chatPanel.setOpen(true);
   }
   async function compressConversationNow() {
     if (readyVisitRef.current !== roomWork.capture()) return;
@@ -538,15 +564,21 @@ export function App() {
   async function fetchConversation(conversationId) {
     const visit = roomWork.capture();
     if (visit.roomId !== conversationId) return;
-    readyVisitRef.current = null;
+    const refreshing = readyVisitRef.current === visit && conversation?.id === conversationId;
+    // Retain the visible room, but never admit a new turn while a persisted
+    // submission's acceptance is unknown. A successful snapshot restores ready.
+    if (unknownSubmissionsForRoom(conversationId).length) readyVisitRef.current = null;
     setRoomLoadError('');
-    setConversation(null); setMessages([]); setParticipants([]);
-    setConversationContext(null); setChatSettingsOpen(false); setContextDrawerOpen(false);
-    setOlderPagingReady(false);
-    clearMessageSelection();
-    setShowJumpToLatest(false);
-    nextScrollModeRef.current = 'initial';
-    lastMessageTailRef.current = { conversationId: '', tailId: '', length: 0 };
+    if (!refreshing) {
+      readyVisitRef.current = null;
+      setConversation(null); setMessages([]); setParticipants([]);
+      setConversationContext(null); setChatSettingsOpen(false); setContextDrawerOpen(false);
+      setOlderPagingReady(false);
+      clearMessageSelection();
+      setShowJumpToLatest(false);
+      nextScrollModeRef.current = 'initial';
+      lastMessageTailRef.current = { conversationId: '', tailId: '', length: 0 };
+    }
     try {
       // Discover before the message snapshot: completion between these reads
       // is either followed as a job or already included in the later snapshot.
@@ -613,27 +645,54 @@ export function App() {
       else if (retained) retained.nextJobs = discovered.filter(job => job.jobId !== retained.jobId);
       if (selectedConversationIdRef.current !== conversationId) return;
       if (!visit.current) return;
-      if (room.genre_mode === 'battle') await loadBattleState(conversationId, room, true);
+      if (room.genre_mode === 'battle') await loadBattleState(conversationId, room, !refreshing);
       else {
         setBattleState(null);
         setBattleControlDraft({ ...EMPTY_BATTLE_CONTROL_DRAFT });
       }
       if (!visit.current) return;
-      setConversation(room);
-      setMessages(roomMessages.filter(message => !deletedMessageIdsRef.current.get(conversationId)?.has(message.id)));
-      setHasOlderMessages(roomMessages.length > 0);
+      setConversation(current => refreshing
+        ? { ...room, tts_enabled: current?.tts_enabled }
+        : room);
+      // A refresh must not drop loaded history, local turns or retry metadata.
+      if (refreshing) nextScrollModeRef.current = 'preserve';
+      setMessages(current => {
+        if (!visit.current) return current;
+        const snapshot = new Map(roomMessages.map(message => [message.id, message]));
+        const currentIds = new Set(current.map(message => message.id));
+        const merged = refreshing
+          ? [...current.map(message => ({ ...message, ...snapshot.get(message.id) })), ...roomMessages.filter(message => !currentIds.has(message.id))]
+          : roomMessages;
+        return merged.filter(message => !deletedMessageIdsRef.current.get(conversationId)?.has(message.id));
+      });
+      if (!refreshing) setHasOlderMessages(roomMessages.length > 0);
       setParticipants(roomParticipants);
-      setConversationRuntimeSetting(normalizeRuntimeSetting(runtimeSetting || {}));
-      setConversationContext(null);
+      if (!refreshing) {
+        setConversationRuntimeSetting(normalizeRuntimeSetting(runtimeSetting || {}));
+        setConversationContext(null);
+      }
       readyVisitRef.current = visit;
       void resumeGeneration();
-      setSpeakerId(USER_ID);
+      if (!refreshing) setSpeakerId(USER_ID);
       await markConversationRead(conversationId);
-      if (!visit.current) return;
-      setStatus('supported' in activeJobs && activeJobs.supported === false ? '대화 표시 중 · 서버가 활성 job 검색을 지원하지 않습니다. 새로고침 후 진행 상태를 다시 확인하세요.' : t('대화 표시 중'));
+      if (!visit.current) return false;
+      if ('supported' in activeJobs && activeJobs.supported === false) setStatus('대화 표시 중 · 서버가 활성 job 검색을 지원하지 않습니다. 새로고침 후 진행 상태를 다시 확인하세요.');
+      return true;
     } catch (error) {
       if (visit.current) { setRoomLoadError(error.message); setStatus(error.message); }
+      return false;
     }
+  }
+  async function retryConversationRefresh() {
+    const visit = roomWork.capture();
+    const previousStatus = status;
+    const retryOwnsStatus = previousStatus === roomLoadError || (!!roomLoadError && previousStatus.includes(roomLoadError)) || previousStatus.includes(t('캐릭터 초대 완료'));
+    if (!(await fetchConversation(visit.roomId)) || !visit.current) return;
+    if (contextDrawerOpen && !(await loadConversationContext(visit.roomId))) {
+      if (visit.current) setRoomLoadError(t('대화 흐름 불러오기 실패 ·'));
+      return;
+    }
+    if (visit.current && retryOwnsStatus) setStatus(current => current === previousStatus ? '' : current);
   }
   async function stopTrackingUnknownSubmission() {
     const visit = roomWork.capture();
@@ -706,20 +765,21 @@ export function App() {
   async function loadConversationEditDraft(conversationId = routeId) {
     const { setBusy, setStatus, setRoomEditDraft } = ownUI('loadConversationEditDraft');
     setRoomEditDraft({ title: '', world_setting_id: '', participants: [] });
+    setStatus(t('불러오는 중…'));
     if (!conversationId) return;
     setBusy(true);
     try {
       const [room, context, roomParticipants] = await Promise.all([conversationApi.get(conversationId), conversationApi.context(conversationId), conversationApi.participants(conversationId)]) as [any, any, any[]];
       if (!room || room.id !== conversationId || !Array.isArray(roomParticipants)) throw new Error('Invalid room edit snapshot');
       setRoomEditDraft(sceneDraftFromContext(room, context, roomParticipants));
-      setStatus(t('수정 준비 완료'));
+      setStatus(current => current === t('불러오는 중…') ? '' : current);
     } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
   async function saveConversationRoomEdit() {
     const { setBusy, setStatus, setConversation, navigate } = ownUI('saveConversationRoomEdit');
     if (roomEditDraft.id !== routeId) { setStatus('Draft identity does not match save target. Reload this form before saving.'); return; }
     if (!routeId || !roomEditDraft.title.trim()) { setStatus(t('대화방 제목은 필수입니다.')); return; }
-    if (!roomEditDraft.world_setting_id) { setStatus(t('세계관 선택은 필수입니다.')); return; }
+
     const draftParticipants = roomEditDraft.participants || [];
     const characterParticipants = draftParticipants.filter((participant) => participant.type === 'character');
     const selectedCharacterIds = characterParticipants.map((participant) => participant.id).filter(Boolean);
@@ -737,7 +797,7 @@ export function App() {
         }));
       const updated = await conversationMutations.updateConversation.mutateAsync({ id: routeId, payload: {
         title: roomEditDraft.title.trim(),
-        world_setting_id: roomEditDraft.world_setting_id,
+        world_setting_id: roomEditDraft.world_setting_id || null,
         genre_mode: normalizeGenreMode(worldSettings.find((world) => world.id === roomEditDraft.world_setting_id)?.genre_mode || roomEditDraft.genre_mode),
         participants: normalizedParticipants,
         scene: { user_description: roomEditDraft.user_description || null },
@@ -750,15 +810,34 @@ export function App() {
   }
   async function inviteCharacterToConversation(characterId) {
     if (readyVisitRef.current !== roomWork.capture()) return;
+    const visit = roomWork.capture();
+    const conversationId = selectedConversationId;
+    if (!conversationId || !characterId || invitePendingRef.current.has(conversationId)) return;
     const { setBusy, setStatus } = ownUI('inviteCharacterToConversation');
-    if (!selectedConversationId || !characterId) return;
+    invitePendingRef.current.add(conversationId);
     setBusy(true);
+    const refreshFailure = locale === 'ko' ? '새로고침 실패' : locale === 'ja' ? '再読み込みに失敗しました' : 'Refresh failed';
+    let invited = false;
     try {
-      await conversationApi.inviteParticipant(selectedConversationId, characterId);
-      await fetchConversation(selectedConversationId);
-      await loadConversationContext(selectedConversationId);
-      setStatus(t('캐릭터 초대 완료'));
-    } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
+      await conversationApi.inviteParticipant(conversationId, characterId);
+      invited = true;
+      if (!visit.current) return;
+      const refreshed = await fetchConversation(conversationId);
+      if (!visit.current) return;
+      if (!refreshed) {
+        setStatus(`${t('캐릭터 초대 완료')} · ${refreshFailure} · ${t('재시도')}`);
+        return;
+      }
+      const context = await loadConversationContext(conversationId);
+      if (!visit.current) return;
+      if (!context) setRoomLoadError(t('대화 흐름 불러오기 실패 ·'));
+      setStatus(context ? t('캐릭터 초대 완료') : `${t('캐릭터 초대 완료')} · ${t('대화 흐름 불러오기 실패 ·')} ${t('재시도')}`);
+    } catch (error) {
+      setStatus(invited ? `${t('캐릭터 초대 완료')} · ${refreshFailure} · ${error.message}` : `요청 실패 · ${error.message}`);
+    } finally {
+      invitePendingRef.current.delete(conversationId);
+      setBusy(false);
+    }
   }
   async function removeCharacterFromConversation(characterId) {
     const actionVisit = routeWork.capture();
@@ -1155,13 +1234,13 @@ export function App() {
       const uniqueIds = new Set(selectedCharacters.map(({ character }) => character.id));
       if (selectedCharacters.length < 1) throw new Error(t('참여 캐릭터를 1명 이상 선택해야 합니다.'));
       if (uniqueIds.size !== selectedCharacters.length) throw new Error(t('서로 다른 캐릭터를 선택해야 합니다.'));
-      if (!selectedWorldSettingId) throw new Error(t('세계관을 먼저 선택해야 합니다.'));
+
       const createdRoomMode = selectedCharacters.length === 1 ? 'user_character' : 'character_character';
       const participants = selectedCharacters.length === 1
         ? [{ type: 'user', id: USER_ID, order_index: 0 }, { type: 'character', id: selectedCharacters[0].character.id, role: selectedCharacters[0].role, order_index: 1 }]
         : selectedCharacters.map(({ character, role }, index) => ({ type: 'character', id: character.id, role, order_index: index }));
       const selectedWorld = worldSettings.find((world) => world.id === selectedWorldSettingId);
-      const conversation = await conversationMutations.createConversation.mutateAsync({ mode: createdRoomMode, genre_mode: normalizeGenreMode(selectedWorld?.genre_mode || genreMode), world_setting_id: selectedWorldSettingId, title: conversationTitle.trim() || null, thumbnail_url: null, participants, tts_enabled: !!scene.tts_enabled, scene: { user_description: userDescription || null } }) as any;
+      const conversation = await conversationMutations.createConversation.mutateAsync({ mode: createdRoomMode, genre_mode: normalizeGenreMode(selectedWorld?.genre_mode || genreMode), world_setting_id: selectedWorldSettingId || null, title: conversationTitle.trim() || null, thumbnail_url: null, participants, tts_enabled: !!scene.tts_enabled, scene: { user_description: userDescription || null } }) as any;
       setConversationTitle('');
       setConversationThumbnailUrl('');
       setSelectedWorldSettingId('');
@@ -1297,7 +1376,7 @@ export function App() {
         generationOwners.finish(activeJob);
         forgetTerminalJob(activeJob.conversationId, activeJob.jobId);
         if (activeJob.nextJobs?.length) { const [next, ...rest] = activeJob.nextJobs; generationOwners.pending.set(activeJob.conversationId, { ...next, nextJobs: rest }); }
-        setStatus(`${t('대화 생성 완료 ·')} ${formatUiCount(Math.max(0, serverMessages.length - 1), 'messages', locale)}`);
+        setStatus(t('응답 저장 완료'));
         await markConversationRead(activeJob.conversationId);
         if (!visit.current) return;
         if (activeJob.payload?.battle_control) await loadBattleState(activeJob.conversationId, { genre_mode: 'battle' }, true);
@@ -1518,16 +1597,31 @@ export function App() {
   });
 
   const resourceDraftMismatch = ((route.page === 'characterDetail' || route.page === 'characterAssets') && draft.id !== routeId) || (route.page === 'presetDetail' && presetDraft.id !== routeId) || (route.page === 'chatCommandDetail' && chatCommandDraft.id !== routeId) || (route.page === 'conversationEdit' && roomEditDraft.id !== routeId);
+  const roomFailureStatus = !!roomLoadError && !isCompletionFeedback(status, t) && (status.includes(roomLoadError) || status.includes(t('캐릭터 초대 완료')));
+  const chatFeedback = <>
+    <OperationFeedback status={status} onDismiss={dismissStatus} showPersistent={!roomFailureStatus} />
+    {roomLoadError && <ResourceDetailFeedback variant="chat" error={roomFailureStatus ? status : roomLoadError} onRetry={() => void retryConversationRefresh()}>{unknownSubmissionsForRoom(selectedConversationId).length > 0 && !generationOwners.pending.has(selectedConversationId) && <Button onClick={() => void stopTrackingUnknownSubmission()}>Stop tracking unresolved submission</Button>}</ResourceDetailFeedback>}
+  </>;
+  const conversationSidePanel = <ConversationInfoDrawer
+    open={chatPanelReady && chatPanel.open} docked={chatPanel.docked} activeTab={chatPanelTab} onTabChange={setChatPanelTab} onClose={() => chatPanel.setOpen(false)}
+    feedbackContent={chatFeedback} context={conversationContext} loading={contextLoading} conversation={conversation} participants={participants} characters={characters} participantName={participantName}
+    onRenameConversation={renameConversation} onInviteCharacter={inviteCharacterToConversation} onRemoveCharacter={removeCharacterFromConversation} onUpdateCharacterRole={updateCharacterRoleInConversation}
+    battleState={battleState} onUpdateSceneSummary={updateSceneSummary} userMemoryDraft={userMemoryDraft} onUserMemoryDraftChange={setUserMemoryDraft}
+    onCreateUserMemory={createUserMemory} onUpdateMemory={updateConversationMemory} onDeleteMemory={deleteConversationMemory} busy={busy}
+    settingsContent={<ChatSettingsBubble embedded open={chatPanel.open} setting={conversationRuntimeSetting} inheritedThinkingLevel={runtimeDefaultSetting.effective_thinking_level}
+      onChange={setConversationRuntimeSetting} onSave={saveConversationRuntimeSetting} saving={busy} onClose={() => chatPanel.setOpen(false)}
+      renderImages={renderChatImages} onRenderImagesChange={setRenderChatImages} ttsEnabled={!!conversation?.tts_enabled}
+      onTtsEnabledChange={enabled => setConversation(current => ({ ...(current || {}), tts_enabled: enabled }))} onCompressNow={compressConversationNow} />}
+  />;
   const appOverlays = <>
-    <ConversationInfoDrawer open={contextDrawerOpen} onClose={() => setContextDrawerOpen(false)} context={conversationContext} loading={contextLoading} conversation={conversation} participants={participants} characters={characters} participantName={participantName} onRenameConversation={renameConversation} onInviteCharacter={inviteCharacterToConversation} onRemoveCharacter={removeCharacterFromConversation} onUpdateCharacterRole={updateCharacterRoleInConversation} battleState={battleState} onUpdateSceneSummary={updateSceneSummary} userMemoryDraft={userMemoryDraft} onUserMemoryDraftChange={setUserMemoryDraft} onCreateUserMemory={createUserMemory} onUpdateMemory={updateConversationMemory} onDeleteMemory={deleteConversationMemory} busy={busy} />
     <AvatarPreviewModal preview={avatarPreview as any} onClose={() => setAvatarPreview(null)} />
     <CharacterCardPreviewModal character={cardPreview as any} onClose={() => setCardPreview(null)} />
   </>;
 
   const selectedMultiCharacterIds = multiCharacterIds.filter(Boolean);
-  const canStartConversation = selectedMultiCharacterIds.length >= 1 && new Set(selectedMultiCharacterIds).size === selectedMultiCharacterIds.length && !!selectedWorldSettingId;
+  const canStartConversation = selectedMultiCharacterIds.length >= 1 && new Set(selectedMultiCharacterIds).size === selectedMultiCharacterIds.length;
   const headerActions = (() => {
-    if (route.page === 'home') return null;
+    if (route.page === 'home') return <Button type="button" onClick={() => navigate('/conversations/new')}>{t('새 대화방')}</Button>;
     if (route.page === 'conversations') return <Button type="button" onClick={() => navigate('/conversations/new')}>{t('새 대화방')}</Button>;
     if (route.page === 'conversationNew') return <Button type="button" disabled={busy || !canStartConversation} onClick={startConversationRoom}>{t(busy ? '생성 중…' : '대화 시작')}</Button>;
     if (route.page === 'conversationEdit') return null;
@@ -1544,8 +1638,8 @@ export function App() {
   })();
 
   return <AppShell route={route} backendOnline={backendOnline} drawerOpen={drawerOpen} setDrawerOpen={setDrawerOpen} navigate={navigate} overlays={appOverlays} headerActions={headerActions}>
-    {resourceDraftMismatch && <section role="status"><p>{status}</p><Button onClick={() => setResourceReloadKey(key => key + 1)}>{t('재시도')}</Button><Button onClick={() => navigate('/' + (route.page.startsWith('character') ? 'characters' : route.page.startsWith('preset') ? 'presets' : 'conversations'))}>{t('목록으로')}</Button></section>}
-    {route.page !== 'conversationDetail' && <p role="status" aria-live="polite" className="form-operation-status">{status}</p>}
+    {resourceDraftMismatch && <ResourceDetailFeedback error={status && status !== t('불러오는 중…') && !isCompletionFeedback(status, t) ? status : ''} onRetry={() => setResourceReloadKey(key => key + 1)}><Button onClick={() => navigate('/' + (route.page.startsWith('character') ? 'characters' : route.page.startsWith('preset') ? 'presets' : route.page.startsWith('chatCommand') ? 'chat-commands' : 'conversations'))}>{t('목록으로')}</Button></ResourceDetailFeedback>}
+    {route.page !== 'conversationDetail' && <OperationFeedback status={status} onDismiss={dismissStatus} showPersistent={!resourceDraftMismatch} />}
     {route.page === 'home' && <ResourceListBoundary variant="home"><HomeView conversations={conversations} characters={characterUsageRanking.length ? characterUsageRanking : characters} allCharacters={characters} worldSettings={worldSettings} navigate={navigate} openConversation={openConversation} /></ResourceListBoundary>}
     {route.page === 'conversationNew' && <ConversationCreateView busy={busy} navigate={navigate} status={status} startConversationRoom={startConversationRoom} conversationTitle={conversationTitle} setConversationTitle={setConversationTitle} selectedWorldSettingId={selectedWorldSettingId} setSelectedWorldSettingId={setSelectedWorldSettingId} worldSettings={worldSettings} scene={scene} setScene={setScene} userDescription={userDescription} setUserDescription={setUserDescription} applyPreset={applyPreset} multiCharacterIds={multiCharacterIds} multiCharacterRoles={multiCharacterRoles} updateMultiCharacterSlot={updateMultiCharacterSlot} updateMultiCharacterRole={updateMultiCharacterRole} removeMultiCharacterSlot={removeMultiCharacterSlot} addMultiCharacterSlot={addMultiCharacterSlot} selectOptions={selectOptions} />}
 
@@ -1567,7 +1661,7 @@ export function App() {
 
     {route.page === 'conversations' && <ResourceListBoundary variant="media"><ConversationsListView conversations={conversations} busy={busy} navigate={navigate} openConversation={openConversation} deleteConversation={deleteConversation} loadConversations={loadConversations} allCharacters={characters} worldSettings={worldSettings} /></ResourceListBoundary>}
     {route.page === 'conversationEdit' && !resourceDraftMismatch && <ConversationEditView busy={busy} navigate={navigate} saveConversationRoomEdit={saveConversationRoomEdit} roomEditDraft={roomEditDraft} setRoomEditDraft={setRoomEditDraft} applyRoomEditPreset={applyRoomEditPreset} worldSettings={worldSettings} characters={characters} />}
-    {route.page === 'conversationDetail' && (!conversation || conversation.id !== selectedConversationId) && <section role={roomLoadError ? 'alert' : 'status'} aria-busy={!roomLoadError}><p>{roomLoadError || t('불러오는 중…')}</p>{roomLoadError && <><Button onClick={() => void fetchConversation(selectedConversationId)}>{t('재시도')}</Button>{unknownSubmissionsForRoom(selectedConversationId).length > 0 && !generationOwners.pending.has(selectedConversationId) && <Button onClick={() => void stopTrackingUnknownSubmission()}>Stop tracking unresolved submission</Button>}</>}</section>}
-    {route.page === 'conversationDetail' && conversation?.id === selectedConversationId && <ConversationDetailView conversation={conversation} selectedConversationId={selectedConversationId} status={status} navigate={navigate} openConversationContextDrawer={openConversationContextDrawer} messageSelectionMode={messageSelectionMode} selectedMessageIds={selectedMessageIds} clearMessageSelection={clearMessageSelection} busy={busy} deleteSelectedMessages={deleteSelectedMessages} messages={messages} characters={characters} participants={participants} setAvatarPreview={setAvatarPreview} chatEndRef={chatEndRef} chatThreadRef={chatThreadRef} loadOlderMessages={loadOlderMessages} hasOlderMessages={hasOlderMessages} loadingOlderMessages={loadingOlderMessages} olderPagingReady={olderPagingReady} retryMessage={retryMessage} renderChatImages={renderChatImages} generateMessageTts={generateMessageTts} regenerateFromMessage={regenerateFromMessage} deleteMessageBubble={deleteMessageBubble} updateMessageBubble={updateMessageBubble} enterMessageSelectionMode={enterMessageSelectionMode} toggleMessageSelection={toggleMessageSelection} setShowJumpToLatest={setShowJumpToLatest} showJumpToLatest={showJumpToLatest} scrollToLatest={scrollToLatest} sendConversationMessage={sendConversationMessage} speakerId={speakerId} setSpeakerId={setSpeakerId} speakerOptions={speakerOptions} participantName={participantName} setChatSettingsOpen={setChatSettingsOpen} chatSettingsOpen={chatSettingsOpen} conversationRuntimeSetting={conversationRuntimeSetting} inheritedThinkingLevel={runtimeDefaultSetting.effective_thinking_level} setConversationRuntimeSetting={setConversationRuntimeSetting} saveConversationRuntimeSetting={saveConversationRuntimeSetting} setRenderChatImages={setRenderChatImages} setConversation={setConversation} compressConversationNow={compressConversationNow} composerTextareaRef={composerTextareaRef} compose={compose} setCompose={setCompose} resizeComposerTextarea={resizeComposerTextarea} handleComposerKeyDown={handleComposerKeyDown} composeExpanded={composeExpanded} setComposeExpanded={setComposeExpanded} battleState={battleState} battleControlDraft={battleControlDraft} setBattleControlDraft={setBattleControlDraft} chatCommands={chatCommands} clearActiveCommand={clearActiveCommand} />}
+    {route.page === 'conversationDetail' && (!conversation || conversation.id !== selectedConversationId) && <ResourceDetailFeedback variant="chat" error={roomLoadError} onRetry={() => void retryConversationRefresh()}>{unknownSubmissionsForRoom(selectedConversationId).length > 0 && !generationOwners.pending.has(selectedConversationId) && <Button onClick={() => void stopTrackingUnknownSubmission()}>Stop tracking unresolved submission</Button>}</ResourceDetailFeedback>}
+    {route.page === 'conversationDetail' && conversation?.id === selectedConversationId && <ConversationDetailView sidePanel={conversationSidePanel} workspaceRef={chatPanel.workspaceRef} panelDocked={chatPanel.docked} panelOpen={chatPanel.open} panelWidth={chatPanel.panelWidth} onOpenPanelSettings={openConversationPanelSettings} feedback={!chatPanel.open ? chatFeedback : null} conversation={conversation} selectedConversationId={selectedConversationId} status={''} navigate={navigate} openConversationContextDrawer={openConversationContextDrawer} messageSelectionMode={messageSelectionMode} selectedMessageIds={selectedMessageIds} clearMessageSelection={clearMessageSelection} busy={busy} deleteSelectedMessages={deleteSelectedMessages} messages={messages} characters={characters} participants={participants} setAvatarPreview={setAvatarPreview} chatEndRef={chatEndRef} chatThreadRef={chatThreadRef} loadOlderMessages={loadOlderMessages} hasOlderMessages={hasOlderMessages} loadingOlderMessages={loadingOlderMessages} olderPagingReady={olderPagingReady} retryMessage={retryMessage} renderChatImages={renderChatImages} generateMessageTts={generateMessageTts} regenerateFromMessage={regenerateFromMessage} deleteMessageBubble={deleteMessageBubble} updateMessageBubble={updateMessageBubble} enterMessageSelectionMode={enterMessageSelectionMode} toggleMessageSelection={toggleMessageSelection} setShowJumpToLatest={setShowJumpToLatest} showJumpToLatest={showJumpToLatest} scrollToLatest={scrollToLatest} sendConversationMessage={sendConversationMessage} speakerId={speakerId} setSpeakerId={setSpeakerId} speakerOptions={speakerOptions} participantName={participantName} setChatSettingsOpen={setChatSettingsOpen} chatSettingsOpen={chatSettingsOpen} conversationRuntimeSetting={conversationRuntimeSetting} inheritedThinkingLevel={runtimeDefaultSetting.effective_thinking_level} setConversationRuntimeSetting={setConversationRuntimeSetting} saveConversationRuntimeSetting={saveConversationRuntimeSetting} setRenderChatImages={setRenderChatImages} setConversation={setConversation} compressConversationNow={compressConversationNow} composerTextareaRef={composerTextareaRef} compose={compose} setCompose={setCompose} resizeComposerTextarea={resizeComposerTextarea} handleComposerKeyDown={handleComposerKeyDown} composeExpanded={composeExpanded} setComposeExpanded={setComposeExpanded} battleState={battleState} battleControlDraft={battleControlDraft} setBattleControlDraft={setBattleControlDraft} chatCommands={chatCommands} clearActiveCommand={clearActiveCommand} />}
   </AppShell>;
 }

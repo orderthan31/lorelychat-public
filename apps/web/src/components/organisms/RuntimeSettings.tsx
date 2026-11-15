@@ -1,9 +1,10 @@
-import { useId } from 'react';
+import { EditorActionBar } from '../molecules/EditorActionBar';
+import './runtime-fields.scss';
 import {
   DEFAULT_RUNTIME_SETTING,
   FALLBACK_RESPONSE_LENGTH_PRESETS,
 } from '../../constants/domain';
-import { Field, FormSection } from '../molecules';
+import { Field } from '../molecules';
 import { Button } from '../atoms';
 import { Card, CardContent, CardHeader, CardTitle } from '../atoms';
 import { Select } from '../atoms';
@@ -62,6 +63,7 @@ export type RuntimeSettingsPanelProps = {
 
 export type ChatSettingsBubbleProps = RuntimeSettingsPanelProps & {
   open: boolean;
+  embedded?: boolean;
   onClose?: () => void;
   renderImages?: boolean;
   onRenderImagesChange?: (value: boolean) => void;
@@ -94,8 +96,6 @@ export function DecisionCapabilityHint({ option }: { option?: RuntimeOption }) {
 
 function RuntimeSettingFields({ value = {}, onChange, compact = false, scope = 'global', inheritedThinkingLevel }: RuntimeSettingFieldsProps) {
   const { t } = useI18n();
-  const compressionStrategyGroupName = useId();
-  const thinkingHintId = useId();
   const thinkingLabels = { low: t('추론 낮음'), medium: t('추론 보통'), high: t('추론 높음'), xhigh: t('추론 매우 높음'), max: t('추론 최대') };
   const commonThinkingLevel = inheritedThinkingLevel ?? (value.thinking_level == null ? value.effective_thinking_level : undefined);
   const thinkingValue = scope === 'room' ? (value.thinking_level ?? '') : (value.thinking_level ?? 'low');
@@ -125,7 +125,7 @@ function RuntimeSettingFields({ value = {}, onChange, compact = false, scope = '
     if (value.thinking_level === undefined && patch.thinking_level === undefined) delete next.thinking_level;
     onChange?.(next);
   };
-  return <div className={cn('grid grid-cols-1 gap-2.5 min-[720px]:grid-cols-[minmax(0,1.25fr)_minmax(160px,.75fr)]', compact && 'gap-2')}>
+  return <div className={cn('runtime-setting-fields grid grid-cols-1 gap-2.5', compact && 'gap-2 runtime-fields--compact')}>
     {value.chat_fallback_status === 'unavailable' && <p role="status" data-fallback-unavailable="chat">Chat fallback unavailable · {value.fallback_model_key || 'requested model'}. Selection preserved; no replacement selected.</p>}
     {value.compression_fallback_status === 'unavailable' && <p role="status" data-fallback-unavailable="compression">Compression fallback unavailable · {value.compression_fallback_model_key || value.fallback_model_key || 'requested model'}. Selection preserved; no replacement selected.</p>}
     <Field label={t('채팅 Provider')}><Select value={selectedChatAccountId} disabled={!chatAccounts.length} onChange={(e) => {
@@ -155,33 +155,10 @@ function RuntimeSettingFields({ value = {}, onChange, compact = false, scope = '
       <option value="">{t('채팅 폴백 상속')}{inheritedCompressionFallback ? ` · ${inheritedCompressionFallback.label || inheritedCompressionFallback.key}` : ` · ${t('설정 없음')}`}</option>
       {value.compression_fallback_model_key && !compressionFallbackOptions.some(option => option.key === value.compression_fallback_model_key) && <option value={value.compression_fallback_model_key}>{value.compression_fallback_model_key} · unavailable</option>}
       {compressionFallbackOptions.map((option) => <option key={option.key} value={option.key}>{option.provider_account_alias ? `${option.provider_account_alias} · ` : ''}{option.label || option.key}</option>)}
-    </Select><p className="context-muted">{t('전용 모델이 없으면 채팅 폴백을 재사용합니다. 파싱·검증·빈 요약도 실패로 보고 이 모델로 다시 압축합니다.')}</p></Field>
-    <fieldset className="grid min-w-0 gap-2 min-[720px]:col-span-2" aria-label={t('압축 방식')}>
-      <legend className="mb-1 text-sm font-medium text-foreground">{t('압축 방식')}</legend>
-      <div className={cn('grid grid-cols-1 gap-2', !compact && 'min-[560px]:grid-cols-2')}>
-        {([
-          {
-            key: 'fast',
-            label: t('빠른 압축 (E)'),
-            description: t('보통 1회 LLM 호출로 비용과 대기 시간을 줄입니다. 시간순서나 열린 사건·복선을 놓칠 수 있습니다.'),
-          },
-          {
-            key: 'quality',
-            label: t('정밀 압축 (F · 추천)'),
-            description: t('보통 3회 LLM 호출(추출→독립 검토→최종)을 사용합니다. 배틀 고정 코호트 측정에서는 생성 토큰 비용이 E의 약 2.85배였으며, 대화와 모델에 따라 실제 비용과 결과 품질은 달라질 수 있습니다.'),
-          },
-        ] satisfies Array<{ key: CompressionStrategy; label: string; description: string }>).map((option) => {
-          const selected = normalizedCompressionStrategy === option.key;
-          const descriptionId = `${compressionStrategyGroupName}-${option.key}-description`;
-          return <label key={option.key} className={cn('relative grid cursor-pointer gap-1 rounded-xl border border-border bg-background/35 p-3 transition-colors hover:border-primary/60', selected && 'border-primary bg-primary/10 ring-1 ring-primary/30')}>
-            <input className="peer sr-only" type="radio" name={compressionStrategyGroupName} value={option.key} checked={selected} aria-describedby={descriptionId} onChange={(event) => update({ compression_strategy: normalizeCompressionStrategy(event.currentTarget.value) })} />
-            <span className="flex items-center gap-2 text-sm font-semibold text-foreground"><span className={cn('h-3.5 w-3.5 shrink-0 rounded-full border border-muted-foreground/60', selected && 'border-[4px] border-primary')} aria-hidden="true" />{option.label}</span>
-            <span id={descriptionId} className="text-xs leading-relaxed text-muted-foreground">{option.description}</span>
-            <span className="pointer-events-none absolute inset-0 rounded-xl ring-offset-background peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2" aria-hidden="true" />
-          </label>;
-        })}
-      </div>
-    </fieldset>
+    </Select></Field>
+    <Field label={t('압축 방식')}><Select value={normalizedCompressionStrategy} onChange={(event) => update({ compression_strategy: normalizeCompressionStrategy(event.currentTarget.value) })}>
+      <option value="fast">{t('빠른 압축 (E)')} · ≈1× LLM</option><option value="quality">{t('정밀 압축 (F · 추천)')} · ≈3× LLM</option>
+    </Select></Field>
     <Field label={t('TTS 모델')}><Select value={String(value.default_tts_model_option_key || '')} onChange={(e) => update({ default_tts_model_option_key: e.target.value || null })}><option value="">{t('TTS 모델 미설정')}</option>{ttsModelOptions(value).map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
     <div className="grid gap-1 min-[720px]:col-span-2">
       <Switch
@@ -190,52 +167,60 @@ function RuntimeSettingFields({ value = {}, onChange, compact = false, scope = '
         onChange={(event) => update({ decision_enabled: event.target.checked })}
         label={t('의사결정 모델 사용')}
       />
-      <p className="context-muted">{t('에셋 추천은 별도 모델 호출을 사용하는 선택 기능입니다. 끄면 기존 방식이 유지되며, 제공자 오류나 시간 초과 시에도 기존 방식으로 처리합니다.')}</p>
+
     </div>
     <Field label={t('의사결정 Provider')}><Select value={selectedDecisionAccountId} disabled={!decisionAccounts.length} onChange={(e) => {
       const accountOptions = decisionOptions.filter((option) => option.provider_account_id === e.target.value);
       update({ decision_model_option_key: accountOptions[0]?.key || null });
     }}><option value="">{decisionAccounts.length ? t('Provider 계정 선택') : t('선택 가능한 모델 없음')}</option>{decisionAccounts.map(([id, option]) => <option key={id} value={id}>{option.provider_account_alias || option.provider || id}</option>)}</Select></Field>
     <Field label={t('의사결정 모델')}><Select value={String(value.decision_model_option_key || '')} disabled={!decisionOptionsForAccount.length} onChange={(e) => update({ decision_model_option_key: e.target.value || null })}><option value="">{decisionOptionsForAccount.length ? t('의사결정 모델 선택') : t('선택 가능한 모델 없음')}</option>{decisionOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
-    <div className="min-[720px]:col-span-2"><DecisionCapabilityHint option={decisionOptions.find((option) => option.key === value.decision_model_option_key)} /></div>
+
     <div className="min-w-0 min-[720px]:col-span-2">
-      <Field label={t('추론 깊이')}><Select className="w-full min-w-0" aria-describedby={thinkingHintId} value={thinkingValue} onChange={(event) => update({ thinking_level: event.target.value ? event.target.value as ThinkingLevel : null })}>
+      <Field label={t('추론 깊이')}><Select className="w-full min-w-0" value={thinkingValue} onChange={(event) => update({ thinking_level: event.target.value ? event.target.value as ThinkingLevel : null })}>
         {scope === 'room' && <option value="">{t('공통 설정 상속')}{commonThinkingLevel ? ` · ${thinkingLabels[commonThinkingLevel]}` : ''}</option>}
         {(Object.keys(thinkingLabels) as ThinkingLevel[]).map(level => <option key={level} value={level}>{thinkingLabels[level]}</option>)}
-      </Select><p id={thinkingHintId} className="context-muted">{t('추론 깊이를 조절합니다. 높을수록 전체 생성 한도(생각+답변)가 늘어납니다. 미지원 단계는 모델 지원 범위로 조정되며, 별도의 표시 답변 분량을 보장하지 않습니다.')}</p></Field>
+      </Select></Field>
     </div>
     <Field label={t('대화 길이')}><Select value={String(value.response_length_preset || DEFAULT_RUNTIME_SETTING.response_length_preset)} onChange={(e) => update({ response_length_preset: e.target.value })}>{responseLengthPresets(value).map((preset) => <option key={preset.key} value={preset.key}>{localizedResponseLengthLabel(preset, t)}</option>)}</Select></Field>
-    <Field label={t('민감 콘텐츠 필터')}><Select value={String(value.safety_preset || 'medium')} onChange={(e) => update({ safety_preset: e.target.value })}><option value="high">{t('높음 · 제한 강함')}</option><option value="medium">{t('보통 · 기본 RP')}</option><option value="low">{t('낮음 · provider 허용 범위')}</option></Select><p className="context-muted">{t('개인 로컬 채팅의 모델 응답 필터에만 적용됩니다. 마켓 검수 기준과는 별개입니다.')}</p></Field>
+    <Field label={t('민감 콘텐츠 필터')}><Select value={String(value.safety_preset || 'medium')} onChange={(e) => update({ safety_preset: e.target.value })}><option value="high">{t('높음 · 제한 강함')}</option><option value="medium">{t('보통 · 기본 RP')}</option><option value="low">{t('낮음 · provider 허용 범위')}</option></Select></Field>
+    <details className="runtime-help min-[720px]:col-span-2"><summary>{t('상세')}</summary>
+<div><strong>{t('채팅 폴백 상속')}</strong><p>{t('전용 모델이 없으면 채팅 폴백을 재사용합니다. 파싱·검증·빈 요약도 실패로 보고 이 모델로 다시 압축합니다.')}</p></div>
+<div><strong>{t('압축 방식')}</strong>
+      <p>{t('보통 1회 LLM 호출로 비용과 대기 시간을 줄입니다. 시간순서나 열린 사건·복선을 놓칠 수 있습니다.')}</p>
+      <p>{t('보통 3회 LLM 호출(추출→독립 검토→최종)을 사용합니다. 배틀 고정 코호트 측정에서는 생성 토큰 비용이 E의 약 2.85배였으며, 대화와 모델에 따라 실제 비용과 결과 품질은 달라질 수 있습니다.')}</p>
+    </div>
+<div><strong>{t('의사결정 모델 사용')}</strong><p>{t('에셋 추천은 별도 모델 호출을 사용하는 선택 기능입니다. 끄면 기존 방식이 유지되며, 제공자 오류나 시간 초과 시에도 기존 방식으로 처리합니다.')}</p></div>
+<div><strong>{t('이미지 지원 정보')}</strong><DecisionCapabilityHint option={decisionOptions.find((option) => option.key === value.decision_model_option_key)} /></div>
+<div><strong>{t('추론 깊이')}</strong><p>{t('추론 깊이를 조절합니다. 높을수록 전체 생성 한도(생각+답변)가 늘어납니다. 미지원 단계는 모델 지원 범위로 조정되며, 별도의 표시 답변 분량을 보장하지 않습니다.')}</p></div>
+    </details>
   </div>;
 }
 function RuntimeSettingsPanel({ setting, onChange, onSave, saving, title }: RuntimeSettingsPanelProps) {
   const { t } = useI18n();
   const canSave = !!runtimeModelOptions(setting).length && !!compressionModelOptions(setting).length && !!setting?.model_key && !!setting?.compression_model_key && (!setting?.decision_enabled || hasActiveDecisionModel(setting));
-  return <FormSection
-    className="my-3"
-    title={title || t('채팅 기본 설정')}
-    action={<Button type="button" disabled={saving || !canSave} onClick={onSave}>{saving ? t('저장 중…') : t('기본값 저장')}</Button>}
-    data-modernized="runtime 설정 flat form section"
-  >
+  return <section className="editor-surface runtime-settings-container grid gap-3 my-3">
+    <EditorActionBar label={t('페이지 액션')}><Button type="button" disabled={saving || !canSave} onClick={onSave}>{saving ? t('저장 중…') : t('기본값 저장')}</Button></EditorActionBar>
+    <div role="group" aria-label={title || t('채팅 기본 설정')} data-modernized="runtime 설정 flat form section">
     <RuntimeSettingFields value={setting} onChange={onChange} scope="global" />
     {!canSave ? <p className="context-muted">{t('Provider 계정을 연결하고 모델 목록을 불러온 뒤 채팅/압축 모델을 선택해주세요.')}</p> : null}
-  </FormSection>;
+  </div>
+  </section>;
 }
 
-function ChatSettingsBubble({ open, inheritedThinkingLevel, setting, onChange, onSave, saving, onClose, renderImages, onRenderImagesChange, ttsEnabled, onTtsEnabledChange, onCompressNow }: ChatSettingsBubbleProps) {
+function ChatSettingsBubble({ open, embedded = false, inheritedThinkingLevel, setting, onChange, onSave, saving, onClose, renderImages, onRenderImagesChange, ttsEnabled, onTtsEnabledChange, onCompressNow }: ChatSettingsBubbleProps) {
   const { t } = useI18n();
   if (!open) return null;
   const imagesEnabled = renderImages !== false;
-  return <Card className="chat-settings-popover" role="dialog" aria-label={t('채팅 설정')} data-modernized="runtime 설정 design-system primitive marker">
+  return <Card className={embedded ? 'chat-settings-embedded' : 'chat-settings-popover'} role={embedded ? 'region' : 'dialog'} aria-label={t('채팅 설정')} data-modernized="runtime 설정 design-system primitive marker">
     <CardHeader className="flex items-start justify-between gap-3">
       <CardTitle>{t('채팅 설정')}</CardTitle>
       <Button type="button" variant="ghost" size="icon" aria-label={t('채팅 설정 닫기')} onClick={onClose}>×</Button>
     </CardHeader>
-    <CardContent>
+    <CardContent className="editor-surface runtime-settings-container">
+      <EditorActionBar label={t('페이지 액션')}><Button type="button" disabled={saving || (!!setting?.decision_enabled && !hasActiveDecisionModel(setting))} onClick={onSave}>{saving ? t('저장 중…') : t('이 방 설정 저장')}</Button><Button type="button" variant="ghost" disabled={saving} onClick={onCompressNow}>{t('지금 압축')}</Button></EditorActionBar>
       <RuntimeSettingFields value={setting} onChange={onChange} scope="room" inheritedThinkingLevel={inheritedThinkingLevel} compact />
       <Switch checked={imagesEnabled} onChange={(e) => onRenderImagesChange?.(e.target.checked)} label={t('대화 이미지 표시')} />
       <Switch checked={!!ttsEnabled} onChange={(e) => onTtsEnabledChange?.(e.target.checked)} label={t('캐릭터 TTS 자동 생성')} />
-      <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(0,1fr))] gap-2.5 [&>button]:w-full [&>button]:min-w-0 [&>button]:justify-self-stretch"><Button type="button" disabled={saving || (!!setting?.decision_enabled && !hasActiveDecisionModel(setting))} onClick={onSave}>{saving ? t('저장 중…') : t('이 방 설정 저장')}</Button><Button type="button" variant="ghost" disabled={saving} onClick={onCompressNow}>{t('지금 압축')}</Button></div>
     </CardContent>
   </Card>;
 }

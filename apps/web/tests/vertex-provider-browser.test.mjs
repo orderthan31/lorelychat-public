@@ -188,8 +188,10 @@ try {
     assert.equal(createPayload.vertex_auth_mode, 'adc');
     assert.equal('api_key' in createPayload, false); assert.equal('base_url' in createPayload, false);
     await page.locator('[role=tab][id$="-trigger-models"]').click();
-    const capabilityFilter = page.locator('[data-model-list] label').filter({ has: page.getByText(t('용도'), { exact: true }) }).locator('select').first();
-    await page.locator('[data-model-list] label').filter({ has: page.getByText(t('Provider 계정'), { exact: true }) }).locator('select').first().selectOption('synthetic-vertex');
+    const capabilityFilter = page.locator('[data-model-filter-fields] label').filter({ has: page.getByText(t('용도'), { exact: true }) }).locator('select');
+    const filterToggle = page.locator('[data-model-filter-toggle]');
+    if (await filterToggle.isVisible() && await filterToggle.getAttribute('aria-expanded') === 'false') await filterToggle.click();
+    await page.locator('[data-model-filter-fields] label').filter({ has: page.getByText(t('Provider 계정'), { exact: true }) }).locator('select').selectOption('synthetic-vertex');
     await expect(page.locator('[data-model-row]')).toHaveCount(2);
     await capabilityFilter.selectOption('chat');
     await expect(page.locator('[data-model-row]')).toHaveCount(1);

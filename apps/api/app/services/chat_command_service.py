@@ -532,11 +532,11 @@ def _room_characters_and_roles(session: Session, conversation_id: str) -> tuple[
 
 
 def _build_scene_context(scene: SceneState | None, *, comparison_options: ComparisonOptions | None = None,
-                         has_durable_history: bool = False) -> list[str]:
+                         has_durable_history: bool = False, include_world: bool = True) -> list[str]:
     if not scene:
         return []
     if comparison_options and comparison_options.context_policy == "full_history":
-        return [prompts.build_scene_text(scene, include_summary=False,
+        return [prompts.build_scene_text(scene, include_summary=False, include_world=include_world,
             include_opening=not (has_durable_history or scene.summary or scene.last_compression_source_message_id))]
     return [
         "[현재 장면]",
@@ -692,8 +692,9 @@ def build_command_postprocess_context(session: Session, command: ChatCommand, co
     blocks: list[str] = []
     if "scene" in options:
         blocks.extend(_build_scene_context(scene, comparison_options=comparison_options,
+            include_world=bool(conversation and conversation.world_setting_id),
             has_durable_history=bool(prefix and any(m.id != source_message.id for m in prefix))))
-    if "world" in options:
+    if "world" in options and conversation and conversation.world_setting_id:
         blocks.extend(_build_world_context(world, scene))
     if "characters" in options:
         blocks.extend(_build_characters_context(characters, room_cast_roles))
@@ -827,6 +828,10 @@ async def apply_chat_command_postprocess(
                 comparison_options=comparison_options, source_messages=source_messages
             )
         settings = prompt_settings or {}
+        conversation = session.get(Conversation, conversation_id)
+        if not conversation or not conversation.world_setting_id:
+            from app.services.system_prompt_service import without_world_defaults
+            settings = without_world_defaults(settings)
         system_prompt = "\n\n".join(
             part.strip()
             for part in [

@@ -1,0 +1,9 @@
+.editor-help {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  > summary { min-height: 44px; padding: 10px 0; cursor: pointer; color: var(--foreground); }
+  > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  > div { padding: 0 0 12px; overflow-wrap: anywhere; }
+}
