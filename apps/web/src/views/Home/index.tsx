@@ -91,7 +91,7 @@ export function HomeView({ conversations = [], characters = [], allCharacters = 
           <span className="home-edit-hint">{t('편집')}<ChevronRight size={14} aria-hidden="true" /></span>
         </button>) : <p className="home-empty">{t('아직 연결된 세계관 없음')}</p>}</div>
       </HomeSection>
-      <nav className="home-tools" aria-label={t('설정')}><Button type="button" variant="ghost" onClick={() => navigate('/chat-commands')}>{t('커맨드')}</Button><Button type="button" variant="ghost" onClick={() => navigate('/presets')}>{t('프리셋')}</Button><Button type="button" variant="ghost" onClick={() => navigate('/model-settings')}>{t('모델 설정')}</Button></nav>
+
     </div>
   </section>;
 }

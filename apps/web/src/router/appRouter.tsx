@@ -23,6 +23,7 @@ export const routeNames = {
   worldSettingDetail: '/world-settings/$worldSettingId',
   statistics: '/statistics',
   settings: '/settings',
+  agentSettings: '/settings/lore-agent',
 } as const;
 
 export type RouteName = keyof typeof routeNames;
@@ -39,6 +40,7 @@ export type LegacyRoute =
   | { page: 'conversationDetail'; id: string }
   | { page: 'conversationEdit'; id: string }
   | { page: 'settings' }
+  | { page: 'agentSettings' }
   | { page: 'presets' }
   | { page: 'presetNew' }
   | { page: 'presetDetail'; id: string }
@@ -74,6 +76,7 @@ export const routeDescriptors: RouteDescriptor[] = [
   { name: 'characterNew', path: routeNames.characterNew, title: '새 캐릭터', toLegacyRoute: () => ({ page: 'characterNew' }) },
   { name: 'characterAssets', path: routeNames.characterAssets, title: '에셋 갤러리', paramName: 'characterId', toLegacyRoute: (id = '') => ({ page: 'characterAssets', id }) },
   { name: 'characterDetail', path: routeNames.characterDetail, title: '캐릭터 상세', paramName: 'characterId', toLegacyRoute: (id = '') => ({ page: 'characterDetail', id }) },
+  { name: 'agentSettings', path: routeNames.agentSettings, title: 'agent.title', toLegacyRoute: () => ({ page: 'agentSettings' }) },
   { name: 'settings', path: routeNames.settings, title: '설정', toLegacyRoute: () => ({ page: 'settings' }) },
   { name: 'presets', path: routeNames.presets, title: '프리셋', toLegacyRoute: () => ({ page: 'presets' }) },
   { name: 'presetNew', path: routeNames.presetNew, title: '프리셋', toLegacyRoute: () => ({ page: 'presetNew' }) },

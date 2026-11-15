@@ -23,6 +23,7 @@ import { useI18n } from '../i18n/I18nProvider';
 import { formatDangerConfirmation, formatUiCount } from '../i18n/core';
 import { Button } from '../components/atoms';
 import { OperationFeedback, isCompletionFeedback } from '../components/molecules/OperationFeedback';
+import { isChatGenerationProgress } from '../utils/chatFeedback';
 import { useConversationPanelLayout } from '../hooks/useConversationPanelLayout';
 import type { DrawerTab } from '../components/organisms/ConversationInfoDrawer';
 import { ChatSettingsBubble } from '../components/organisms/RuntimeSettings';
@@ -39,6 +40,8 @@ import { ConversationCreateView } from '../views/ConversationCreate';
 import { CharactersListView } from '../views/Characters';
 import { ConversationsListView } from '../views/Conversations';
 import { SettingsView } from '../views/Settings';
+import { AgentSettingsView } from '../agent/settings';
+import { useAgentStore } from '../agent/store';
 import { ModelSettingsView } from '../views/ModelSettings';
 import { StatisticsView } from '../views/Statistics';
 import { ConversationDetailView } from '../views/ConversationDetail';
@@ -132,6 +135,7 @@ async function confirmDanger(message: string, options: ConfirmDangerOptions) {
 }
 export function App() {
   const { locale, t } = useI18n();
+  const agentOpen = useAgentStore(s => s.open && !!s.settings?.enabled);
   const confirmLocalizedDanger = (message: string) => confirmDanger(message, { title: t('삭제 확인'), confirmText: t('삭제'), cancelText: t('취소') });
   const bootstrap = useBootstrapResources();
   const characterMutations = useCharacterMutations();
@@ -153,6 +157,13 @@ export function App() {
   const [presets, setPresets] = useState<any[]>([]);
   const [chatCommands, setChatCommands] = useState<any[]>([]);
   const [worldSettings, setWorldSettings] = useState<any[]>([]);
+  useEffect(() => {
+    // Labels/IDs only; selecting context never implicitly sends loaded page data.
+    useAgentStore.setState({ resources: [
+      ...characters.map(item => ({ kind: 'character' as const, id: item.id, label: item.name || item.id })),
+      ...worldSettings.map(item => ({ kind: 'world' as const, id: item.id, label: item.title || item.id })),
+    ] });
+  }, [characters, worldSettings]);
   const [worldSettingDraft, setWorldSettingDraft] = useState<any>({ title: '', thumbnail_url: '', description: '', genre_mode: DEFAULT_GENRE_MODE, location: '', mood: '', world_seed: '', opening_scene: '', opening_line: '', tone_preset: '', relationship_archetype: '', compression_focus: '', tags: [], enabled: true });
   const [selectedWorldSettingId, setSelectedWorldSettingId] = useState('');
   const [ttsVoices, setTtsVoices] = useState<any[]>(FALLBACK_TTS_VOICES);
@@ -241,6 +252,7 @@ export function App() {
   const selectedConversationId = route.page === 'conversationDetail' ? routeId : '';
   const chatPanel = useConversationPanelLayout(selectedConversationId);
   const [chatPanelTab, setChatPanelTab] = useState<DrawerTab>('manage');
+  useEffect(() => { if (agentOpen) chatPanel.setOpen(false); }, [agentOpen, selectedConversationId]);
   const chatPanelReady = route.page === 'conversationDetail' && !!selectedConversationId && conversation?.id === selectedConversationId;
   useEffect(() => { setChatPanelTab('manage'); }, [selectedConversationId]);
   useEffect(() => { setContextDrawerOpen(chatPanelReady && chatPanel.open); }, [chatPanelReady, chatPanel.open, setContextDrawerOpen]);
@@ -474,10 +486,12 @@ export function App() {
     } finally { setBusy(false); }
   }
   function openConversationContextDrawer() {
+    useAgentStore.getState().setOpen(false);
     if (!chatPanel.open) setChatPanelTab('manage');
     chatPanel.setOpen(!chatPanel.open);
   }
   function openConversationPanelSettings() {
+    useAgentStore.getState().setOpen(false);
     setChatSettingsOpen(false);
     setChatPanelTab('settings');
     chatPanel.setOpen(true);
@@ -1598,12 +1612,13 @@ export function App() {
 
   const resourceDraftMismatch = ((route.page === 'characterDetail' || route.page === 'characterAssets') && draft.id !== routeId) || (route.page === 'presetDetail' && presetDraft.id !== routeId) || (route.page === 'chatCommandDetail' && chatCommandDraft.id !== routeId) || (route.page === 'conversationEdit' && roomEditDraft.id !== routeId);
   const roomFailureStatus = !!roomLoadError && !isCompletionFeedback(status, t) && (status.includes(roomLoadError) || status.includes(t('캐릭터 초대 완료')));
+  const chatGenerationStatus = isChatGenerationProgress(status, t) ? status : '';
   const chatFeedback = <>
-    <OperationFeedback status={status} onDismiss={dismissStatus} showPersistent={!roomFailureStatus} />
+    <OperationFeedback status={chatGenerationStatus ? '' : status} onDismiss={dismissStatus} showPersistent={!roomFailureStatus} />
     {roomLoadError && <ResourceDetailFeedback variant="chat" error={roomFailureStatus ? status : roomLoadError} onRetry={() => void retryConversationRefresh()}>{unknownSubmissionsForRoom(selectedConversationId).length > 0 && !generationOwners.pending.has(selectedConversationId) && <Button onClick={() => void stopTrackingUnknownSubmission()}>Stop tracking unresolved submission</Button>}</ResourceDetailFeedback>}
   </>;
   const conversationSidePanel = <ConversationInfoDrawer
-    open={chatPanelReady && chatPanel.open} docked={chatPanel.docked} activeTab={chatPanelTab} onTabChange={setChatPanelTab} onClose={() => chatPanel.setOpen(false)}
+    open={chatPanelReady && chatPanel.open && !agentOpen} docked={chatPanel.docked} activeTab={chatPanelTab} onTabChange={setChatPanelTab} onClose={() => chatPanel.setOpen(false)}
     feedbackContent={chatFeedback} context={conversationContext} loading={contextLoading} conversation={conversation} participants={participants} characters={characters} participantName={participantName}
     onRenameConversation={renameConversation} onInviteCharacter={inviteCharacterToConversation} onRemoveCharacter={removeCharacterFromConversation} onUpdateCharacterRole={updateCharacterRoleInConversation}
     battleState={battleState} onUpdateSceneSummary={updateSceneSummary} userMemoryDraft={userMemoryDraft} onUserMemoryDraftChange={setUserMemoryDraft}
@@ -1637,7 +1652,7 @@ export function App() {
     return null;
   })();
 
-  return <AppShell route={route} backendOnline={backendOnline} drawerOpen={drawerOpen} setDrawerOpen={setDrawerOpen} navigate={navigate} overlays={appOverlays} headerActions={headerActions}>
+  return <AppShell route={route} chatHeaderReady={route.page !== 'conversationDetail' || conversation?.id === selectedConversationId} backendOnline={backendOnline} drawerOpen={drawerOpen} setDrawerOpen={setDrawerOpen} navigate={navigate} overlays={appOverlays} headerActions={headerActions}>
     {resourceDraftMismatch && <ResourceDetailFeedback error={status && status !== t('불러오는 중…') && !isCompletionFeedback(status, t) ? status : ''} onRetry={() => setResourceReloadKey(key => key + 1)}><Button onClick={() => navigate('/' + (route.page.startsWith('character') ? 'characters' : route.page.startsWith('preset') ? 'presets' : route.page.startsWith('chatCommand') ? 'chat-commands' : 'conversations'))}>{t('목록으로')}</Button></ResourceDetailFeedback>}
     {route.page !== 'conversationDetail' && <OperationFeedback status={status} onDismiss={dismissStatus} showPersistent={!resourceDraftMismatch} />}
     {route.page === 'home' && <ResourceListBoundary variant="home"><HomeView conversations={conversations} characters={characterUsageRanking.length ? characterUsageRanking : characters} allCharacters={characters} worldSettings={worldSettings} navigate={navigate} openConversation={openConversation} /></ResourceListBoundary>}
@@ -1656,12 +1671,13 @@ export function App() {
     {(route.page === 'worldSettingNew' || route.page === 'worldSettingDetail') && <WorldSettingsDetailView route={route} worldSettings={worldSettings} loading={bootstrap.worldSettings.isPending} loadError={bootstrap.worldSettings.error?.message} onRetry={() => { void loadWorldSettings().catch(error => setStatus(error.message)); }} worldSettingDraft={worldSettingDraft} setWorldSettingDraft={setWorldSettingDraft} saveWorldSetting={saveWorldSetting} deleteWorldSetting={deleteWorldSetting} uploadWorldThumbnail={uploadWorldThumbnail} busy={busy} navigate={navigate} />}
 
     {route.page === 'settings' && <SettingsView navigate={navigate} />}
+    {route.page === 'agentSettings' && <AgentSettingsView />}
     {route.page === 'modelSettings' && <ModelSettingsView runtimeDefaultSetting={runtimeDefaultSetting} setRuntimeDefaultSetting={setRuntimeDefaultSetting} saveRuntimeDefaultSetting={saveRuntimeDefaultSetting} refetchRuntimeDefaultSetting={refetchRuntimeDefaultSetting} busy={busy} />}
     {route.page === 'statistics' && <StatisticsView conversations={conversations} />}
 
     {route.page === 'conversations' && <ResourceListBoundary variant="media"><ConversationsListView conversations={conversations} busy={busy} navigate={navigate} openConversation={openConversation} deleteConversation={deleteConversation} loadConversations={loadConversations} allCharacters={characters} worldSettings={worldSettings} /></ResourceListBoundary>}
     {route.page === 'conversationEdit' && !resourceDraftMismatch && <ConversationEditView busy={busy} navigate={navigate} saveConversationRoomEdit={saveConversationRoomEdit} roomEditDraft={roomEditDraft} setRoomEditDraft={setRoomEditDraft} applyRoomEditPreset={applyRoomEditPreset} worldSettings={worldSettings} characters={characters} />}
     {route.page === 'conversationDetail' && (!conversation || conversation.id !== selectedConversationId) && <ResourceDetailFeedback variant="chat" error={roomLoadError} onRetry={() => void retryConversationRefresh()}>{unknownSubmissionsForRoom(selectedConversationId).length > 0 && !generationOwners.pending.has(selectedConversationId) && <Button onClick={() => void stopTrackingUnknownSubmission()}>Stop tracking unresolved submission</Button>}</ResourceDetailFeedback>}
-    {route.page === 'conversationDetail' && conversation?.id === selectedConversationId && <ConversationDetailView sidePanel={conversationSidePanel} workspaceRef={chatPanel.workspaceRef} panelDocked={chatPanel.docked} panelOpen={chatPanel.open} panelWidth={chatPanel.panelWidth} onOpenPanelSettings={openConversationPanelSettings} feedback={!chatPanel.open ? chatFeedback : null} conversation={conversation} selectedConversationId={selectedConversationId} status={''} navigate={navigate} openConversationContextDrawer={openConversationContextDrawer} messageSelectionMode={messageSelectionMode} selectedMessageIds={selectedMessageIds} clearMessageSelection={clearMessageSelection} busy={busy} deleteSelectedMessages={deleteSelectedMessages} messages={messages} characters={characters} participants={participants} setAvatarPreview={setAvatarPreview} chatEndRef={chatEndRef} chatThreadRef={chatThreadRef} loadOlderMessages={loadOlderMessages} hasOlderMessages={hasOlderMessages} loadingOlderMessages={loadingOlderMessages} olderPagingReady={olderPagingReady} retryMessage={retryMessage} renderChatImages={renderChatImages} generateMessageTts={generateMessageTts} regenerateFromMessage={regenerateFromMessage} deleteMessageBubble={deleteMessageBubble} updateMessageBubble={updateMessageBubble} enterMessageSelectionMode={enterMessageSelectionMode} toggleMessageSelection={toggleMessageSelection} setShowJumpToLatest={setShowJumpToLatest} showJumpToLatest={showJumpToLatest} scrollToLatest={scrollToLatest} sendConversationMessage={sendConversationMessage} speakerId={speakerId} setSpeakerId={setSpeakerId} speakerOptions={speakerOptions} participantName={participantName} setChatSettingsOpen={setChatSettingsOpen} chatSettingsOpen={chatSettingsOpen} conversationRuntimeSetting={conversationRuntimeSetting} inheritedThinkingLevel={runtimeDefaultSetting.effective_thinking_level} setConversationRuntimeSetting={setConversationRuntimeSetting} saveConversationRuntimeSetting={saveConversationRuntimeSetting} setRenderChatImages={setRenderChatImages} setConversation={setConversation} compressConversationNow={compressConversationNow} composerTextareaRef={composerTextareaRef} compose={compose} setCompose={setCompose} resizeComposerTextarea={resizeComposerTextarea} handleComposerKeyDown={handleComposerKeyDown} composeExpanded={composeExpanded} setComposeExpanded={setComposeExpanded} battleState={battleState} battleControlDraft={battleControlDraft} setBattleControlDraft={setBattleControlDraft} chatCommands={chatCommands} clearActiveCommand={clearActiveCommand} />}
+    {route.page === 'conversationDetail' && conversation?.id === selectedConversationId && <ConversationDetailView sidePanel={conversationSidePanel} workspaceRef={chatPanel.workspaceRef} panelDocked={chatPanel.docked} panelOpen={chatPanel.open && !agentOpen} panelWidth={chatPanel.panelWidth} onOpenPanelSettings={openConversationPanelSettings} feedback={!chatPanel.open ? chatFeedback : null} conversation={conversation} selectedConversationId={selectedConversationId} status={chatGenerationStatus} navigate={navigate} openConversationContextDrawer={openConversationContextDrawer} messageSelectionMode={messageSelectionMode} selectedMessageIds={selectedMessageIds} clearMessageSelection={clearMessageSelection} busy={busy} deleteSelectedMessages={deleteSelectedMessages} messages={messages} characters={characters} participants={participants} setAvatarPreview={setAvatarPreview} chatEndRef={chatEndRef} chatThreadRef={chatThreadRef} loadOlderMessages={loadOlderMessages} hasOlderMessages={hasOlderMessages} loadingOlderMessages={loadingOlderMessages} olderPagingReady={olderPagingReady} retryMessage={retryMessage} renderChatImages={renderChatImages} generateMessageTts={generateMessageTts} regenerateFromMessage={regenerateFromMessage} deleteMessageBubble={deleteMessageBubble} updateMessageBubble={updateMessageBubble} enterMessageSelectionMode={enterMessageSelectionMode} toggleMessageSelection={toggleMessageSelection} setShowJumpToLatest={setShowJumpToLatest} showJumpToLatest={showJumpToLatest} scrollToLatest={scrollToLatest} sendConversationMessage={sendConversationMessage} speakerId={speakerId} setSpeakerId={setSpeakerId} speakerOptions={speakerOptions} participantName={participantName} setChatSettingsOpen={setChatSettingsOpen} chatSettingsOpen={chatSettingsOpen} conversationRuntimeSetting={conversationRuntimeSetting} inheritedThinkingLevel={runtimeDefaultSetting.effective_thinking_level} setConversationRuntimeSetting={setConversationRuntimeSetting} saveConversationRuntimeSetting={saveConversationRuntimeSetting} setRenderChatImages={setRenderChatImages} setConversation={setConversation} compressConversationNow={compressConversationNow} composerTextareaRef={composerTextareaRef} compose={compose} setCompose={setCompose} resizeComposerTextarea={resizeComposerTextarea} handleComposerKeyDown={handleComposerKeyDown} composeExpanded={composeExpanded} setComposeExpanded={setComposeExpanded} battleState={battleState} battleControlDraft={battleControlDraft} setBattleControlDraft={setBattleControlDraft} chatCommands={chatCommands} clearActiveCommand={clearActiveCommand} />}
   </AppShell>;
 }

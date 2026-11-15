@@ -7,8 +7,8 @@ import { cn } from '../../lib/utils';
 export type ResourceSkeletonVariant = 'row' | 'media' | 'home';
 
 function RowCardSkeleton() {
-  return <article className="grid min-h-[98px] grid-cols-[72px_minmax(0,1fr)] items-center gap-3 rounded-xl border border-border bg-card p-3">
-    <Skeleton className="aspect-square w-[72px] rounded-lg" />
+  return <article className="grid min-h-20 grid-cols-[56px_minmax(0,1fr)] items-center gap-2.5 rounded-xl border border-border bg-card p-2.5">
+    <Skeleton className="aspect-square w-14 rounded-lg" />
     <span className="grid min-w-0 gap-2">
       <Skeleton className="h-4 w-2/5" />
       <Skeleton className="h-3.5 w-full" />

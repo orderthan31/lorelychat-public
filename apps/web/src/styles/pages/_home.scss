@@ -1,5 +1,5 @@
 /* Home prioritizes returning to a conversation; resource management stays secondary. */
-.home-dashboard { display: grid; gap: 28px; min-width: 0; align-items: start; }
+.home-dashboard { display: grid; gap: 20px; min-width: 0; align-items: start; }
 .home-section, .home-resources { min-width: 0; }
 .home-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; margin-bottom: 6px; }
 .home-section-head h2 { margin: 0; color: var(--foreground); font-size: 16px; font-weight: 700; line-height: 1.4; }
@@ -7,33 +7,32 @@
 .home-section-actions button { min-height: 44px; }
 .home-room-list, .home-resource-list { display: grid; min-width: 0; }
 .home-room-link, .home-resource-link { display: grid; width: 100%; min-width: 0; align-items: center; gap: 12px; text-align: left; white-space: normal; color: var(--foreground); border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; box-shadow: none; }
-.home-room-link { grid-template-columns: 56px minmax(0,1fr) auto; min-height: 88px; padding: 12px 0; }
+.home-room-link { grid-template-columns: 48px minmax(0,1fr) auto; min-height: 72px; padding: 10px 0; }
 .home-room-link:hover, .home-resource-link:hover { background: var(--surface-muted); }
 .home-room-link:focus-visible, .home-resource-link:focus-visible { outline: 2px solid var(--foreground); outline-offset: 2px; }
-.home-room-image { display: block; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; background: var(--surface-muted); }
+.home-room-image { display: block; width: 48px; height: 48px; border-radius: 7px; overflow: hidden; background: var(--surface-muted); }
 .home-room-image img { width: 100%; height: 100%; object-fit: cover; }
-.home-row-copy { display: grid; min-width: 0; gap: 4px; }
+.home-row-copy { display: grid; min-width: 0; gap: 3px; }
 .home-row-copy strong { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; color: var(--foreground); font-size: 14px; font-weight: 650; line-height: 1.4; overflow-wrap: anywhere; }
 .home-row-copy small, .home-room-cast { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); font-size: 12px; line-height: 1.4; }
 .home-room-action { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted-foreground); }
 .home-continue { display: none; }
 .home-unread { display: inline-grid; min-width: 20px; height: 20px; padding-inline: 4px; place-items: center; border-radius: 10px; background: var(--danger); color: white; font-size: 11px; }
-.home-resources { display: grid; gap: 24px; align-items: start; }
-.home-resource-link { grid-template-columns: 44px minmax(0,1fr) auto; min-height: 72px; padding: 10px 0; gap: 10px; }
-.home-resource-link > img { width: 44px; height: 44px; object-fit: cover; object-position: center top; border-radius: 6px; background: var(--surface-muted); }
+.home-resources { display: grid; gap: 16px; align-items: start; }
+.home-resource-link { grid-template-columns: 36px minmax(0,1fr) auto; min-height: 60px; padding: 8px 0; gap: 10px; }
+.home-resource-link > img { width: 36px; height: 36px; object-fit: cover; object-position: center top; border-radius: 6px; background: var(--surface-muted); }
 .home-edit-hint { display: inline-flex; align-items: center; gap: 2px; color: var(--foreground); font-size: 12px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
 .home-empty { margin: 0; padding: 20px 0; color: var(--muted-foreground); font-size: 14px; }
 .home-empty p { margin: 0 0 6px; }
-.home-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; border-top: 1px solid var(--border); padding-top: 8px; }
-.home-tools button { min-height: 44px; }
+
 @media (min-width: 720px) {
   .home-resources { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .home-tools { grid-column: 1 / -1; }
+
   .home-continue { display: inline; }
 }
 @media (min-width: 1024px) {
-  .home-dashboard { grid-template-columns: minmax(0,1.3fr) minmax(0,1fr); gap: 32px; }
-  .home-resources { grid-template-columns: minmax(0,1fr); gap: 20px; }
+  .home-dashboard { grid-template-columns: minmax(0,1.3fr) minmax(0,1fr); gap: 24px; }
+  .home-resources { grid-template-columns: minmax(0,1fr); gap: 16px; }
   .home-continue { display: none; }
 }
 @media (min-width: 1280px) { .home-continue { display: inline; } }

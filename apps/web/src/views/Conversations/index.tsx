@@ -142,7 +142,7 @@ export function ConversationsListView({ conversations = [], busy = false, naviga
           actions={<><ResourceCardAction label={formatNamedAction(c.title || t('대화방'), 'edit', locale)} disabled={busy} onClick={() => navigate(`/conversations/${c.id}/edit`)}><Pencil aria-hidden="true" className="size-4" /></ResourceCardAction><ResourceCardAction label={formatNamedAction(c.title || t('대화방'), 'delete', locale)} variant="destructive" disabled={busy} onClick={(event) => deleteConversation(c.id, event)}><Trash2 aria-hidden="true" className="size-4" /></ResourceCardAction></>}
           openLabel={formatNamedAction(c.title || t('대화방'), 'open', locale)}
           onOpen={() => openConversation(c.id)}
-          onPreview={() => setSelectedId(c.id)} previewLabel={t('미리보기')} selected={selected?.id === c.id}
+          onPreview={() => setSelectedId(c.id)} previewLabel={t('미리보기')} previewPlacement="actions" selected={selected?.id === c.id}
         />;
       })}
       {!visibleConversations.length && <div className="rounded-xl border border-dashed border-border py-10 text-center text-sm text-muted-foreground">{t('검색 결과가 없습니다.')}</div>}

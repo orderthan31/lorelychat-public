@@ -1,10 +1,11 @@
 import { WebpImage } from '../atoms/WebpImage';
-import { BarChart3, Command, Globe2, Home, MessageSquare, Moon, Server, Settings, Sun, UserRound, X } from 'lucide-react';
+import { BarChart3, Command, Cpu, Globe2, Home, MessageSquare, Moon, Server, Settings, SlidersHorizontal, Sun, UserRound, X } from 'lucide-react';
 import type { RoutePage } from '../../types/domain';
 import { lorelyHorizontalLogoUrlForTheme } from '../../utils/assets';
 import { useUiStore } from '../../stores/uiStore';
 import { Button } from '../atoms';
 import { useI18n } from '../../i18n/I18nProvider';
+import { MANAGEMENT_NAV_ITEMS, isManagementRoute } from '../../router/managementNavigation';
 
 export type DrawerRoute = {
   page: RoutePage | string;
@@ -39,7 +40,7 @@ const navItems = [
   { page: 'conversations', path: '/conversations', label: '대화방', icon: MessageSquare },
   { page: 'worldSettings', path: '/world-settings', label: '세계관', icon: Globe2 },
   { page: 'characters', path: '/characters', label: '캐릭터', icon: UserRound },
-  { page: 'chatCommands', path: '/chat-commands', label: '커맨드', icon: Command },
+  ...MANAGEMENT_NAV_ITEMS.map(item => ({ ...item, icon: item.page === 'chatCommands' ? Command : item.page === 'presets' ? SlidersHorizontal : Cpu })),
   { page: 'statistics', path: '/statistics', label: '통계', icon: BarChart3 },
   { page: 'settings', path: '/settings', label: '설정', icon: Settings },
 ] as const;
@@ -47,18 +48,18 @@ const navItems = [
 export function Drawer({ route, open, navigate, close, backendOnline }: DrawerProps) {
   const theme = useUiStore((state) => state.theme);
   const { t } = useI18n();
-  const active = (page: string) => route.page === page || (page === 'characters' && route.page.startsWith('character')) || (page === 'conversations' && route.page.startsWith('conversation')) || (page === 'worldSettings' && route.page.startsWith('worldSetting'));
+  const active = (page: string) => route.page === page || isManagementRoute(route.page, page) || (page === 'characters' && route.page.startsWith('character')) || (page === 'conversations' && route.page.startsWith('conversation')) || (page === 'worldSettings' && route.page.startsWith('worldSetting'));
   const go = (path: string) => { navigate(path); close(); };
   if (!open) return null;
   return <>
     <button type="button" aria-label={t('메뉴 닫기')} className="drawer-backdrop fixed inset-0 z-40 min-h-screen w-full rounded-none bg-foreground/30 p-0" onClick={close}></button>
-    <aside className="side-drawer open fixed left-0 top-0 z-50 grid h-screen w-[min(82vw,288px)] translate-x-0 grid-rows-[auto_1fr_auto] gap-4 border-r border-border bg-card p-3.5 text-foreground shadow-2xl shadow-foreground/20 backdrop-blur-xl transition-transform duration-150" data-modernized="메뉴 드로어 design-system primitive marker">
+    <aside className="side-drawer open fixed left-0 top-0 z-50 grid h-dvh w-[min(82vw,288px)] translate-x-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-3 border-r border-border bg-card p-3 text-foreground shadow-xl transition-transform duration-150" data-modernized="메뉴 드로어 design-system primitive marker">
       <div className="drawer-head flex items-center justify-between gap-2.5">
         <div className="drawer-brand min-w-0 flex-1"><WebpImage className="brand-logo-horizontal" src={lorelyHorizontalLogoUrlForTheme(theme)} alt="Lorely Chat" /></div>
         <Button type="button" variant="ghost" size="icon" className="drawer-close" onClick={close} aria-label={t('메뉴 닫기')}><X size={18} /></Button>
       </div>
-      <nav className="drawer-nav grid content-start gap-1.5" aria-label={t('주요 메뉴')}>
-        {navItems.map(({ page, path, label, icon: Icon }) => <Button key={path} type="button" variant={active(page) ? 'secondary' : 'ghost'} className={`w-full justify-self-stretch justify-start text-left min-h-11 px-3.5 py-2.5 ${active(page) ? 'active border-primary bg-primary text-primary-foreground' : 'border-border bg-card text-foreground'}`} onClick={() => go(path)}><Icon size={17} />{t(label)}</Button>)}
+      <nav className="drawer-nav grid min-h-0 content-start gap-1 overflow-y-auto overscroll-contain" aria-label={t('주요 메뉴')}>
+        {navItems.filter(item => route.page === 'home' || !MANAGEMENT_NAV_ITEMS.some(management => management.path === item.path)).map(({ page, path, label, icon: Icon }) => <Button key={path} type="button" variant={active(page) ? 'secondary' : 'ghost'} aria-current={active(page) ? 'page' : undefined} className={`w-full justify-self-stretch justify-start text-left min-h-11 px-3 py-2 ${active(page) ? 'active border-transparent bg-surface-muted text-foreground' : 'border-transparent bg-transparent text-muted-foreground'}`} onClick={() => go(path)}><Icon size={17} />{t(label)}</Button>)}
       </nav>
       <div className="drawer-footer grid gap-2 border-t border-border pt-3" aria-label={t('앱 상태와 테마')}>
         <div className="drawer-status-controls flex items-center gap-2" aria-label={t('앱 상태와 테마')}>

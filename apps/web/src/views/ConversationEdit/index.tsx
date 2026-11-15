@@ -1,6 +1,7 @@
 import { EditorActionBar } from '../../components/molecules/EditorActionBar';
+import { EditorHelp } from '../../components/molecules/EditorHelp';
 import { Field, FormSection } from '../../components/molecules';
-import { USER_SETTING_PRESETS } from '../../constants/domain';
+import { CAST_ROLE_PRESETS, USER_SETTING_PRESETS } from '../../constants/domain';
 import { Button } from '../../components/atoms';
 import { Input } from '../../components/atoms';
 import { Select } from '../../components/atoms';
@@ -59,6 +60,17 @@ export function ConversationEditView({
       }),
     });
   };
+  const updateCharacterRoleAt = (characterIndex: number, role: string) => {
+    let seen = -1;
+    setRoomEditDraft({
+      ...roomEditDraft,
+      participants: participants.map((participant) => {
+        if (participant.type !== 'character') return participant;
+        seen += 1;
+        return seen === characterIndex ? { ...participant, role: role || null } : participant;
+      }),
+    });
+  };
   const addCharacterSlot = () => setRoomEditDraft({
     ...roomEditDraft,
     participants: [...participants, { type: 'character', id: '', role: null, order_index: participants.length }],
@@ -86,9 +98,11 @@ export function ConversationEditView({
     <FormSection title={t('참여 캐릭터')}>
       {characterParticipants.map((participant, index) => <div className="relative grid min-w-0 gap-2.5 border-t border-border pt-3 first:border-t-0 first:pt-0" key={`character-${index}`}>
         <Field className={characterParticipants.length > 1 ? 'min-w-0 pr-12' : 'min-w-0'} label={formatCharacterSlot(index + 1, locale)}><Select value={participant.id} onChange={(e) => updateCharacterAt(index, e.target.value)}><option value="">{t('캐릭터 선택')}</option>{characters.map((character) => { const id = String(character.id || ''); const alreadySelected = selectedCharacterIds.has(id) && id !== participant.id; return <option key={id} value={id} disabled={alreadySelected}>{character.name || id}</option>; })}</Select></Field>
+        <Field label={t('캐릭터 역할')}><Select value={participant.role || ''} disabled={busy} onChange={(e) => updateCharacterRoleAt(index, e.target.value)}>{participant.role && !CAST_ROLE_PRESETS.some(preset => preset.key === participant.role) && <option value={participant.role}>{participant.role}</option>}{CAST_ROLE_PRESETS.map(preset => <option key={preset.key || 'none'} value={preset.key}>{t(preset.label as UiMessageKey)}</option>)}</Select></Field>
         {characterParticipants.length > 1 && <Button type="button" variant="ghost" size="icon" className="absolute right-0 top-0 text-danger" aria-label={`${formatCharacterSlot(index + 1, locale)} ${t('삭제')}`} title={`${formatCharacterSlot(index + 1, locale)} ${t('삭제')}`} onClick={() => removeCharacterAt(index)}><Trash2 className="size-4" aria-hidden="true" /></Button>}
       </div>)}
       <span className="flex items-center gap-2 text-xs text-muted-foreground"><span className={`size-2 rounded-full ${characterSelectionReady ? 'bg-success' : 'bg-warning'}`} aria-hidden="true" />{characterSelectionHint}</span>
+      <EditorHelp summary={t('역할 안내')}><ul className="cast-role-help">{CAST_ROLE_PRESETS.map(preset => <li key={preset.key || 'none'}><strong>{t(preset.label as UiMessageKey)}</strong> · {t(preset.hint as UiMessageKey)}</li>)}</ul></EditorHelp>
     </FormSection>
 
     </div>

@@ -1,5 +1,6 @@
 import { useEffect, type CSSProperties } from 'react';
 import { BubbleList } from '../../components/organisms';
+import { AgentLauncher } from '../../agent/components';
 import { MessageSelectionToolbar } from '../../components/organisms/MessageSelectionToolbar';
 import { Badge, Button } from '../../components/atoms';
 import { useI18n } from '../../i18n/I18nProvider';
@@ -98,7 +99,7 @@ function ConversationHeader({ conversation, selectedConversationId, status, navi
   return (
     <header className="chat-header">
       <Button type="button" variant="ghost" size="icon" className="chat-header-button chat-back-button" aria-label={t('대화방 목록으로')} onClick={() => navigate('/conversations')}>‹</Button>
-      <div className="chat-title-block"><h2>{conversation?.title || selectedConversationId}</h2><p>{status}</p></div>
+      <div className="chat-title-block"><h2>{conversation?.title || selectedConversationId}</h2><p data-chat-generation-status={status ? '' : undefined} role={status ? 'status' : undefined} aria-live="polite">{status}</p></div>
       <div className="chat-header-actions">
         {activeCommands.map((command) => {
           const label = command.display_name || command.name || t('커맨드');
@@ -110,6 +111,7 @@ function ConversationHeader({ conversation, selectedConversationId, status, navi
           );
         })}
         <Button type="button" variant="ghost" size="icon" className="chat-header-button chat-context-button" aria-label={t(panelOpen ? '대화 정보 닫기' : '대화 흐름 열기')} aria-expanded={panelOpen} onClick={openConversationContextDrawer}>☰</Button>
+        <AgentLauncher />
       </div>
     </header>
   );

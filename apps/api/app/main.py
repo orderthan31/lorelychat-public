@@ -1,4 +1,4 @@
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 import os
 import time
 import logging
@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.assets import router as assets_router
 from app.api.images import router as images_router
+from app.api.lore_agent import router as lore_agent_router
 from app.api.characters import router as characters_router
 from app.api.chat_commands import router as chat_commands_router
 from app.api.conversations import _run_message_generation_job_sync, _run_post_commit_task_sync, _run_mock_generation_queue, router as conversations_router
@@ -34,6 +35,9 @@ from app.services import asset_service, conversation_service
 from app.services.generation_dispatcher import generation_dispatcher
 from app.services.post_commit_dispatcher import post_commit_dispatcher
 from app.services.chat_command_service import seed_default_chat_commands
+from app.agent.schema import initialize_agent_schema
+from app.agent.service import AgentService
+from app.mcp import build_mcp_gateway
 
 from sqlalchemy import text
 from sqlmodel import Session
@@ -60,10 +64,13 @@ async def lifespan(app: FastAPI):
     runtime_lock = None
     dispatcher_started = False
     mock_task = None
+    agent_stack = AsyncExitStack()
+    mcp_gateway = None
     app.state.mock_generation_task = None
     app.state.ready = False
     app.state.dispatchers_started = False
     target_engine = getattr(app.state, "engine", engine)
+    app.state.engine = target_engine
     if target_engine is not engine and not settings.llm_mock:
         raise RuntimeError("Injected lifespan engines require mock mode; production workers are never rebound")
     try:
@@ -72,6 +79,11 @@ async def lifespan(app: FastAPI):
                 os.getenv("LORECHAT_RUNTIME_LOCK_PATH", "/tmp/lorechat-back.lock")
             )
         init_db(target_engine)
+        initialize_agent_schema(target_engine)
+        app.state.agent_service = AgentService(target_engine)
+        mcp_gateway = build_mcp_gateway(lambda: app.state.agent_service)
+        app.state.lore_mcp_gateway = mcp_gateway
+        await agent_stack.enter_async_context(mcp_gateway.lifespan())
         from app.services.image_cleanup_journal import replay_cleanup
         await asyncio.to_thread(replay_cleanup, target_engine,
                                 upload_root=Path(settings.upload_root),
@@ -97,6 +109,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         app.state.ready = False
+        if mcp_gateway is not None:
+            mcp_gateway.stop_admission()
         if mock_task is not None:
             mock_task.cancel()
             try:
@@ -105,15 +119,27 @@ async def lifespan(app: FastAPI):
                 pass
             app.state.mock_generation_task = None
         drained = True
+        shutdown_timeout = getattr(settings, "dispatcher_shutdown_timeout_seconds", 30)
+        deadline = time.monotonic() + max(0.0, float(30 if shutdown_timeout is None else shutdown_timeout))
         if dispatcher_started:
-            shutdown_timeout = getattr(settings, "dispatcher_shutdown_timeout_seconds", 30)
-            deadline = time.monotonic() + max(0.0, float(30 if shutdown_timeout is None else shutdown_timeout))
             # Stop admission in BOTH lanes before spending the shared drain budget.
             post_commit_dispatcher.request_stop()
             generation_dispatcher.request_stop()
             drained_post = post_commit_dispatcher.stop(timeout_seconds=max(0.0, deadline - time.monotonic()))
             drained_generation = generation_dispatcher.stop(timeout_seconds=max(0.0, deadline - time.monotonic()))
             drained = drained_post and drained_generation
+        if mcp_gateway is not None:
+            while mcp_gateway.active_calls and time.monotonic() < deadline:
+                await asyncio.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+            drained = drained and mcp_gateway.active_calls == 0
+        try:
+            # The SDK manager must leave in this same lifespan task, after tools
+            # have drained, not from an unrelated request/cancellation task.
+            await agent_stack.aclose()
+        except BaseException:
+            app.state.undrained_runtime_lock = runtime_lock
+            logging.getLogger(__name__).error("Agent transport shutdown incomplete; runtime ownership retained")
+            raise
         if drained:
             release_runtime_lock(runtime_lock)
         else:
@@ -180,6 +206,7 @@ app.include_router(characters_router)
 app.include_router(chat_commands_router)
 app.include_router(assets_router)
 app.include_router(images_router)
+app.include_router(lore_agent_router)
 app.include_router(conversations_router)
 
 app.include_router(model_providers_router)
@@ -196,3 +223,19 @@ app.mount(
     UploadStaticFiles(UPLOAD_ROOT, settings.shared_upload_root),
     name="uploads",
 )
+
+
+async def _mcp_endpoint(scope, receive, send):
+    # One stable mount, one fresh SDK manager per host lifespan. Repeated
+    # TestClient lifespans must not reuse an exhausted AnyIO task group.
+    gateway = getattr(app.state, "lore_mcp_gateway", None)
+    if gateway is not None:
+        await gateway.asgi_app(scope, receive, send)
+        return
+    from starlette.responses import JSONResponse
+    status = 503 if scope.get("path") == "/mcp" else 404
+    await JSONResponse({"error": "mcp_unavailable" if status == 503 else "not_found"}, status_code=status)(scope, receive, send)
+
+
+# LAST: preserve existing API and upload routing; no /mcp/mcp submount.
+app.mount("/", _mcp_endpoint, name="lore-mcp")

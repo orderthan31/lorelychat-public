@@ -11,6 +11,7 @@ env.ChatLoading = () => React.createElement('section', {'data-chat-loading':'',r
 function module(path,names){const source=transpile(text(path)).replace(/^import .*;\n/gm,'').replace(/export /g,'');return new Function('env',`with(env){${source};return {${names.join(',')}};}`)(env);}
 const {OperationFeedback,isCompletionFeedback}=module('../src/components/molecules/OperationFeedback.tsx',['OperationFeedback','isCompletionFeedback']);
 const {ResourceDetailFeedback}=module('../src/components/molecules/ResourceDetailFeedback.tsx',['ResourceDetailFeedback']);
+const {isChatGenerationProgress}=module('../src/utils/chatFeedback.ts',['isChatGenerationProgress']);
 let passed=0;
 function test(name,fn){fn();console.log(`ok ${++passed} - ${name}`);}
 test('only exact translated completions are transient; compound failure and required next steps persist',()=>{
@@ -38,10 +39,12 @@ test('actual App keeps accepted mutation, failed room refresh and unrelated save
   const app=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='App');
   const declarations=app.body.statements.filter(ts.isVariableStatement).flatMap(n=>[...n.declarationList.declarations]);
   const initializer=name=>declarations.find(n=>n.name.getText(ast)===name).initializer.getText(ast);
-  const make=new Function('env',`with(env){${transpile(`const roomFailureStatus=${initializer('roomFailureStatus')};const node=${initializer('chatFeedback')};`)}return node;}`);
-  const render=status=>renderToStaticMarkup(make({...env,status,roomLoadError:'refresh offline',isCompletionFeedback,t:key=>key,OperationFeedback,ResourceDetailFeedback,dismissStatus:()=>{},retryConversationRefresh:()=>{},unknownSubmissionsForRoom:()=>[],selectedConversationId:'A'}));
+  const make=new Function('env',`with(env){${transpile(`const roomFailureStatus=${initializer('roomFailureStatus')};const chatGenerationStatus=${initializer('chatGenerationStatus')};const node=${initializer('chatFeedback')};`)}return node;}`);
+  const render=status=>renderToStaticMarkup(make({...env,status,roomLoadError:'refresh offline',isCompletionFeedback,isChatGenerationProgress,t:key=>key,OperationFeedback,ResourceDetailFeedback,dismissStatus:()=>{},retryConversationRefresh:()=>{},unknownSubmissionsForRoom:()=>[],selectedConversationId:'A'}));
   let markup=render('캐릭터 역할 수정 완료');assert.match(markup,/ux-operation-toast/);assert.match(markup,/ux-detail-error[^>]*><p>refresh offline/);
   markup=render('캐릭터 초대 완료 · 새로고침 실패');assert.doesNotMatch(markup,/ux-operation-toast|ux-operation-feedback/);assert.match(markup,/캐릭터 초대 완료 · 새로고침 실패/);
   markup=render('unrelated save failed');assert.match(markup,/unrelated save failed/);assert.match(markup,/refresh offline/);
+  markup=render('대화 생성 중… 응답 작성 중');assert.doesNotMatch(markup,/대화 생성 중|ux-operation-feedback/);assert.match(markup,/refresh offline/);
+  markup=render('대화 생성 중… remote error');assert.match(markup,/remote error/);assert.match(markup,/refresh offline/);
 });
 console.log(`${passed} UX feedback rendering regressions passed`);

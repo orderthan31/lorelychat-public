@@ -10,7 +10,7 @@ export type FormSectionProps = HTMLAttributes<HTMLElement> & {
 export function FormSection({ title, description, action, className, children, ...props }: FormSectionProps) {
   return <section
     data-form-section
-    className={cn('grid min-w-0 gap-3 border-t border-border pt-4 first:border-t-0 first:pt-0', className)}
+    className={cn('grid min-w-0 gap-2.5 border-t border-border pt-3 first:border-t-0 first:pt-0', className)}
     {...props}
   >
     {title || description || action ? <header className="flex min-w-0 flex-wrap items-start justify-between gap-3">
@@ -20,6 +20,6 @@ export function FormSection({ title, description, action, className, children, .
       </div>
       {action ? <div className="shrink-0">{action}</div> : null}
     </header> : null}
-    <div className="grid min-w-0 gap-3">{children}</div>
+    <div className="grid min-w-0 gap-2.5">{children}</div>
   </section>;
 }

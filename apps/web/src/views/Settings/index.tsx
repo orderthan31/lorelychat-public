@@ -15,6 +15,7 @@ export function SettingsView({ navigate }: SettingsViewProps) {
     label: UiMessageKey;
     icon: typeof Cpu;
   }> = [
+    { path: '/settings/lore-agent', label: 'agent.title', icon: Cpu },
     { path: '/model-settings', label: '모델 설정', icon: Cpu },
     { path: '/presets', label: '프리셋', icon: NotebookTabs },
   ];

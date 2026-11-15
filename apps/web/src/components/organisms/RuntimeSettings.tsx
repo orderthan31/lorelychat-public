@@ -14,6 +14,7 @@ import { useI18n } from '../../i18n/I18nProvider';
 import type { Translator } from '../../i18n/core';
 import type { CompressionStrategy, FallbackStatus, RuntimeModelOption, ThinkingLevel } from '../../types/domain';
 import { hasActiveDecisionModel, normalizeCompressionStrategy } from '../../utils/runtimeSettings';
+import { runtimeModelDisplayName } from '../../utils/modelDisplay';
 
 type RuntimeOption = RuntimeModelOption;
 export type RuntimeSettingValue = {
@@ -136,12 +137,12 @@ function RuntimeSettingFields({ value = {}, onChange, compact = false, scope = '
     <Field label={t('채팅 모델')}><Select value={String(value.model_key || '')} disabled={!chatOptionsForAccount.length} onChange={(e) => {
       const modelKey = e.target.value || null;
       update({ model_key: modelKey, ...(modelKey === value.fallback_model_key ? { fallback_model_key: null } : {}) });
-    }}><option value="">{chatOptionsForAccount.length ? t('채팅 모델 선택') : t('선택 가능한 모델 없음')}</option>{chatOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
+    }}><option value="">{chatOptionsForAccount.length ? t('채팅 모델 선택') : t('선택 가능한 모델 없음')}</option>{chatOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{runtimeModelDisplayName(option)}</option>)}</Select></Field>
     <Field label={t('장애 시 보조 Provider')}><Select value={selectedFallbackAccountId} disabled={!fallbackAccounts.length} onChange={(e) => {
       const accountOptions = fallbackOptions.filter((option) => option.provider_account_id === e.target.value);
       update({ fallback_model_key: accountOptions[0]?.key || null });
     }}><option value="">{t('사용 안 함')}</option>{fallbackAccounts.map(([id, option]) => <option key={id} value={id}>{option.provider_account_alias || option.provider || id}</option>)}</Select></Field>
-    <Field label={t('장애 시 보조 모델')}><Select value={String(value.fallback_model_key || '')} disabled={!selectedFallbackAccountId} onChange={(e) => update({ fallback_model_key: e.target.value || null })}><option value="">{t('사용 안 함')}</option>{value.fallback_model_key && !fallbackOptionsForAccount.some(option => option.key === value.fallback_model_key) && <option value={value.fallback_model_key}>{value.fallback_model_key} · unavailable</option>}{fallbackOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
+    <Field label={t('장애 시 보조 모델')}><Select value={String(value.fallback_model_key || '')} disabled={!selectedFallbackAccountId} onChange={(e) => update({ fallback_model_key: e.target.value || null })}><option value="">{t('사용 안 함')}</option>{value.fallback_model_key && !fallbackOptionsForAccount.some(option => option.key === value.fallback_model_key) && <option value={value.fallback_model_key}>{value.fallback_model_key} · unavailable</option>}{fallbackOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{runtimeModelDisplayName(option)}</option>)}</Select></Field>
     <Field label={t('압축 Provider')}><Select value={selectedCompressionAccountId} disabled={!compressionAccounts.length} onChange={(e) => {
       const accountOptions = compressionOptions.filter((option) => option.provider_account_id === e.target.value);
       const modelKey = accountOptions[0]?.key || null;
@@ -150,11 +151,11 @@ function RuntimeSettingFields({ value = {}, onChange, compact = false, scope = '
     <Field label={t('압축 모델')}><Select value={String(value.compression_model_key || '')} disabled={!compressionOptionsForAccount.length} onChange={(e) => {
       const modelKey = e.target.value || null;
       update({ compression_model_key: modelKey, ...(modelKey === value.compression_fallback_model_key ? { compression_fallback_model_key: null } : {}) });
-    }}><option value="">{compressionOptionsForAccount.length ? t('압축 모델 선택') : t('선택 가능한 모델 없음')}</option>{compressionOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
+    }}><option value="">{compressionOptionsForAccount.length ? t('압축 모델 선택') : t('선택 가능한 모델 없음')}</option>{compressionOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{runtimeModelDisplayName(option)}</option>)}</Select></Field>
     <Field label={t('압축 폴백 모델')}><Select value={String(value.compression_fallback_model_key || '')} onChange={(e) => update({ compression_fallback_model_key: e.target.value || null })}>
-      <option value="">{t('채팅 폴백 상속')}{inheritedCompressionFallback ? ` · ${inheritedCompressionFallback.label || inheritedCompressionFallback.key}` : ` · ${t('설정 없음')}`}</option>
+      <option value="">{t('채팅 폴백 상속')}{inheritedCompressionFallback ? ` · ${runtimeModelDisplayName(inheritedCompressionFallback)}` : ` · ${t('설정 없음')}`}</option>
       {value.compression_fallback_model_key && !compressionFallbackOptions.some(option => option.key === value.compression_fallback_model_key) && <option value={value.compression_fallback_model_key}>{value.compression_fallback_model_key} · unavailable</option>}
-      {compressionFallbackOptions.map((option) => <option key={option.key} value={option.key}>{option.provider_account_alias ? `${option.provider_account_alias} · ` : ''}{option.label || option.key}</option>)}
+      {compressionFallbackOptions.map((option) => <option key={option.key} value={option.key}>{option.provider_account_alias ? `${option.provider_account_alias} · ` : ''}{runtimeModelDisplayName(option)}</option>)}
     </Select></Field>
     <Field label={t('압축 방식')}><Select value={normalizedCompressionStrategy} onChange={(event) => update({ compression_strategy: normalizeCompressionStrategy(event.currentTarget.value) })}>
       <option value="fast">{t('빠른 압축 (E)')} · ≈1× LLM</option><option value="quality">{t('정밀 압축 (F · 추천)')} · ≈3× LLM</option>
@@ -173,7 +174,7 @@ function RuntimeSettingFields({ value = {}, onChange, compact = false, scope = '
       const accountOptions = decisionOptions.filter((option) => option.provider_account_id === e.target.value);
       update({ decision_model_option_key: accountOptions[0]?.key || null });
     }}><option value="">{decisionAccounts.length ? t('Provider 계정 선택') : t('선택 가능한 모델 없음')}</option>{decisionAccounts.map(([id, option]) => <option key={id} value={id}>{option.provider_account_alias || option.provider || id}</option>)}</Select></Field>
-    <Field label={t('의사결정 모델')}><Select value={String(value.decision_model_option_key || '')} disabled={!decisionOptionsForAccount.length} onChange={(e) => update({ decision_model_option_key: e.target.value || null })}><option value="">{decisionOptionsForAccount.length ? t('의사결정 모델 선택') : t('선택 가능한 모델 없음')}</option>{decisionOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{option.label || option.key}</option>)}</Select></Field>
+    <Field label={t('의사결정 모델')}><Select value={String(value.decision_model_option_key || '')} disabled={!decisionOptionsForAccount.length} onChange={(e) => update({ decision_model_option_key: e.target.value || null })}><option value="">{decisionOptionsForAccount.length ? t('의사결정 모델 선택') : t('선택 가능한 모델 없음')}</option>{decisionOptionsForAccount.map((option) => <option key={option.key} value={option.key}>{runtimeModelDisplayName(option)}</option>)}</Select></Field>
 
     <div className="min-w-0 min-[720px]:col-span-2">
       <Field label={t('추론 깊이')}><Select className="w-full min-w-0" value={thinkingValue} onChange={(event) => update({ thinking_level: event.target.value ? event.target.value as ThinkingLevel : null })}>

@@ -553,8 +553,9 @@ export function ModelSettingsView({ runtimeDefaultSetting, setRuntimeDefaultSett
           {visibleModelOptions.length ? visibleModelOptions.map((option) => <div key={option.id} className="grid min-h-[72px] grid-cols-[minmax(0,1fr)_48px] items-center gap-2 py-2" data-model-row>
             <div className="min-w-0">
               <div className="grid min-w-0 gap-0.5">
-                <h3 className="m-0 min-w-0 truncate text-sm font-bold leading-5 text-foreground" title={option.display_label}>{option.display_label}</h3>
-                <p className="m-0 truncate font-mono text-[11px] leading-4 text-muted-foreground" title={option.model}>{option.model}</p>
+                <h3 className="m-0 min-w-0 truncate text-sm font-bold leading-5 text-foreground" title={option.label}>{option.label}</h3>
+                <p className="m-0 truncate text-[11px] leading-4 text-muted-foreground" title={option.provider_account_alias || option.provider_type}>{option.provider_account_alias || option.provider_type}</p>
+                <details className="model-help"><summary>{t('상세')}</summary><code className="break-all text-xs">{option.model}</code></details>
                 <p className="m-0 truncate text-[11px] leading-4 text-muted-foreground">{[option.supports_chat ? t('채팅') : '', option.supports_compression ? t('압축') : '', option.supports_tts ? t('TTS') : '', option.supports_decision ? t('의사결정') : '', !option.supports_chat && !option.supports_compression && !option.supports_tts && !option.supports_decision ? t('런타임 제외') : ''].filter(Boolean).join(' · ')}</p>
                 {option.supports_decision && <details className="model-help"><summary>{t('이미지 지원 정보')}</summary><DecisionCapabilityHint option={option} /><ManualCapabilityEditor option={option} disabled={loading} save={(m, f) => saveCapabilities(option, m, f)} /></details>}
               </div>

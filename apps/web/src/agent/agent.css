@@ -1,0 +1,47 @@
+.agent-layout { display: flex; align-items: flex-start; min-width: 0; }
+.agent-layout > .shell { flex: 1; min-width: 0; }
+.agent-launcher { display: inline-grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; border-radius: 10px; color: var(--foreground); background: var(--card); border: 1px solid var(--border); }
+.agent-ui { color: var(--foreground); background: var(--card); font-size: 14px; overflow-wrap: anywhere; }
+.agent-ui button, .agent-ui summary, .agent-ui input:not([type=checkbox]), .agent-ui select { min-height: 44px; }
+.agent-ui button { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--secondary, #e9e9ef); color: var(--foreground); }
+.agent-ui button:disabled { opacity: .5; cursor: not-allowed; }
+.agent-ui button:focus-visible, .agent-launcher:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.agent-ui label { display: grid; gap: 6px; margin: 12px 0; min-width: 0; }
+.agent-ui input, .agent-ui textarea, .agent-ui select { width: 100%; min-width: 0; padding: 10px; color: var(--foreground); background: var(--background); border: 1px solid var(--border); border-radius: 6px; }
+.agent-ui textarea { resize: vertical; }
+.agent-ui .agent-check, .agent-image-grid label > span { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+.agent-ui input[type=radio], .agent-ui input[type=checkbox] { width: 20px; height: 20px; flex-shrink: 0; }
+.agent-ui p { margin: 8px 0; white-space: pre-wrap; }
+.agent-ui fieldset { min-width: 0; border: 0; padding: 0; }
+.agent-ui pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-ui summary { display: flex; align-items: center; cursor: pointer; font-weight: 600; }
+.agent-ui h2 { font-size: 16px; margin: 0; }
+.agent-ui h3 { font-size: 14px; margin: 0 0 10px; }
+.agent-settings { max-width: 760px; margin: 0 auto; padding: 20px; }
+.agent-settings > section { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
+.agent-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.agent-panel-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px; scrollbar-gutter: stable; }
+.agent-dock { width: clamp(340px, 30vw, 460px); flex-shrink: 0; position: sticky; top: 56px; height: calc(100dvh - 56px); border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+.agent-dock[hidden] { display: none; }
+.agent-overlay { position: fixed; inset: 0; background: #0008; z-index: 100; }
+.agent-modal { position: fixed; z-index: 101; inset: max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom)); max-width: 680px; margin: auto; border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; }
+.agent-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.agent-error { color: var(--destructive, #b42318); }
+.agent-draft, .agent-image-results, .agent-client { border-top: 1px solid var(--border); padding: 16px 0; margin-top: 16px; }
+.agent-client { display: grid; gap: 8px; }
+.agent-diff { display: grid; gap: 5px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.agent-diff del, .agent-diff ins { white-space: pre-wrap; text-decoration: none; padding: 6px; }
+.agent-diff del { border-left: 3px solid #b94d4d; }
+.agent-diff ins { border-left: 3px solid #27814f; }
+.agent-messages article { margin: 12px 0; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); color: var(--foreground); }
+.agent-messages article p { color: inherit; }
+.agent-ui summary::before { content: "›"; margin-right: 8px; }
+.agent-ui details[open] > summary::before { transform: rotate(90deg); }
+.agent-layout:has(.chat-shell) > .agent-dock { top: 0; height: 100dvh; }
+.agent-image-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.agent-image-grid img { width: 100%; height: auto; border-radius: 8px; }
+.agent-image-plan .agent-image-grid img { height: 112px; object-fit: contain; }
+.agent-reference-preview { margin: 12px 0; }
+.agent-reference-preview img { width: 100%; max-height: 240px; object-fit: contain; }
+.agent-image-plan legend { font-weight: 600; }
+@media (max-width: 1099px) { .agent-layout { display: block; } }

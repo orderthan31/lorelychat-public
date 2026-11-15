@@ -1,5 +1,5 @@
 /* App shell, panels, status surfaces, grid helpers, and page animation. */
-.app-bar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 58px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(12px); overflow: hidden; }
+.app-bar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 56px; padding: 6px 14px; border-bottom: 1px solid var(--line); background: var(--card); overflow: hidden; }
 .app-title { min-width: 0; display: grid; gap: 2px; }
 .app-title h1 { min-width: 0; margin: 0; overflow: hidden; color: var(--foreground); font-size: 16px; font-weight: 800; line-height: 1.2; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
 .app-title h1 strong { color: inherit; font: inherit; letter-spacing: inherit; }
@@ -10,7 +10,12 @@
 .server-health.ok .server-health-dot { background: #22c55e; box-shadow: 0 0 0 4px rgba(34,197,94,.12); }
 .server-health.bad { color: #fecaca; border-color: rgba(220,38,38,.32); background: rgba(127,29,29,.18); }
 .server-health.bad .server-health-dot { background: var(--danger); box-shadow: 0 0 0 4px rgba(220,38,38,.14); }
-.shell { width: min(100%, 1180px); margin: 0 auto; padding: 16px 14px 92px; }
+.shell { width: min(100%, 1180px); margin: 0 auto; padding: 12px 14px calc(24px + env(safe-area-inset-bottom, 0px)); }
+.app-tool-nav { display: none; flex: 0 0 auto; align-items: center; gap: 4px; }
+.app-tool-nav a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 10px; border-radius: 6px; color: var(--muted-foreground); font-size: 13px; font-weight: 600; white-space: nowrap; text-decoration: none; }
+.app-tool-nav a:hover, .app-tool-nav a[aria-current="page"] { color: var(--foreground); background: var(--surface-muted); }
+.app-tool-nav a:focus-visible { outline: 2px solid var(--foreground); outline-offset: -2px; }
+@media (min-width: 960px) { .app-tool-nav { display: flex; } }
 .panel { margin-bottom: 12px; min-width: 0; }
 .chat-shell { border: 1px solid var(--line); background: var(--card); border-radius: var(--radius-surface); box-shadow: var(--shadow-surface); }
 .dot { flex: 0 0 auto; width: 11px; height: 11px; border-radius: 999px; background: #666; box-shadow: 0 0 0 5px rgba(255,255,255,.05); }

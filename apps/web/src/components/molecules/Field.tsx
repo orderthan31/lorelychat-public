@@ -8,5 +8,5 @@ export type FieldProps = {
 };
 
 export function Field({ label, children, className }: FieldProps) {
-  return <label className={cn('grid gap-2 text-sm font-extrabold text-foreground', className)}><span className="locale-copy leading-[var(--locale-control-line-height)]">{label}</span>{children}</label>;
+  return <label className={cn('grid gap-1.5 text-sm font-semibold text-foreground', className)}><span className="locale-copy leading-[var(--locale-control-line-height)]">{label}</span>{children}</label>;
 }
