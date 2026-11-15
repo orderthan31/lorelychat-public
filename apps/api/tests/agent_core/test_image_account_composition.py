@@ -64,3 +64,21 @@ def test_unsupported_region_and_changed_saved_selection_fail_closed(service, own
     service.update_settings(SettingsUpdate(enabled=True,image_provider_account_id='google-image',image_model_id='gemini-nano-banana-2.1'))
     with pytest.raises(AgentError, match='selection changed'):
         service.resolve_image_route(owner,'vertex-image','gemini-nano-banana-2.1')
+
+
+def test_real_settings_http_response_preserves_account_image_metadata(service, image_accounts):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.api.lore_agent import router, get_agent_service
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_agent_service] = lambda: service
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get('/lore-agent/settings')
+    assert response.status_code == 200
+    data = response.json()
+    accounts = {account['id']: account for account in data['image_accounts']}
+    assert 'gemini-nano-banana-2.1' in accounts['vertex-image']['image_model_ids']
+    model = next(model for model in data['image_models'] if model['provider_type']=='vertex_ai' and model['id']=='gemini-nano-banana-2.1')
+    assert model['max_count'] == 1 and model['vertex_locations'] == ['global']
+    assert data['image_provider_account_id'] is None and data['image_model_id'] is None

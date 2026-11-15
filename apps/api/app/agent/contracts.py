@@ -157,18 +157,23 @@ class ImageAccount(StrictModel):
     id: str
     alias: str
     provider_type: str
+class ImageProviderAccount(ImageAccount):
+    image_model_ids: list[str] = Field(default_factory=list)
 class ImageChoice(StrictModel):
     id: str
     label: str
     provider_type: str
     supports_reference: bool
+    max_count: int = Field(default=4, strict=True, ge=1, le=4)
     deprecated: bool = False
     shutdown_date: str | None = None
+    admission_cutoff_date: str | None = None
+    vertex_locations: list[str] | None = None
     reference_unavailable_reason: str | None = None
 class AgentSettingsView(SettingsUpdate):
     llm_options: list[ModelChoice]
     llm_accounts: list[ImageAccount] = Field(default_factory=list)
-    image_accounts: list[ImageAccount]
+    image_accounts: list[ImageProviderAccount]
     image_models: list[ImageChoice]
 class ClientView(StrictModel):
     id: str
