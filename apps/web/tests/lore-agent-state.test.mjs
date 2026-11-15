@@ -7,11 +7,11 @@ import { create } from 'zustand';
 const memory = new Map(); let failStorage = false;
 globalThis.sessionStorage = { getItem: key => memory.get(key) || null, setItem: (key,value) => { if (failStorage) throw new Error('synthetic storage failure'); memory.set(key,value); } };
 class AgentHttpError extends Error { constructor(status) { super(`Lore Agent · HTTP ${status}`); this.status = status; } }
-const calls = []; let release; let mode = 'held'; let savedKey = '';
+const calls = []; let release; let mode = 'held';
 const draft = { id: 'd', session_id: 's', kind: 'character', target_id: 'c', version: 3, base_revision: 1, before: {}, after: { name: 'N' }, changes: {}, preview_hash: 'hash-v3', status: 'approved', warnings: [], result: null };
 const session = { id: 's', title: 'Synthetic', messages: [], drafts: [draft], busy: false, last_error: null };
 const api = {
-  clients: async () => { calls.push('GET clients'); return []; },
+  settings: async () => { calls.push('GET settings'); return { enabled: false, llm_model_option_key: null, image_provider_account_id: null, image_model_id: null, mcp_enabled: false }; },
   sessions: async () => { calls.push('GET sessions'); return [session]; },
   session: async () => { calls.push('GET session'); return session; },
   draft: async () => { calls.push('GET draft'); return draft; },
@@ -29,12 +29,16 @@ const api = {
 };
 const source = ts.transpileModule(readFileSync(new URL('../src/agent/store.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const module = { exports: {} };
-new Function('require','module','exports',source)(name => name === 'zustand' ? { create } : name === './api' ? { agentApi: api, AgentHttpError, setAgentOwnerKey: key => { savedKey = key; } } : (() => { throw new Error(`Unexpected import ${name}`); })(), module, module.exports);
+new Function('require','module','exports',source)(name => name === 'zustand' ? { create } : name === './api' ? { agentApi: api, AgentHttpError } : (() => { throw new Error(`Unexpected import ${name}`); })(), module, module.exports);
 const { agentActions: actions, useAgentStore: store } = module.exports;
-store.setState({ settings: { enabled: false } });
-await actions.unlock('SYNTHETIC-MEMORY-KEY');
-assert.equal(savedKey,'SYNTHETIC-MEMORY-KEY'); assert.equal(store.getState().unlocked,true);
-assert.deepEqual(calls,['GET clients'],'unlock works with master OFF without forbidden session access');
+await actions.loadSettings();
+assert.equal(store.getState().settings.enabled, false);
+assert.equal(store.getState().settings.llm_model_option_key, null);
+assert.equal(store.getState().settings.mcp_enabled, false);
+assert.deepEqual(calls, ['GET settings'], 'initial settings read neither authenticates nor dispatches model calls');
+assert.equal('unlocked' in store.getState(), false);
+assert.equal('unlock' in actions, false);
+assert.equal('lock' in actions, false);
 store.setState({ settings: { enabled: true, llm_model_option_key: 'model' }, selected: 's', sessions: { s: session }, input: 'Synthetic input not persisted' });
 const first = actions.send(); await actions.send();
 assert.equal(calls.filter(c => c === 'POST message').length,1,'synchronous submission ownership prevents duplicates');
@@ -78,5 +82,30 @@ assert.equal(choiceArgs[0].version, 3); assert.equal(choiceArgs[1], 'new');
 assert.deepEqual(calls.slice(-2), ['POST image-choice', 'GET image-choice draft']);
 assert.equal(store.getState().drafts.d.status, 'draft'); assert.equal(store.getState().drafts.d.version, 4);
 assert.ok(!JSON.stringify([...memory.values()]).includes('generation_mode'));
-actions.lock(); assert.deepEqual(store.getState().imageChoices, {}); assert.equal(savedKey,''); assert.equal(store.getState().unlocked,false); assert.deepEqual(store.getState().sessions,{});
-console.log('PASS production Agent store: OFF unlock, memory-only auth, pre-POST identifier journal, duplicate ownership, unknown GET-only reconciliation, CAS rejection, failed-storage dispatch block, explicit lock');
+store.setState({ input: 'Retained draft', imageChoices: { d: { version: 4, mode: 'new', referenceId: '' } } });
+store.getState().setOpen(true); store.getState().setOpen(false);
+assert.equal(store.getState().input, 'Retained draft');
+assert.equal(store.getState().imageChoices.d.mode, 'new');
+assert.ok(store.getState().sessions.s);
+console.log('PASS production Agent store: direct settings with master OFF, pre-POST identifier journal, duplicate ownership, unknown GET-only reconciliation, CAS rejection, failed-storage dispatch block, close retains drafts');
+
+// Execute the real REST adapter with synthetic fetch, without any credential setup.
+const apiModule = { exports: {} };
+const apiSource = ts.transpileModule(readFileSync(new URL('../src/agent/api.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+new Function('require', 'module', 'exports', apiSource)(name => { assert.equal(name, '../constants/domain'); return { API_BASE: '/api' }; }, apiModule, apiModule.exports);
+const originalFetch = globalThis.fetch; const requests = [];
+globalThis.fetch = async (url, options) => { requests.push({ url, options }); return new Response(new Blob(['synthetic image'], { type: 'image/webp' }), { status: 200, headers: { 'Content-Type': 'image/webp' } }); };
+try {
+  const rest = apiModule.exports.agentApi;
+  await rest.imageBlob('output'); await rest.referenceBlob('draft'); await rest.candidateBlob('character', 'target', 'reference');
+  globalThis.fetch = async (url, options) => { requests.push({ url, options }); return Response.json({}); };
+  await rest.settings(); await rest.saveSettings({ enabled: false, llm_model_option_key: null, image_provider_account_id: null, image_model_id: null, mcp_enabled: false }); await rest.sessions(); await rest.clients();
+  for (const { url, options } of requests) {
+    assert.ok(url.startsWith('/api/lore-agent/')); assert.ok(!url.includes('?'));
+    assert.equal(options.credentials, 'same-origin'); assert.equal(options.cache, 'no-store'); assert.equal(options.redirect, 'error');
+    assert.equal(options.headers['Cache-Control'], 'no-store');
+    assert.equal(Object.keys(options.headers).some(key => /owner|authorization/i.test(key)), false);
+  }
+  assert.equal('setAgentOwnerKey' in apiModule.exports, false);
+  console.log('PASS production Agent REST: settings/session/client reads and settings save without owner key; three blob paths retain same-origin/no-store/redirect protections');
+} finally { globalThis.fetch = originalFetch; }

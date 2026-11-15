@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useI18n } from '../i18n/I18nProvider';
 import type { UiMessageKey } from '../i18n/core';
-import { AgentError, AgentImage, AgentUnlock } from './components';
+import { AgentError, AgentImage } from './components';
 import { agentActions, useAgentStore } from './store';
 import type { AgentDraft, ContextSelection, ImageJob, ImageSelection, ImageTargetKind } from './types';
 
@@ -80,13 +80,11 @@ export function AgentPanel() {
   const [draftId, setDraftId] = useState('');
   // Image result linkage also survives a route change or session GET recovery.
   useEffect(() => {
-    if (!s.unlocked) return;
     for (const draft of Object.values(s.drafts)) {
       const jobId = draft.result?.job_id;
       if (typeof jobId === 'string' && !s.imageJobs[jobId]) void agentActions.loadImageJob(jobId).catch(() => {});
     }
-  }, [s.drafts, s.unlocked]);
-  if (!s.unlocked) return <div className="agent-panel-body"><AgentUnlock /></div>;
+  }, [s.drafts]);
   return <div className="agent-panel-body">
     <div className="agent-actions"><button disabled={s.working || !!s.pending.length} onClick={() => void agentActions.createSession()}>{t('agent.newSession')}</button><button disabled={s.working} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button></div>
     <label>{t('agent.sessions')}<select value={s.selected} onChange={e => useAgentStore.setState({ selected: e.target.value })}><option value="">{t('선택')}</option>{Object.values(s.sessions).map(item => <option value={item.id} key={item.id}>{item.title || item.id}</option>)}</select></label>

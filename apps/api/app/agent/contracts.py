@@ -157,7 +157,6 @@ class ImageChoice(StrictModel):
     shutdown_date: str | None = None
     reference_unavailable_reason: str | None = None
 class AgentSettingsView(SettingsUpdate):
-    owner_configured: bool
     llm_options: list[ModelChoice]
     image_accounts: list[ImageAccount]
     image_models: list[ImageChoice]

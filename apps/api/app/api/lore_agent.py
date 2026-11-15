@@ -1,10 +1,15 @@
-"""Owner-only REST control surface. Safe settings GET is the sole public route."""
+"""Internal controls use Lorechat's existing trusted single-user app boundary.
+
+External MCP retains its own scoped bearer authentication. Provider credentials
+remain server-side and are resolved by the selected model/account, not here.
+"""
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.routing import APIRoute
 from pydantic import ValidationError
 from app.agent.contracts import (AgentError, SettingsUpdate, RequestInput, MessageInput,
     ReviseBody, ApprovalBody, CommitBody, ClientInput, RegistrationBody, NewImageChoiceInput,
-    AgentSettingsView, AgentSessionView, AgentDraftView, OperationView, ClientView, ImageJobView)
+    AgentSettingsView, AgentSessionView, AgentDraftView, OperationView, ClientView, ImageJobView,
+    Principal, SCOPES)
 from app.agent.service import AgentService
 
 class AgentRoute(APIRoute):
@@ -29,8 +34,20 @@ def get_agent_service(request: Request):
     if engine is None: raise HTTPException(503,'Lore Agent storage is not initialized')
     return AgentService(engine)
 
-def owner(service=Depends(get_agent_service), key: str | None=Header(default=None,alias='X-Lore-Owner-Key')):
-    return service.require_owner(key)
+def owner(request: Request, authorization: str | None=Header(default=None)):
+    # This is the same private app access boundary as existing resource editors,
+    # not a second login. Never interpret an external MCP/provider bearer as UI
+    # approval authority. The MCP transport constructs its own non-owner actor.
+    if authorization is not None:
+        raise HTTPException(403, 'Use the scoped MCP endpoint for bearer access')
+    origin = request.headers.get('origin')
+    if origin is not None:
+        from app.core.config import get_settings
+        allowed = {value.strip() for value in get_settings().cors_origins.split(',') if value.strip()}
+        allowed.add(f'{request.url.scheme}://{request.url.netloc}')
+        if origin not in allowed:
+            raise HTTPException(403, 'Untrusted application origin')
+    return Principal('owner', SCOPES, True)
 
 @router.post('/tools/{name}')
 async def owner_tool(name: str, arguments: dict, principal=Depends(owner), service=Depends(get_agent_service)):

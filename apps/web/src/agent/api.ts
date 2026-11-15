@@ -1,25 +1,21 @@
 import { API_BASE } from '../constants/domain';
 import type { AgentSettings, AgentSettingsInput, AgentSession, AgentDraft, AgentOperation, ContextSelection, ImageJob, ImageTargetKind, ImageContext, McpClient, McpScope } from './types';
 
-// Deliberately not persisted, serialized, or passed into the roleplay/model state.
-let ownerKey = '';
-export const setAgentOwnerKey = (key: string) => { ownerKey = key; };
 export class AgentHttpError extends Error {
   constructor(public status: number) { super(`Lore Agent · HTTP ${status}`); }
 }
 const pathId = (id: string) => encodeURIComponent(id);
-async function request<T>(path: string, method = 'GET', body?: unknown, publicRead = false): Promise<T> {
-  if (!publicRead && !ownerKey) throw new AgentHttpError(401);
+async function request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(`${API_BASE}/lore-agent${path}`, {
     method, cache: 'no-store', credentials: 'same-origin', redirect: 'error',
-    headers: { 'Cache-Control': 'no-store', ...(publicRead ? {} : { 'X-Lore-Owner-Key': ownerKey }), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+    headers: { 'Cache-Control': 'no-store', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   if (!response.ok) throw new AgentHttpError(response.status);
   return response.status === 204 ? undefined as T : await response.json() as T;
 }
 export const agentApi = {
-  settings: () => request<AgentSettings>('/settings', 'GET', undefined, true),
+  settings: () => request<AgentSettings>('/settings'),
   saveSettings: (value: AgentSettingsInput) => request<AgentSettings>('/settings', 'PUT', value),
   sessions: () => request<AgentSession[]>('/sessions'),
   session: (id: string) => request<AgentSession>(`/sessions/${pathId(id)}`),
@@ -42,9 +38,8 @@ export const agentApi = {
   imageBlob: (id: string) => privateImageBlob(`/image-outputs/${pathId(id)}`),
 };
 async function privateImageBlob(path: string): Promise<Blob> {
-    if (!ownerKey) throw new AgentHttpError(401);
-    // Never forward owner credentials to a provider-supplied preview URL.
-    const response = await fetch(`${API_BASE}/lore-agent${path}`, { cache: 'no-store', credentials: 'same-origin', redirect: 'error', headers: { 'Cache-Control': 'no-store', 'X-Lore-Owner-Key': ownerKey } });
+    // Fetch only application-owned blob paths, never provider-supplied preview URLs.
+    const response = await fetch(`${API_BASE}/lore-agent${path}`, { cache: 'no-store', credentials: 'same-origin', redirect: 'error', headers: { 'Cache-Control': 'no-store' } });
     if (!response.ok) throw new AgentHttpError(response.status);
     const blob = await response.blob();
     if (!/^image\/(png|jpeg|webp|gif)$/.test(blob.type)) throw new Error('Invalid image response');

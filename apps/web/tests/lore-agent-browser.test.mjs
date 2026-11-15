@@ -23,7 +23,6 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch({ headless: true });
 const dict = JSON.parse(readFileSync('src/i18n/messages.en.json', 'utf8'));
 const t = key => dict[key] || key;
-const owner = 'SYNTHETIC-OWNER-NOT-A-CREDENTIAL';
 const image = readFileSync('public/brand/lorely-app-icon-light.webp');
 let assertions = 0;
 async function setup(width, height, locale = 'en') {
@@ -31,7 +30,7 @@ async function setup(width, height, locale = 'en') {
   const errors = [], writes = [], reads = [];
   // Admitted catalog from image-consistency-sdk-result; no retired or invented editable routes.
   // The real-backend probe compares selectors against the actual SDK-backed settings catalog.
-  const settings = { enabled: false, llm_model_option_key: null, image_provider_account_id: null, image_model_id: null, mcp_enabled: false, owner_configured: true, llm_options: [{ key: 'agent-llm', label: 'Synthetic independent LLM', provider_account_id: 'a', provider_type: 'openai' }], image_accounts: [{ id: 'a', alias: 'Synthetic images', provider_type: 'openai' }, { id: 'x', alias: 'Synthetic xAI images', provider_type: 'xai' }], image_models: [...['gpt-image-2.5-sunburst', 'gpt-image-1.5', 'gpt-image-1-mini'].map(id => ({ id, label: id === 'gpt-image-2.5-sunburst' ? id : `${id} (deprecated; shuts down 2026-12-01)`, provider_type: 'openai', supports_reference: true, deprecated: id !== 'gpt-image-2.5-sunburst', shutdown_date: id === 'gpt-image-2.5-sunburst' ? null : '2026-12-01' })), { id: 'grok-imagine-image', label: 'grok-imagine-image', provider_type: 'xai', supports_reference: false }] };
+  const settings = { enabled: false, llm_model_option_key: null, image_provider_account_id: null, image_model_id: null, mcp_enabled: false, llm_options: [{ key: 'agent-llm', label: 'Synthetic independent LLM', provider_account_id: 'a', provider_type: 'openai' }], image_accounts: [{ id: 'a', alias: 'Synthetic images', provider_type: 'openai' }, { id: 'x', alias: 'Synthetic xAI images', provider_type: 'xai' }], image_models: [...['gpt-image-2.5-sunburst', 'gpt-image-1.5', 'gpt-image-1-mini'].map(id => ({ id, label: id === 'gpt-image-2.5-sunburst' ? id : `${id} (deprecated; shuts down 2026-12-01)`, provider_type: 'openai', supports_reference: true, deprecated: id !== 'gpt-image-2.5-sunburst', shutdown_date: id === 'gpt-image-2.5-sunburst' ? null : '2026-12-01' })), { id: 'grok-imagine-image', label: 'grok-imagine-image', provider_type: 'xai', supports_reference: false }] };
   const state = { settings, clients: [], sessions: [], drafts: {}, operations: {}, jobs: {}, abortMessage: false, unavailable: false, writes, reads, errors };
   const sessionView = () => ({ ...state.sessions[0], drafts: Object.values(state.drafts).filter(d => d.session_id === 's1') });
   function makeDraft(id, kind, after, session_id = 's1') { if (kind === 'image_generation') after = { generation_mode: 'new', owner_choice_confirmed: false, reference: null, image_context: { has_existing_images: false, requires_choice: false, candidates: [], inventory_digest: 'empty' }, ...after }; return state.drafts[id] = { id, session_id, kind, target_id: 'c1', version: 1, base_revision: 1, before: kind === 'character' ? { name: 'Before' } : null, after, changes: after, preview_hash: `hash-${id}-1`, status: 'draft', warnings: [], result: null }; }
@@ -46,9 +45,11 @@ async function setup(width, height, locale = 'en') {
     if (path.startsWith('/api/lore-agent')) {
       if (method === 'GET') reads.push(path); else writes.push({ path, method, body });
       const suffix = path.slice('/api/lore-agent'.length);
+      assert.equal(req.headers()['x-lore-owner-key'], undefined, 'private REST never sends an owner key');
+      assert.equal(req.headers().authorization, undefined, 'private REST does not invent replacement auth');
+      assert.equal(url.search, '', 'private REST never puts credentials in URLs');
+      assert.equal(req.headers()['cache-control']?.includes('no-store'), true, 'private REST bypasses cache');
       if (suffix === '/settings' && method === 'GET') return state.unavailable ? json({},404) : json(settings);
-      assert.equal(req.headers()['x-lore-owner-key'], owner, 'owner-only request uses dedicated header');
-      assert.equal(req.headers()['cache-control']?.includes('no-store'), true, 'owner request bypasses cache');
       if (suffix === '/settings') { Object.assign(settings, body); return json(settings); }
       if (suffix === '/mcp/clients') {
         if (method === 'POST') { const client = { id: 'client1', enabled: true, ...body }; state.clients.push(client); return json({ client, token: 'SYNTHETIC-MCP-ONCE' }); }
@@ -58,7 +59,7 @@ async function setup(width, height, locale = 'en') {
       if (body?.request_id) {
         const persisted = await page.evaluate(() => sessionStorage.getItem('lore-agent-request-recovery-v1'));
         assert.ok(persisted.includes(body.request_id), 'request ID is stored before POST');
-        assert.ok(!persisted.includes(owner) && !persisted.includes('Synthetic request'), 'journal contains identifiers only');
+        assert.ok(!persisted.includes('Synthetic request'), 'journal contains identifiers only');
       }
       if (suffix === '/sessions') {
         if (method === 'POST') { state.sessions = [{ id: 's1', title: 'Synthetic session', messages: [], busy: false, last_error: null }]; state.operations[body.request_id] = { request_id: body.request_id, status: 'completed', kind: 'session', result: { id: 's1' }, error: null }; return json(sessionView()); }
@@ -137,9 +138,15 @@ try {
     const { page, state, navigate } = await setup(width,height);
     await page.goto(origin + '/settings/lore-agent');
     const settings = page.locator('[data-page=agent-settings]');
-    await expect(settings.getByRole('switch', { name: t('agent.enable') })).toBeDisabled();
-    await settings.getByLabel(t('agent.ownerKey'), { exact: true }).fill(owner);
-    await settings.getByRole('button', { name: t('agent.unlock'), exact: true }).click();
+    await expect(settings.locator('input[type=password], .agent-unlock')).toHaveCount(0);
+    await expect(settings.getByRole('button', { name: /^(Unlock|Lock)$/ })).toHaveCount(0);
+    await expect(settings.getByRole('switch', { name: t('agent.enable') })).not.toBeChecked();
+    await expect(settings.getByRole('switch', { name: t('agent.mcpEnable') })).not.toBeChecked();
+    await expect(settings.getByLabel(t('agent.llm'), { exact: true })).toHaveValue('');
+    await expect(settings.getByLabel(t('agent.imageAccount'))).toHaveValue('');
+    await expect(settings.getByLabel(t('agent.imageModel'))).toHaveValue('');
+    assert.equal(state.writes.length, 0, 'opening settings never enables features or sends model calls');
+    assert.ok(!state.reads.includes('/api/lore-agent/sessions'), 'OFF does not read sessions');
     await expect(settings.getByRole('switch', { name: t('agent.enable') })).toBeEnabled();
     await settings.getByRole('switch', { name: t('agent.enable') }).check();
     await settings.getByLabel(t('agent.llm'), { exact: true }).selectOption('agent-llm');
@@ -297,7 +304,7 @@ try {
     const messageColors = await panel.locator('.agent-messages article').first().evaluate(node => ({ fg: getComputedStyle(node).color, bg: getComputedStyle(node).backgroundColor }));
     assert.notEqual(messageColors.fg, messageColors.bg, 'messages remain readable');
     const storage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
-    assert.ok(!storage.includes(owner) && !storage.includes('SYNTHETIC-MCP-ONCE') && !storage.includes('UNSENT AGENT DRAFT') && !storage.includes('Changed prompt requires renewed consent') && !storage.includes('base64') && !storage.includes('image_context'));
+    assert.ok(!storage.includes('SYNTHETIC-MCP-ONCE') && !storage.includes('UNSENT AGENT DRAFT') && !storage.includes('Changed prompt requires renewed consent') && !storage.includes('base64') && !storage.includes('image_context'));
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     if (artifacts) await page.screenshot({ path: `${artifacts}/agent-${width}.png` });
     await panel.getByRole('button', { name: t('닫기'), exact: true }).click();
@@ -306,23 +313,42 @@ try {
     await settings.getByRole('button', { name: t('저장'), exact: true }).click();
     await expect(page.locator('.agent-launcher')).toHaveCount(0);
     assert.equal(state.settings.llm_model_option_key, 'agent-llm', 'master toggle preserves independent selection');
-    await settings.getByRole('button', { name: t('agent.lock'), exact: true }).click();
     await expect.poll(() => page.evaluate(() => window.agentBlobLifecycle.made.filter(url => !window.agentBlobLifecycle.revoked.includes(url)).length)).toBe(0);
     assert.deepEqual(state.errors, []); assertions++;
-    console.log(`PASS production Agent ${width}x${height}: settings, memory-only owner, MCP issue/revoke, version approval, paid-plan gate, image blob, separate registration, composer/scroll/route retention, unknown GET-only recovery`);
+    console.log(`PASS production Agent ${width}x${height}: direct settings without owner credentials, MCP issue/revoke, version approval, paid-plan gate, image blob, separate registration, composer/scroll/route retention, unknown GET-only recovery`);
     await page.close();
   }
   for (const [width,height,locale] of [[320,740,'ko'],[820,1180,'ja']]) {
     const { page, state } = await setup(width,height,locale); state.settings.owner_configured = false;
     await page.goto(origin + '/settings/lore-agent');
     const local = JSON.parse(readFileSync(`src/i18n/messages.${locale}.json`, 'utf8'));
-    await expect(page.locator('[data-page=agent-settings]')).toContainText(local['agent.ownerSetup']);
+    const settings = page.locator('[data-page=agent-settings]');
+    await expect(settings.getByRole('switch', { name: local['agent.enable'] })).toBeEnabled();
+    await settings.getByRole('button', { name: local['저장'] || '저장', exact: true }).click();
+    await expect(settings.getByText(local['agent.saved'])).toBeVisible();
+    assert.equal(state.settings.enabled, false);
+    assert.equal(state.settings.llm_model_option_key, null);
+    assert.equal(state.settings.mcp_enabled, false);
+    // Existing saved selections and sessions work after reload, with legacy owner_configured=false.
+    Object.assign(state.settings, { enabled: true, llm_model_option_key: 'agent-llm', image_provider_account_id: 'a', image_model_id: 'gpt-image-1.5' });
+    state.sessions = [{ id: 's1', title: 'Existing session', messages: [], busy: false, last_error: null }];
+    await page.reload();
+    await expect(settings.getByLabel(local['agent.llm'], { exact: true })).toHaveValue('agent-llm');
+    await expect(settings.getByLabel(local['agent.imageAccount'])).toHaveValue('a');
+    await expect(settings.getByLabel(local['agent.imageModel'])).toHaveValue('gpt-image-1.5');
+    const writesBeforeOpen = state.writes.length;
+    await page.locator('.agent-launcher').click();
+    const panel = page.locator('.agent-modal');
+    await expect(panel.getByLabel(local['agent.sessions'])).toHaveValue('s1');
+    await expect(panel.getByLabel(local['agent.message'])).toBeEnabled();
+    assert.equal(state.writes.length, writesBeforeOpen, 'opening existing Agent hydrates through GET only');
+    await panel.getByRole('button', { name: local['닫기'] || '닫기', exact: true }).click();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),false);
     await expect(page.locator('[data-page=agent-settings] input[type=password]')).toHaveCount(0);
     state.unavailable = true; await page.reload();
     await expect(page.locator('[data-page=agent-settings] [role=alert]')).toContainText('404');
     await expect(page.locator('.app-bar')).toBeVisible(); assert.deepEqual(state.errors, []); assertions++;
-    console.log(`PASS production ${locale} ${width}x${height}: missing owner setup and old-backend 404 isolated to settings`);
+    console.log(`PASS production ${locale} ${width}x${height}: legacy owner flag ignored, direct save, saved selections/session hydration, old-backend 404 isolated to settings`);
     await page.close();
   }
   console.log(`PASS ${assertions} bounded production browser scenarios; all API synthetic, external traffic blocked`);

@@ -130,13 +130,12 @@ def test_owner_rest_boundary_and_preview(service,owner,monkeypatch,tmp_path):
     from fastapi.testclient import TestClient
     from app.api.lore_agent import router
     _,data=setup_image(service,monkeypatch,tmp_path)
-    monkeypatch.setenv('LORE_AGENT_OWNER_KEY_SHA256',hashlib.sha256(b'synthetic').hexdigest())
     app=FastAPI(); app.state.agent_service=service; app.include_router(router)
     d=plan(service,owner)
     endpoint=f"/lore-agent/drafts/{d['id']}/image-choice"
     with TestClient(app) as client:
-        assert client.post(endpoint,json={'expected_version':1,'generation_mode':'new'}).status_code==401
-        headers={'X-Lore-Owner-Key':'synthetic'}
+        assert client.post(endpoint,headers={'Authorization':'Bearer external-token'},json={'expected_version':1,'generation_mode':'new'}).status_code==403
+        headers={}
         assert client.post('/lore-agent/tools/lore_image_choice',headers=headers,json={}).status_code==404
         ctx=client.get('/lore-agent/image-context/character/c',headers=headers)
         assert ctx.status_code==200 and ctx.json()['has_existing_images']

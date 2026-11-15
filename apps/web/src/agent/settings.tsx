@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useI18n } from '../i18n/I18nProvider';
-import { AgentError, AgentUnlock } from './components';
+import { AgentError } from './components';
 import { agentActions, useAgentStore } from './store';
 import { agentApi } from './api';
 import { MCP_SCOPES, type AgentSettingsInput, type McpClient, type McpScope } from './types';
@@ -51,8 +51,7 @@ export function AgentSettingsView() {
     <AgentError value={s.settingsError} /><AgentError value={error} />
     {s.settingsError && <button onClick={() => void agentActions.loadSettings()}>{t('agent.refresh')}</button>}
     {!s.settings && !s.settingsError && <p role="status">{t('불러오는 중…')}</p>}
-    {s.settings && <AgentUnlock />}
-    {draft && <form onSubmit={e => { e.preventDefault(); void save(); }}><fieldset disabled={!s.unlocked || busy}>
+    {draft && <form onSubmit={e => { e.preventDefault(); void save(); }}><fieldset disabled={busy}>
       <label className="agent-check"><input role="switch" type="checkbox" checked={draft.enabled} onChange={e => setDraft({ ...draft, enabled: e.target.checked })} />{t('agent.enable')}</label>
       <label>{t('agent.llm')}<select aria-label={t('agent.llm')} value={draft.llm_model_option_key || ''} onChange={e => setDraft({ ...draft, llm_model_option_key: e.target.value || null })}><option value="">{t('agent.none')}</option>{s.settings?.llm_options.map(model => <option key={model.key} value={model.key}>{model.label}</option>)}</select></label>
       <p>{t('agent.independentModel')}</p>
@@ -62,6 +61,6 @@ export function AgentSettingsView() {
       <button type="submit">{t('저장')}</button>
     </fieldset></form>}
     {saved && <p role="status">{t('agent.saved')}</p>}
-    {s.unlocked && <><button disabled={s.working || busy} onClick={() => agentActions.lock()}>{t('agent.lock')}</button><McpSettings /></>}
+    {s.settings && <McpSettings />}
   </section>;
 }

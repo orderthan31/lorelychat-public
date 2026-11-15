@@ -57,10 +57,6 @@ def test_revision_invalidates_approval(service,owner):
     with pytest.raises(AgentError): approve(service,owner,d)
 
 def test_scopes_revocation_owner_and_no_approve_tool(service,owner,monkeypatch):
-    monkeypatch.delenv('LORE_AGENT_OWNER_KEY_SHA256',raising=False)
-    with pytest.raises(AgentError): service.require_owner('anything')
-    monkeypatch.setenv('LORE_AGENT_OWNER_KEY_SHA256',hashlib.sha256(b'synthetic').hexdigest())
-    assert service.require_owner('synthetic').is_owner
     client=service.create_client('reader',['lore:read'])
     service.update_settings({'enabled':True,'mcp_enabled':True})
     p=service.principal_for_token(client['token'])

@@ -16,20 +16,6 @@ export function AgentError({ value }: { value: string }) {
   const { t } = useI18n();
   return value ? <p className="agent-error" role="alert">{value.startsWith('agent.') ? t(value as UiMessageKey) : value}</p> : null;
 }
-export function AgentUnlock() {
-  const { t } = useI18n();
-  const { settings, unlocked, working, error } = useAgentStore();
-  const [key, setKey] = useState('');
-  if (unlocked) return null;
-  return <section className="agent-unlock">
-    {!settings?.owner_configured ? <p role="status">{t('agent.ownerSetup')}</p> : <form onSubmit={e => { e.preventDefault(); const value = key; setKey(''); void agentActions.unlock(value); }} autoComplete="off">
-      <label>{t('agent.ownerKey')}<input type="password" name="lore-owner-unlock" autoComplete="off" spellCheck={false} value={key} onChange={e => setKey(e.target.value)} /></label>
-      <p>{t('agent.ownerHint')}</p>
-      <button disabled={working || !key}>{t('agent.unlock')}</button>
-    </form>}
-    <AgentError value={error} />
-  </section>;
-}
 let launcherElement: HTMLButtonElement | null = null;
 export function AgentLauncher() {
   const { t } = useI18n();
@@ -47,9 +33,10 @@ export function AgentSurface() {
     const update = () => setWide(media.matches); media.addEventListener('change', update); update();
     return () => media.removeEventListener('change', update);
   }, []);
+  useEffect(() => { if (open) void agentActions.refresh(); }, [open]);
   const close = () => useAgentStore.getState().setOpen(false);
   const heading = <header className="agent-panel-header"><h2>{t('agent.title')}</h2><button type="button" aria-label={t('닫기')} onClick={close}><X size={20} /></button></header>;
-  if (wide) return <aside className="agent-dock agent-ui" hidden={!open} aria-label={t('agent.title')}>{heading}<AgentPanel /></aside>;
+  if (wide) return <aside className="agent-dock agent-ui" hidden={!open} aria-label={t('agent.title')}>{heading}{open && <AgentPanel />}</aside>;
   return <Dialog.Root open={open} onOpenChange={value => useAgentStore.getState().setOpen(value)}><Dialog.Portal><Dialog.Overlay className="agent-overlay" /><Dialog.Content className="agent-modal agent-ui" onCloseAutoFocus={event => { event.preventDefault(); launcherElement?.focus(); }}>
     <Dialog.Title className="sr-only">{t('agent.title')}</Dialog.Title><Dialog.Description className="sr-only">{t('agent.workspace')}</Dialog.Description>
     {heading}<AgentPanel />

@@ -69,15 +69,13 @@ def test_sparse_traits_and_strict_authored_fields(service,owner):
 
 def test_owner_routes_and_settings_shape(service,owner,monkeypatch):
     from app.api.lore_agent import router
-    monkeypatch.setenv('LORE_AGENT_OWNER_KEY_SHA256',hashlib.sha256(b'owner-test-only').hexdigest())
     app=FastAPI(); app.state.agent_service=service; app.include_router(router)
     with TestClient(app) as client:
         public=client.get('/lore-agent/settings')
         assert public.status_code==200
-        assert set(public.json())=={'enabled','llm_model_option_key','image_provider_account_id','image_model_id','mcp_enabled','owner_configured','llm_options','image_accounts','image_models'}
+        assert set(public.json())=={'enabled','llm_model_option_key','image_provider_account_id','image_model_id','mcp_enabled','llm_options','image_accounts','image_models'}
         assert 'owner-test-only' not in public.text
-        assert client.post('/lore-agent/sessions',json={'request_id':'new'}).status_code==401
-        headers={'X-Lore-Owner-Key':'owner-test-only'}
+        headers={}
         session=client.post('/lore-agent/sessions',headers=headers,json={'request_id':'new'})
         assert session.status_code==200
         assert client.get('/lore-agent/sessions/'+session.json()['id'],headers=headers).json()==session.json()
@@ -85,7 +83,7 @@ def test_owner_routes_and_settings_shape(service,owner,monkeypatch):
         assert client.post('/lore-agent/tools/lore_search',headers=headers,json={'sql':'select'}).status_code==422
         d=client.post('/lore-agent/tools/lore_stage_character',headers=headers,json={'fields':{'name':'API','persona':'Navigator'}}).json()
         request={'expected_version':1,'preview_hash':d['preview_hash']}
-        assert client.post('/lore-agent/drafts/'+d['id']+'/approve',json=request).status_code==401
+        assert client.post('/lore-agent/drafts/'+d['id']+'/approve',headers={'Authorization':'Bearer external-token'},json=request).status_code==403
         assert client.post('/lore-agent/drafts/'+d['id']+'/approve',headers=headers,json=request).status_code==200
         assert client.post('/lore-agent/drafts/'+d['id']+'/commit',headers=headers,json={**request,'request_id':'api-commit'}).json()['status']=='completed'
         token=client.post('/lore-agent/mcp/clients',headers=headers,json={'name':'external','scopes':['lore:read']}).json()

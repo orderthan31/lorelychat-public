@@ -102,14 +102,6 @@ class AgentService:
             values={'provider_account_id':account.id,'provider':account.provider_type,'model':model_id,'api_key':provider_secret_service.get_secret(account.api_key_secret_ref),'base_url':account.base_url}
         return resolve_route(SimpleNamespace(overrides=values,provider=lambda:values['provider'],model=lambda:values['model']))
 
-    def require_owner(self, key):
-        expected = os.environ.get('LORE_AGENT_OWNER_KEY_SHA256', '')
-        if not re.fullmatch('[a-fA-F0-9]{64}', expected):
-            raise AgentError('Owner access is not configured', 503)
-        if not key or not hmac.compare_digest(hashlib.sha256(key.encode()).hexdigest(), expected.lower()):
-            raise AgentError('Owner authentication required', 401)
-        return Principal('owner', SCOPES, True)
-
     def _settings(self, c):
         row = c.execute(select(m.settings.c.data).where(m.settings.c.id == 'settings')).scalar_one_or_none()
         return deepcopy(row) if row else SettingsUpdate().model_dump()
@@ -126,7 +118,6 @@ class AgentService:
             eligible = [a for a in accounts if list_image_models(a.provider_type)]
             data['image_accounts'] = [{k: getattr(a, k) for k in ('id','alias','provider_type')} for a in eligible]
             data['image_models'] = [model for provider in sorted({a.provider_type for a in eligible}) for model in list_image_models(provider)]
-        data['owner_configured'] = bool(re.fullmatch('[a-fA-F0-9]{64}', os.environ.get('LORE_AGENT_OWNER_KEY_SHA256', '')))
         return data
 
     def update_settings(self, payload):

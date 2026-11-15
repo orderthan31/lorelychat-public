@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { agentApi, AgentHttpError, setAgentOwnerKey } from './api';
+import { agentApi, AgentHttpError } from './api';
 import type { AgentDraft, AgentOperation, AgentSession, AgentSettings, ContextSelection, ImageJob, ImageSelection, ImageChoice, ImageTargetKind, PendingRequest } from './types';
 
 const RECOVERY_KEY = 'lore-agent-request-recovery-v1';
@@ -11,7 +11,7 @@ function recovered(): PendingRequest[] {
 }
 function persist(requests: PendingRequest[]) { sessionStorage.setItem(RECOVERY_KEY, JSON.stringify(requests)); }
 export type AgentState = {
-  open: boolean; unlocked: boolean; settings: AgentSettings | null; settingsError: string; error: string;
+  open: boolean; settings: AgentSettings | null; settingsError: string; error: string;
   working: boolean; sessions: Record<string, AgentSession>; selected: string; input: string;
   resources: { kind: ContextSelection['kind']; id: string; label: string }[];
   imageChoices: Record<string, ImageChoice>;
@@ -21,7 +21,7 @@ export type AgentState = {
   setOpen: (open: boolean) => void;
 };
 export const useAgentStore = create<AgentState>((set) => ({
-  open: false, unlocked: false, settings: null, settingsError: '', error: '', working: false,
+  open: false, settings: null, settingsError: '', error: '', working: false,
   resources: [], imageChoices: {}, imageSelections: {}, sessions: {}, selected: '', input: '', contexts: [], drafts: {}, edits: {}, pending: recovered(), operations: {}, imageJobs: {},
   setOpen: open => set({ open }),
 }));
@@ -66,19 +66,6 @@ export const agentActions = {
     try { set({ settings: await agentApi.settings(), settingsError: '' }); }
     catch (error) { set({ settingsError: describe(error) }); }
   },
-  async unlock(key: string) {
-    if (state().working) return;
-    await guarded(async () => {
-      setAgentOwnerKey(key);
-      try {
-        await agentApi.clients(); // Owner authentication works even with the master switch off.
-        const sessions = state().settings?.enabled ? await agentApi.sessions() : [];
-        sessions.forEach(acceptSession);
-        set({ unlocked: true, selected: state().selected || sessions[0]?.id || '' });
-      } catch (error) { setAgentOwnerKey(''); set({ unlocked: false }); throw error; }
-    });
-  },
-  lock() { setAgentOwnerKey(''); set({ unlocked: false, open: false, sessions: {}, drafts: {}, imageJobs: {}, imageChoices: {}, imageSelections: {}, operations: {}, edits: {}, input: '', contexts: [] }); },
   createSession: () => guarded(async () => {
     if (state().pending.length) return;
     const id = reserve('session');
