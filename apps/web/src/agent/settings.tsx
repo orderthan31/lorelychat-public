@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useI18n } from '../i18n/I18nProvider';
-import { AgentError } from './components';
+import { AgentError, AgentOpenButton } from './components';
 import { agentActions, useAgentStore } from './store';
 import { agentApi } from './api';
 import { MCP_SCOPES, type AgentSettingsInput, type McpClient, type McpScope } from './types';
@@ -39,21 +39,27 @@ function McpSettings() {
 export function AgentSettingsView() {
   const { t } = useI18n(); const s = useAgentStore();
   const [draft, setDraft] = useState<AgentSettingsInput | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [saved, setSaved] = useState(false);
-  useEffect(() => { if (s.settings) { const { enabled, llm_model_option_key, image_provider_account_id, image_model_id, mcp_enabled } = s.settings; setDraft({ enabled, llm_model_option_key, image_provider_account_id, image_model_id, mcp_enabled }); } }, [s.settings]);
+  const [llmAccountId, setLlmAccountId] = useState('');
+  useEffect(() => { if (s.settings) { const { enabled, llm_model_option_key, image_provider_account_id, image_model_id, mcp_enabled } = s.settings; setDraft({ enabled, llm_model_option_key, image_provider_account_id, image_model_id, mcp_enabled }); setLlmAccountId(s.settings.llm_options.find(model => model.key === llm_model_option_key)?.provider_account_id || ''); } }, [s.settings]);
   async function save() {
     if (!draft || busy) return; setBusy(true); setError(''); setSaved(false);
     try { await agentApi.saveSettings(draft); const settings = await agentApi.settings(); useAgentStore.setState({ settings }); if (!settings.enabled) s.setOpen(false); setSaved(true); }
     catch { setError('agent.saveFailed'); }
     finally { setBusy(false); }
   }
+  // Older servers expose only model choices; keep account identity (not type) distinct.
+  const llmAccounts = s.settings?.llm_accounts ?? Array.from(new Map((s.settings?.llm_options ?? []).map(model => [model.provider_account_id, { id: model.provider_account_id, alias: `${model.provider_type} (${model.provider_account_id})`, provider_type: model.provider_type }])).values());
+  const llmOptions = s.settings?.llm_options.filter(model => model.provider_account_id === llmAccountId) ?? [];
   const account = s.settings?.image_accounts.find(a => a.id === draft?.image_provider_account_id);
   return <section className="page agent-settings agent-ui" data-page="agent-settings"><h1 className="sr-only">{t('agent.title')}</h1>
+    <AgentOpenButton />
     <AgentError value={s.settingsError} /><AgentError value={error} />
     {s.settingsError && <button onClick={() => void agentActions.loadSettings()}>{t('agent.refresh')}</button>}
     {!s.settings && !s.settingsError && <p role="status">{t('불러오는 중…')}</p>}
     {draft && <form onSubmit={e => { e.preventDefault(); void save(); }}><fieldset disabled={busy}>
       <label className="agent-check"><input role="switch" type="checkbox" checked={draft.enabled} onChange={e => setDraft({ ...draft, enabled: e.target.checked })} />{t('agent.enable')}</label>
-      <label>{t('agent.llm')}<select aria-label={t('agent.llm')} value={draft.llm_model_option_key || ''} onChange={e => setDraft({ ...draft, llm_model_option_key: e.target.value || null })}><option value="">{t('agent.none')}</option>{s.settings?.llm_options.map(model => <option key={model.key} value={model.key}>{model.label}</option>)}</select></label>
+      <label>{t('agent.llmAccount')}<select aria-label={t('agent.llmAccount')} value={llmAccountId} onChange={e => { const id = e.target.value; setLlmAccountId(id); setDraft({ ...draft, llm_model_option_key: s.settings?.llm_options.some(model => model.key === draft.llm_model_option_key && model.provider_account_id === id) ? draft.llm_model_option_key : null }); }}><option value="">{t('agent.none')}</option>{llmAccounts.map(a => <option key={a.id} value={a.id}>{a.alias}</option>)}</select></label>
+      <label>{t('agent.llm')}<select disabled={!llmAccountId} aria-label={t('agent.llm')} value={draft.llm_model_option_key || ''} onChange={e => setDraft({ ...draft, llm_model_option_key: e.target.value || null })}><option value="">{t('agent.none')}</option>{llmOptions.map(model => <option key={model.key} value={model.key}>{model.label}</option>)}</select></label>
       <p>{t('agent.independentModel')}</p>
       <label>{t('agent.imageAccount')}<select value={draft.image_provider_account_id || ''} onChange={e => setDraft({ ...draft, image_provider_account_id: e.target.value || null, image_model_id: null })}><option value="">{t('agent.none')}</option>{s.settings?.image_accounts.map(a => <option value={a.id} key={a.id}>{a.alias}</option>)}</select></label>
       <label>{t('agent.imageModel')}<select disabled={!account} value={draft.image_model_id || ''} onChange={e => setDraft({ ...draft, image_model_id: e.target.value || null })}><option value="">{t('agent.none')}</option>{s.settings?.image_models.filter(m => m.provider_type === account?.provider_type).map(m => <option value={m.id} key={m.id}>{m.label}</option>)}</select></label>

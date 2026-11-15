@@ -30,7 +30,7 @@ async function setup(width, height, locale = 'en') {
   const errors = [], writes = [], reads = [];
   // Admitted catalog from image-consistency-sdk-result; no retired or invented editable routes.
   // The real-backend probe compares selectors against the actual SDK-backed settings catalog.
-  const settings = { enabled: false, llm_model_option_key: null, image_provider_account_id: null, image_model_id: null, mcp_enabled: false, llm_options: [{ key: 'agent-llm', label: 'Synthetic independent LLM', provider_account_id: 'a', provider_type: 'openai' }], image_accounts: [{ id: 'a', alias: 'Synthetic images', provider_type: 'openai' }, { id: 'x', alias: 'Synthetic xAI images', provider_type: 'xai' }], image_models: [...['gpt-image-2.5-sunburst', 'gpt-image-1.5', 'gpt-image-1-mini'].map(id => ({ id, label: id === 'gpt-image-2.5-sunburst' ? id : `${id} (deprecated; shuts down 2026-12-01)`, provider_type: 'openai', supports_reference: true, deprecated: id !== 'gpt-image-2.5-sunburst', shutdown_date: id === 'gpt-image-2.5-sunburst' ? null : '2026-12-01' })), { id: 'grok-imagine-image', label: 'grok-imagine-image', provider_type: 'xai', supports_reference: false }] };
+  const settings = { enabled: false, llm_model_option_key: null, image_provider_account_id: null, image_model_id: null, mcp_enabled: false, llm_accounts: [{ id: 'a', alias: 'Registered OpenAI', provider_type: 'openai' }, { id: 'v', alias: 'Registered Vertex', provider_type: 'vertex' }, { id: 'a2', alias: 'Second OpenAI', provider_type: 'openai' }], llm_options: [{ key: 'agent-llm', label: 'Synthetic independent LLM', provider_account_id: 'a', provider_type: 'openai' }, { key: 'vertex-model', label: 'Synthetic Vertex', provider_account_id: 'v', provider_type: 'vertex' }, { key: 'second-openai', label: 'Synthetic second account', provider_account_id: 'a2', provider_type: 'openai' }], image_accounts: [{ id: 'a', alias: 'Synthetic images', provider_type: 'openai' }, { id: 'x', alias: 'Synthetic xAI images', provider_type: 'xai' }], image_models: [...['gpt-image-2.5-sunburst', 'gpt-image-1.5', 'gpt-image-1-mini'].map(id => ({ id, label: id === 'gpt-image-2.5-sunburst' ? id : `${id} (deprecated; shuts down 2026-12-01)`, provider_type: 'openai', supports_reference: true, deprecated: id !== 'gpt-image-2.5-sunburst', shutdown_date: id === 'gpt-image-2.5-sunburst' ? null : '2026-12-01' })), { id: 'grok-imagine-image', label: 'grok-imagine-image', provider_type: 'xai', supports_reference: false }] };
   const state = { settings, clients: [], sessions: [], drafts: {}, operations: {}, jobs: {}, abortMessage: false, unavailable: false, writes, reads, errors };
   const sessionView = () => ({ ...state.sessions[0], drafts: Object.values(state.drafts).filter(d => d.session_id === 's1') });
   function makeDraft(id, kind, after, session_id = 's1') { if (kind === 'image_generation') after = { generation_mode: 'new', owner_choice_confirmed: false, reference: null, image_context: { has_existing_images: false, requires_choice: false, candidates: [], inventory_digest: 'empty' }, ...after }; return state.drafts[id] = { id, session_id, kind, target_id: 'c1', version: 1, base_revision: 1, before: kind === 'character' ? { name: 'Before' } : null, after, changes: after, preview_hash: `hash-${id}-1`, status: 'draft', warnings: [], result: null }; }
@@ -149,6 +149,8 @@ try {
     assert.ok(!state.reads.includes('/api/lore-agent/sessions'), 'OFF does not read sessions');
     await expect(settings.getByRole('switch', { name: t('agent.enable') })).toBeEnabled();
     await settings.getByRole('switch', { name: t('agent.enable') }).check();
+    await expect(settings.getByRole('button', { name: t('agent.open'), exact: true })).toHaveCount(0);
+    await settings.getByLabel(t('agent.llmAccount'), { exact: true }).selectOption('a');
     await settings.getByLabel(t('agent.llm'), { exact: true }).selectOption('agent-llm');
     await settings.getByLabel(t('agent.imageAccount')).selectOption('a');
     await expect(settings.getByLabel(t('agent.imageModel'))).toHaveValue('');
@@ -191,9 +193,12 @@ try {
       for (let index = 0; index < 6; index++) { await page.keyboard.press('Tab'); assert.equal(await page.evaluate(() => !!document.activeElement.closest('.agent-modal')),true,'modal contains keyboard focus'); }
     }
     await expect(page.locator('.context-drawer:visible')).toHaveCount(0);
-    await panel.getByRole('button', { name: t('agent.newSession') }).click();
+    assert.equal(state.writes.filter(w => w.path.endsWith('/sessions')).length, 0, 'opening is GET-only, no manual creation needed');
+    await expect(panel.getByLabel(t('agent.sessions'))).not.toBeVisible();
+    await expect(panel.getByLabel(t('agent.contextFields'))).not.toBeVisible();
     await panel.getByLabel(t('agent.message')).fill('Synthetic request');
     await panel.getByRole('button', { name: t('전송'), exact: true }).click();
+    await expect.poll(() => state.writes.filter(w => w.path.includes('/sessions')).map(w => w.path)).toEqual(['/api/lore-agent/sessions', '/api/lore-agent/sessions/s1/messages']);
     const draft = panel.locator('[data-agent-draft=d1]'); await expect(draft).toContainText('After');
     assert.equal(state.writes.filter(w => w.path.endsWith('/commit')).length,0);
     await draft.getByText(t('agent.editFields'), { exact: true }).click();
@@ -288,7 +293,9 @@ try {
     assert.ok(Math.abs(await page.locator('.chat-thread').evaluate(node => node.scrollTop) - beforeScroll) < 4, 'opening agent preserves reading position');
     await navigate('/settings'); await page.locator('.agent-launcher').click();
     await expect(panel.getByLabel(t('agent.message'))).toHaveValue('UNSENT AGENT DRAFT');
+    await panel.getByText(t('agent.chatAdvanced'), { exact: true }).click();
     await panel.getByText(t('agent.context'), { exact: true }).click();
+    await panel.getByText(t('agent.contextAdvanced'), { exact: true }).click();
     await panel.getByLabel(t('agent.contextId'), { exact: true }).selectOption('c1');
     await panel.getByLabel(t('agent.contextFields')).fill('persona');
     await panel.getByRole('button', { name: t('추가'), exact: true }).click();
@@ -329,20 +336,51 @@ try {
     assert.equal(state.settings.enabled, false);
     assert.equal(state.settings.llm_model_option_key, null);
     assert.equal(state.settings.mcp_enabled, false);
+    // Older servers without account metadata derive distinct account choices.
+    if (locale === 'ja') delete state.settings.llm_accounts;
     // Existing saved selections and sessions work after reload, with legacy owner_configured=false.
     Object.assign(state.settings, { enabled: true, llm_model_option_key: 'agent-llm', image_provider_account_id: 'a', image_model_id: 'gpt-image-1.5' });
     state.sessions = [{ id: 's1', title: 'Existing session', messages: [], busy: false, last_error: null }];
     await page.reload();
     await expect(settings.getByLabel(local['agent.llm'], { exact: true })).toHaveValue('agent-llm');
+    await expect(settings.getByLabel(local['agent.llmAccount'], { exact: true })).toHaveValue('a');
     await expect(settings.getByLabel(local['agent.imageAccount'])).toHaveValue('a');
     await expect(settings.getByLabel(local['agent.imageModel'])).toHaveValue('gpt-image-1.5');
+    await settings.getByLabel(local['agent.llmAccount'], { exact: true }).selectOption('a2');
+    await expect(settings.getByLabel(local['agent.llm'], { exact: true })).toHaveValue('');
+    assert.deepEqual(await settings.getByLabel(local['agent.llm'], { exact: true }).locator('option').evaluateAll(nodes => nodes.map(n => n.value)), ['', 'second-openai']);
+    await expect(settings.getByRole('switch', { name: local['agent.enable'] })).toBeChecked();
+    await expect(settings.getByLabel(local['agent.imageModel'])).toHaveValue('gpt-image-1.5');
+    await settings.getByLabel(local['agent.llmAccount'], { exact: true }).selectOption('v');
+    await expect(settings.getByLabel(local['agent.llm'], { exact: true })).toHaveValue('');
+    assert.deepEqual(await settings.getByLabel(local['agent.llm'], { exact: true }).locator('option').evaluateAll(nodes => nodes.map(n => n.value)), ['', 'vertex-model']);
+    await settings.getByLabel(local['agent.llm'], { exact: true }).selectOption('vertex-model');
+    await settings.getByRole('button', { name: local['저장'] || '저장', exact: true }).click();
+    await expect(settings.getByText(local['agent.saved'])).toBeVisible();
+    await page.reload();
+    await expect(settings.getByLabel(local['agent.llmAccount'], { exact: true })).toHaveValue('v');
+    await expect(settings.getByLabel(local['agent.llm'], { exact: true })).toHaveValue('vertex-model');
+    await settings.getByRole('button', { name: local['저장'] || '저장', exact: true }).click();
+    await expect(settings.getByText(local['agent.saved'])).toBeVisible();
+    assert.equal(state.settings.llm_model_option_key, 'vertex-model');
+    assert.equal(state.settings.image_model_id, 'gpt-image-1.5');
+    assert.deepEqual(Object.keys(state.writes.at(-1).body).sort(), ['enabled','llm_model_option_key','image_provider_account_id','image_model_id','mcp_enabled'].sort());
     const writesBeforeOpen = state.writes.length;
-    await page.locator('.agent-launcher').click();
+    await expect(page.locator('.agent-launcher')).toHaveCount(1);
+    await expect(page.locator('.agent-launcher span')).toHaveText(local['agent.launcher']);
+    assert.equal(await page.locator('.agent-launcher').evaluate(node => { const r = node.getBoundingClientRect(); return r.width >= 44 && r.height >= 44 && node.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); }), true, 'labeled launcher remains hittable');
+    await settings.getByRole('button', { name: local['agent.open'], exact: true }).click();
     const panel = page.locator('.agent-modal');
+    await expect(panel.getByLabel(local['agent.sessions'])).not.toBeVisible();
+    await panel.getByText(local['agent.chatAdvanced'], { exact: true }).click();
+    await panel.getByText(local['agent.history'], { exact: true }).click();
+    await expect(panel.getByLabel(local['agent.sessions'])).toHaveValue('');
+    await panel.getByLabel(local['agent.sessions']).selectOption('s1');
     await expect(panel.getByLabel(local['agent.sessions'])).toHaveValue('s1');
     await expect(panel.getByLabel(local['agent.message'])).toBeEnabled();
     assert.equal(state.writes.length, writesBeforeOpen, 'opening existing Agent hydrates through GET only');
     await panel.getByRole('button', { name: local['닫기'] || '닫기', exact: true }).click();
+    await expect(settings.getByRole('button', { name: local['agent.open'], exact: true })).toBeFocused();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),false);
     await expect(page.locator('[data-page=agent-settings] input[type=password]')).toHaveCount(0);
     state.unavailable = true; await page.reload();

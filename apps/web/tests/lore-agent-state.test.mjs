@@ -89,6 +89,82 @@ assert.equal(store.getState().imageChoices.d.mode, 'new');
 assert.ok(store.getState().sessions.s);
 console.log('PASS production Agent store: direct settings with master OFF, pre-POST identifier journal, duplicate ownership, unknown GET-only reconciliation, CAS rejection, failed-storage dispatch block, close retains drafts');
 
+// First Send owns create + message under one guard; a lost create never sends.
+store.setState({ settings: { enabled: true, llm_model_option_key: 'vertex-model' }, selected: '', newChat: true, sessions: {}, pending: [], input: 'First prompt', contexts: [] }); memory.clear(); calls.length = 0;
+let releaseCreate;
+api.createSession = async request_id => {
+  calls.push('POST session');
+  const journal = JSON.parse(memory.get('lore-agent-request-recovery-v1'));
+  assert.equal(journal[0].request_id, request_id); assert.equal(journal[0].kind, 'session');
+  assert.ok(!JSON.stringify(journal).includes('First prompt'));
+  await new Promise(resolve => { releaseCreate = resolve; }); return session;
+};
+mode = 'completed';
+const autoSend = actions.send(); await actions.send();
+assert.deepEqual(calls, ['POST session'], 'double Send during creation cannot dispatch again');
+let capturedTurn; const originalMessage = api.message;
+api.message = async (...args) => { capturedTurn = args; return originalMessage(...args); };
+store.setState({ input: 'Edited while creation awaits', contexts: [{ kind: 'world', id: 'later', fields: ['title'] }] });
+releaseCreate(); await autoSend;
+assert.equal(capturedTurn[2], 'First prompt'); assert.deepEqual(capturedTurn[3], []);
+assert.equal(store.getState().input, 'Edited while creation awaits');
+assert.equal(store.getState().contexts[0].id, 'later');
+store.setState({ input: '', contexts: [] });
+assert.deepEqual(calls, ['POST session','POST message']);
+assert.equal(store.getState().input, ''); assert.equal(store.getState().selected, 's');
+store.setState({ input: 'Existing conversation' }); await actions.send();
+assert.deepEqual(calls, ['POST session','POST message','POST message'], 'existing conversation needs no new session');
+store.setState({ input: 'Preserved local draft' });
+const priorDrafts = store.getState().drafts; actions.newChat();
+assert.equal(store.getState().selected, ''); assert.equal(store.getState().input, 'Preserved local draft');
+await actions.refresh(); assert.equal(store.getState().selected, '', 'GET refresh must not undo deliberate new conversation or auto-load prior chat');
+assert.equal(store.getState().drafts.d.id, priorDrafts.d.id);
+const contexts = [{ kind: 'character', id: 'c', fields: ['name'] }];
+store.setState({ contexts }); calls.length = 0;
+api.createSession = async request_id => { calls.push('POST session'); assert.equal(JSON.parse(memory.get('lore-agent-request-recovery-v1'))[0].request_id, request_id); throw new TypeError('lost create'); };
+await actions.send(); await actions.send();
+assert.deepEqual(calls, ['POST session']);
+assert.equal(store.getState().input, 'Preserved local draft'); assert.deepEqual(store.getState().contexts, contexts);
+assert.equal(store.getState().pending[0].kind, 'session');
+await actions.refresh();
+assert.equal(calls.filter(call => call === 'POST message').length, 0);
+assert.equal(store.getState().pending.length, 1);
+api.operation = async request_id => ({ request_id, status: 'completed', kind: 'session', result: {}, error: null });
+await actions.refresh(); assert.equal(store.getState().pending.length, 1, 'missing exact session receipt must keep journal');
+api.operation = async request_id => ({ request_id, status: 'completed', kind: 'session', result: { id: 's' }, error: null });
+const priorSessionGet = api.session; api.session = async id => { assert.equal(id, 's'); return priorSessionGet(id); };
+await actions.refresh();
+assert.equal(store.getState().selected, 's'); assert.equal(store.getState().pending.length, 0);
+assert.equal(calls.filter(call => call === 'POST message').length, 0, 'resolved create never auto-replays a paid turn');
+assert.equal(store.getState().input, 'Preserved local draft'); assert.deepEqual(store.getState().contexts, contexts);
+actions.newChat(); api.createSession = async () => { calls.push('POST session'); throw new AgentHttpError(422); };
+await actions.send(); assert.equal(store.getState().pending.length, 0); assert.equal(store.getState().input, 'Preserved local draft');
+failStorage = true; const noStorageCount = calls.length; await actions.send();
+assert.equal(calls.length, noStorageCount, 'creation also fails closed without its journal'); failStorage = false;
+console.log('PASS first-Send session creation: one guarded create/message sequence, duplicate suppression, local new chat, input/context retention, unknown create no message, GET-only resolved receipt, rejection and storage failure');
+
+// The real private-IP HTTP origin has no randomUUID (localhost fixtures do).
+const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+const nativeCrypto = globalThis.crypto;
+try {
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: { getRandomValues: nativeCrypto.getRandomValues.bind(nativeCrypto) } });
+  store.setState({ selected: '', newChat: true, pending: [], input: 'Private HTTP first message', contexts: [] }); memory.clear(); calls.length = 0;
+  let createdRequest;
+  api.createSession = async id => { createdRequest = id; assert.match(id, /^[a-f0-9]{32}$/); calls.push('POST session'); return session; };
+  mode = 'completed';
+  await actions.send();
+  assert.deepEqual(calls, ['POST session', 'POST message']);
+  assert.equal(store.getState().pending.length, 0); assert.equal(store.getState().input, '');
+  assert.ok(createdRequest);
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {} });
+  store.setState({ selected: '', pending: [], input: 'Keep this when secure randomness is missing' });
+  const beforeMissingRng = calls.length; await actions.send();
+  assert.equal(calls.length, beforeMissingRng); assert.equal(store.getState().pending.length, 0);
+  assert.equal(store.getState().input, 'Keep this when secure randomness is missing');
+  assert.ok(store.getState().error);
+} finally { if (cryptoDescriptor) Object.defineProperty(globalThis, 'crypto', cryptoDescriptor); }
+console.log('PASS private HTTP origin: missing randomUUID uses secure getRandomValues; no RNG fails before POST and retains the draft');
+
 // Execute the real REST adapter with synthetic fetch, without any credential setup.
 const apiModule = { exports: {} };
 const apiSource = ts.transpileModule(readFileSync(new URL('../src/agent/api.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;

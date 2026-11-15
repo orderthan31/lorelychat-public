@@ -12,7 +12,7 @@ function recovered(): PendingRequest[] {
 function persist(requests: PendingRequest[]) { sessionStorage.setItem(RECOVERY_KEY, JSON.stringify(requests)); }
 export type AgentState = {
   open: boolean; settings: AgentSettings | null; settingsError: string; error: string;
-  working: boolean; sessions: Record<string, AgentSession>; selected: string; input: string;
+  working: boolean; newChat: boolean; sessions: Record<string, AgentSession>; selected: string; input: string;
   resources: { kind: ContextSelection['kind']; id: string; label: string }[];
   imageChoices: Record<string, ImageChoice>;
   imageSelections: Record<string, ImageSelection>;
@@ -21,7 +21,7 @@ export type AgentState = {
   setOpen: (open: boolean) => void;
 };
 export const useAgentStore = create<AgentState>((set) => ({
-  open: false, settings: null, settingsError: '', error: '', working: false,
+  open: false, settings: null, settingsError: '', error: '', working: false, newChat: true,
   resources: [], imageChoices: {}, imageSelections: {}, sessions: {}, selected: '', input: '', contexts: [], drafts: {}, edits: {}, pending: recovered(), operations: {}, imageJobs: {},
   setOpen: open => set({ open }),
 }));
@@ -49,8 +49,17 @@ function forget(id: string) {
   const pending = state().pending.filter(p => p.request_id !== id);
   persist(pending); set({ pending });
 }
+function requestId() {
+  const random = globalThis.crypto;
+  if (typeof random?.randomUUID === 'function') return random.randomUUID();
+  // HTTP private-network origins do not expose randomUUID. getRandomValues is
+  // still available there; keep strong opaque identifiers without a login/TLS
+  // prerequisite or a weak Math.random fallback.
+  if (typeof random?.getRandomValues !== 'function') throw new Error('Secure request identifiers are unavailable');
+  return Array.from(random.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join('');
+}
 function reserve(kind: PendingRequest['kind'], extra: Omit<PendingRequest, 'kind' | 'request_id'> = {}) {
-  const request = { request_id: crypto.randomUUID(), kind, ...extra };
+  const request = { request_id: requestId(), kind, ...extra };
   const pending = [...state().pending, request];
   // Storage failure must stop dispatch, not produce an untraceable paid request.
   persist(pending); set({ pending }); return request.request_id;
@@ -66,18 +75,37 @@ export const agentActions = {
     try { set({ settings: await agentApi.settings(), settingsError: '' }); }
     catch (error) { set({ settingsError: describe(error) }); }
   },
+  newChat: () => {
+    if (state().working || state().pending.length) return;
+    set({ selected: '', newChat: true, error: '' });
+  },
   createSession: () => guarded(async () => {
     if (state().pending.length) return;
     const id = reserve('session');
-    try { const session = await agentApi.createSession(id); acceptSession(session); set({ selected: session.id }); forget(id); }
+    try { const session = await agentApi.createSession(id); acceptSession(session); set({ selected: session.id, newChat: false }); forget(id); }
     catch (error) { if (error instanceof AgentHttpError && error.status < 500) forget(id); throw error; }
   }),
   send: () => guarded(async () => {
     const s = state();
-    if (!s.input.trim() || !s.selected || !s.settings?.enabled || !s.settings.llm_model_option_key || s.pending.length || s.sessions[s.selected]?.busy) return;
-    const id = reserve('message', { session_id: s.selected });
+    if (!s.input.trim() || !s.settings?.enabled || !s.settings.llm_model_option_key || s.pending.length || s.sessions[s.selected]?.busy) return;
+    let sessionId = s.selected;
+    if (!sessionId) {
+      // One guard owns both steps. Journal creation before dispatch; never replay
+      // the model turn automatically if session creation has an unknown outcome.
+      const creationId = reserve('session');
+      try {
+        const session = await agentApi.createSession(creationId);
+        acceptSession(session); sessionId = session.id;
+        set({ selected: sessionId, newChat: false }); forget(creationId);
+      } catch (error) {
+        if (error instanceof AgentHttpError && error.status < 500) forget(creationId);
+        throw error;
+      }
+    }
+    if (!state().settings?.enabled || !state().settings?.llm_model_option_key || state().pending.length || state().sessions[sessionId]?.busy) return;
+    const id = reserve('message', { session_id: sessionId });
     try {
-      const session = await agentApi.message(s.selected, id, s.input, s.contexts);
+      const session = await agentApi.message(sessionId, id, s.input, s.contexts);
       acceptSession(session); forget(id);
       if (state().input === s.input) set({ input: '' });
     } catch (error) { if (error instanceof AgentHttpError && error.status < 500) forget(id); throw error; }
@@ -88,6 +116,13 @@ export const agentActions = {
       try {
       const operation = await agentApi.operation(pending.request_id);
       set(s => ({ operations: { ...s.operations, [operation.request_id]: operation } }));
+      if (pending.kind === 'session' && operation.status === 'completed') {
+        const sessionId = operation.result?.id;
+        if (typeof sessionId !== 'string' || !sessionId) throw new Error('Missing session receipt');
+        const session = await agentApi.session(sessionId);
+        if (session.id !== sessionId) throw new Error('Mismatched session receipt');
+        acceptSession(session); set({ selected: session.id, newChat: false });
+      }
       if (pending.session_id) acceptSession(await agentApi.session(pending.session_id));
       if (pending.draft_id) acceptDraft(await agentApi.draft(pending.draft_id));
       if (pending.image_job_id) {
@@ -101,7 +136,6 @@ export const agentActions = {
       } catch (error) { set({ error: describe(error) }); }
     }
     const sessions = await agentApi.sessions(); sessions.forEach(acceptSession);
-    if (!state().selected && sessions[0]) set({ selected: sessions[0].id });
     if (state().selected) acceptSession(await agentApi.session(state().selected));
   }),
   refreshDraft: (id: string) => guarded(async () => {

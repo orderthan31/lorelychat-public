@@ -1,6 +1,6 @@
 .agent-layout { display: flex; align-items: flex-start; min-width: 0; }
 .agent-layout > .shell { flex: 1; min-width: 0; }
-.agent-launcher { display: inline-grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; border-radius: 10px; color: var(--foreground); background: var(--card); border: 1px solid var(--border); }
+.agent-launcher { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; min-width: 44px; height: 44px; flex: 0 0 auto; white-space: nowrap; font-size: 13px; border-radius: 10px; color: var(--foreground); background: var(--card); border: 1px solid var(--border); }
 .agent-ui { color: var(--foreground); background: var(--card); font-size: 14px; overflow-wrap: anywhere; }
 .agent-ui button, .agent-ui summary, .agent-ui input:not([type=checkbox]), .agent-ui select { min-height: 44px; }
 .agent-ui button { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--secondary, #e9e9ef); color: var(--foreground); }

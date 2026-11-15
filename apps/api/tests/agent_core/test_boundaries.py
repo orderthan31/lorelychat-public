@@ -73,7 +73,7 @@ def test_owner_routes_and_settings_shape(service,owner,monkeypatch):
     with TestClient(app) as client:
         public=client.get('/lore-agent/settings')
         assert public.status_code==200
-        assert set(public.json())=={'enabled','llm_model_option_key','image_provider_account_id','image_model_id','mcp_enabled','llm_options','image_accounts','image_models'}
+        assert set(public.json())=={'enabled','llm_model_option_key','image_provider_account_id','image_model_id','mcp_enabled','llm_options','llm_accounts','image_accounts','image_models'}
         assert 'owner-test-only' not in public.text
         headers={}
         session=client.post('/lore-agent/sessions',headers=headers,json={'request_id':'new'})

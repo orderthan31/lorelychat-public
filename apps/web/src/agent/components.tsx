@@ -17,12 +17,23 @@ export function AgentError({ value }: { value: string }) {
   return value ? <p className="agent-error" role="alert">{value.startsWith('agent.') ? t(value as UiMessageKey) : value}</p> : null;
 }
 let launcherElement: HTMLButtonElement | null = null;
+function openAgentFrom(element: HTMLButtonElement, open: boolean) {
+  launcherElement = element;
+  useAgentStore.getState().setOpen(open);
+}
+export function AgentOpenButton() {
+  const { t } = useI18n();
+  const enabled = useAgentStore(s => s.settings?.enabled);
+  const open = useAgentStore(s => s.open);
+  if (!enabled) return null;
+  return <button type="button" aria-expanded={open} onClick={event => openAgentFrom(event.currentTarget, true)}>{t('agent.open')}</button>;
+}
 export function AgentLauncher() {
   const { t } = useI18n();
   const enabled = useAgentStore(s => s.settings?.enabled);
   const open = useAgentStore(s => s.open);
   if (!enabled) return null;
-  return <button type="button" className="agent-launcher" aria-label={t('agent.title')} aria-expanded={open} onClick={event => { launcherElement = event.currentTarget; useAgentStore.getState().setOpen(!open); }}><Bot size={20} aria-hidden="true" /></button>;
+  return <button type="button" className="agent-launcher" aria-label={t('agent.title')} aria-expanded={open} onClick={event => openAgentFrom(event.currentTarget, !open)}><Bot size={20} aria-hidden="true" /><span>{t('agent.launcher')}</span></button>;
 }
 export function AgentSurface() {
   const { t } = useI18n();

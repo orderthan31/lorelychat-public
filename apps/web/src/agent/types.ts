@@ -1,6 +1,7 @@
 export type AgentSettings = {
   enabled: boolean; llm_model_option_key: string | null; image_provider_account_id: string | null;
   image_model_id: string | null; mcp_enabled: boolean;
+  llm_accounts?: { id: string; alias: string; provider_type: string }[];
   llm_options: { key: string; label: string; provider_account_id: string; provider_type: string }[];
   image_accounts: { id: string; alias: string; provider_type: string }[];
   image_models: { id: string; label: string; provider_type: string; supports_reference: boolean; deprecated?: boolean; shutdown_date?: string | null; reference_unavailable_reason?: string }[];

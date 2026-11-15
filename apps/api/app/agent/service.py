@@ -114,6 +114,8 @@ class AgentService:
             choices = active_options_for_runtime(s, 'chat')
             data['llm_options'] = [{k: getattr(o, k) for k in ('key','label','provider_account_id','provider_type')} for o in choices]
             accounts = [a for a in list_accounts(s) if a.enabled and a.configured]
+            chat_accounts = {o.provider_account_id for o in choices}
+            data['llm_accounts'] = [{k: getattr(a, k) for k in ('id','alias','provider_type')} for a in accounts if a.id in chat_accounts]
             from app.agent.image_generation import list_image_models
             eligible = [a for a in accounts if list_image_models(a.provider_type)]
             data['image_accounts'] = [{k: getattr(a, k) for k in ('id','alias','provider_type')} for a in eligible]
@@ -457,7 +459,12 @@ class AgentService:
         with self.engine.connect() as c:
             self._authorize(c,principal)
             data=self._get(c,m.sessions,session_id,principal)
-            selected=[x for x in data.get('_context',[]) if x['kind']==kind and x['id']==id]
+            context=data.get('_context',[])
+            # Normal chat discovers relevant entities through bounded typed
+            # tools. Advanced explicit selections still narrow access exactly.
+            if not context:
+                return CHARACTER_FIELDS if kind=='character' else WORLD_FIELDS
+            selected=[x for x in context if x['kind']==kind and x['id']==id]
         if not selected: raise AgentError('Explicit context selection required for this entity',403)
         return set().union(*(set(x['fields']) for x in selected))
 

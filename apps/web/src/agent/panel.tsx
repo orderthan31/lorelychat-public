@@ -69,7 +69,7 @@ function ContextPicker() {
   return <details><summary>{t('agent.context')}</summary><p>{t('agent.contextHint')}</p>
     <label>{t('agent.contextKind')}<select value={kind} onChange={e => { setKind(e.target.value as ContextSelection['kind']); setId(''); setFields(''); }}><option value="character">{t('캐릭터')}</option><option value="world">{t('세계관')}</option></select></label>
     <label>{t('agent.contextId')}<select aria-label={t('agent.contextId')} value={id} onChange={e => setId(e.target.value)}><option value="">{t('선택')}</option>{resources.filter(r => r.kind === kind).map(r => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
-    <label>{t('agent.contextFields')}<input value={fields} placeholder="name, description" onChange={e => setFields(e.target.value)} /></label>
+    <details><summary>{t('agent.contextAdvanced')}</summary><label>{t('agent.contextFields')}<input value={fields} placeholder="name, description" onChange={e => setFields(e.target.value)} /></label></details>
     <button type="button" disabled={!id.trim() || !fields.trim() || contexts.length >= 8} onClick={() => { useAgentStore.setState({ contexts: [...contexts, { kind, id: id.trim(), fields: fields.split(',').map(s => s.trim()).filter(Boolean) }] }); setId(''); setFields(''); }}>{t('추가')}</button>
     {contexts.map((context, index) => <div key={index}>{context.kind} · {context.id} · {context.fields.join(', ')}<button type="button" onClick={() => useAgentStore.setState({ contexts: contexts.filter((_, i) => i !== index) })}>{t('삭제')}</button></div>)}
   </details>;
@@ -77,6 +77,7 @@ function ContextPicker() {
 export function AgentPanel() {
   const { t } = useI18n(); const s = useAgentStore();
   const session = s.sessions[s.selected];
+  const sendBlock = !s.settings?.enabled ? 'agent.disabledHint' : !s.settings.llm_model_option_key ? 'agent.needModel' : s.pending.length ? 'agent.uncertain' : s.working || session?.busy ? 'agent.working' : !s.input.trim() ? 'agent.needMessage' : null;
   const [draftId, setDraftId] = useState('');
   // Image result linkage also survives a route change or session GET recovery.
   useEffect(() => {
@@ -86,19 +87,21 @@ export function AgentPanel() {
     }
   }, [s.drafts]);
   return <div className="agent-panel-body">
-    <div className="agent-actions"><button disabled={s.working || !!s.pending.length} onClick={() => void agentActions.createSession()}>{t('agent.newSession')}</button><button disabled={s.working} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button></div>
-    <label>{t('agent.sessions')}<select value={s.selected} onChange={e => useAgentStore.setState({ selected: e.target.value })}><option value="">{t('선택')}</option>{Object.values(s.sessions).map(item => <option value={item.id} key={item.id}>{item.title || item.id}</option>)}</select></label>
-    <details><summary>{t('agent.openDraft')}</summary><label>{t('agent.draftId')}<input value={draftId} onChange={e => setDraftId(e.target.value)} /></label><button disabled={s.working || !draftId.trim()} onClick={() => void agentActions.refreshDraft(draftId.trim())}>{t('agent.openDraft')}</button></details>
+    <div className="agent-actions"><button disabled={s.working || !!s.pending.length} onClick={() => agentActions.newChat()}>{t('agent.newSession')}</button></div>
+    <details className="agent-advanced"><summary>{t('agent.chatAdvanced')}</summary>
+    <button disabled={s.working} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button>
+    <details><summary>{t('agent.history')}</summary><label>{t('agent.sessions')}<select disabled={s.working || !!s.pending.length} value={s.selected} onChange={e => useAgentStore.setState({ selected: e.target.value, newChat: !e.target.value })}><option value="">{t('agent.newSession')}</option>{Object.values(s.sessions).map(item => <option value={item.id} key={item.id}>{(item.title && item.title !== 'Lore Agent' && item.title !== item.id ? item.title : item.messages.find(message => message.role === 'user')?.content || t('agent.untitledConversation')).slice(0, 80)}</option>)}</select></label></details>
+    <details><summary>{t('agent.advancedRecovery')}</summary><label>{t('agent.draftId')}<input value={draftId} onChange={e => setDraftId(e.target.value)} /></label><button disabled={s.working || !draftId.trim()} onClick={() => void agentActions.refreshDraft(draftId.trim())}>{t('agent.openDraft')}</button></details>
+    <ContextPicker />
+    </details>
     <AgentError value={s.error} />
-    {!!s.pending.length && <p role="status">{t('agent.uncertain')}</p>}
-    {(s.working || session?.busy) && <p role="status">{t('agent.working')}</p>}
     {session?.last_error && <AgentError value={session.last_error} />}
     <div className="agent-messages" aria-live="polite">{session?.messages.map(message => <article key={message.id} data-role={message.role}><strong>{t(message.role === 'user' ? 'agent.you' : 'agent.title')}</strong><p>{message.content}</p></article>)}</div>
     <form onSubmit={event => { event.preventDefault(); void agentActions.send(); }}>
-      <ContextPicker />
       <label>{t('agent.message')}<textarea rows={3} value={s.input} onChange={e => useAgentStore.setState({ input: e.target.value })} /></label>
-      {!s.settings?.llm_model_option_key && <p>{t('agent.needModel')}</p>}
-      <button disabled={s.working || !!s.pending.length || session?.busy || !s.selected || !s.input.trim() || !s.settings?.llm_model_option_key} type="submit">{t('전송')}</button>
+      {sendBlock && <p id="agent-send-status" role="status">{t(sendBlock)}</p>}
+      {!!s.pending.length && <button type="button" disabled={s.working} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button>}
+      <button aria-describedby={sendBlock ? 'agent-send-status' : undefined} disabled={!!sendBlock} type="submit">{t('전송')}</button>
     </form>
     {Object.values(s.drafts).filter(d => !d.session_id || d.session_id === s.selected).map(draft => <AgentDraftCard key={draft.id} draft={draft} />)}
     {Object.values(s.imageJobs).map(job => <ImageResults key={job.id} job={job} />)}

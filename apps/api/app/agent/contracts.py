@@ -158,6 +158,7 @@ class ImageChoice(StrictModel):
     reference_unavailable_reason: str | None = None
 class AgentSettingsView(SettingsUpdate):
     llm_options: list[ModelChoice]
+    llm_accounts: list[ImageAccount] = Field(default_factory=list)
     image_accounts: list[ImageAccount]
     image_models: list[ImageChoice]
 class ClientView(StrictModel):
