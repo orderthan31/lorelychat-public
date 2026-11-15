@@ -262,6 +262,7 @@
   "agent.imageFailed": "이미지를 불러오지 못했습니다.",
   "agent.generatedImage": "생성 이미지 미리보기",
   "agent.target": "대상",
+  "agent.reviewProposal": "작성 화면에서 확인",
   "agent.beforeAfter": "변경 전 → 변경 후",
   "agent.editFields": "필드 수정",
   "agent.fieldsJson": "변경할 필드 (JSON)",

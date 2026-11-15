@@ -1092,6 +1092,7 @@
   "agent.imageFailed": "画像を読み込めませんでした。",
   "agent.generatedImage": "生成画像プレビュー",
   "agent.target": "対象",
+  "agent.reviewProposal": "編集画面で確認",
   "agent.beforeAfter": "変更前 → 変更後",
   "agent.editFields": "フィールドを編集",
   "agent.fieldsJson": "変更フィールド（JSON）",

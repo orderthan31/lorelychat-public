@@ -1,3 +1,4 @@
+import type { ProposalFormProps } from '../../agent/ProposalField';
 import type { Dispatch, SetStateAction } from 'react';
 import { CharacterForm, type CharacterDraft, type SpeechPreset, type TtsOption } from '../../components/organisms';
 import type { CharacterAsset, CharacterAssetDraft } from '../../components/organisms';
@@ -8,7 +9,7 @@ type CharacterRoute = {
   id?: string | null;
 };
 
-export type CharacterDetailViewProps = {
+export type CharacterDetailViewProps = ProposalFormProps & {
   route: CharacterRoute;
   draft: CharacterDraft;
   setDraft: Dispatch<SetStateAction<CharacterDraft>>;
@@ -36,6 +37,7 @@ export type CharacterDetailViewProps = {
 
 export function CharacterDetailView({
   route,
+  reviewMode, changedFields, onCancelReview,
   draft,
   setDraft,
   ttsVoices,
@@ -60,6 +62,6 @@ export function CharacterDetailView({
   setDefaultCharacterAsset,
 }: CharacterDetailViewProps) {
   return <section className="panel page grid gap-3" data-modernized="캐릭터 상세 design-system primitive marker">
-    <CharacterForm draft={draft} setDraft={setDraft} onSave={saveCharacter} onDelete={deleteCharacter} saving={busy} isNew={route.page === 'characterNew'} speechPresets={speechPresets} applyPreset={applyPreset} onAvatarUpload={uploadAvatar} ttsVoices={ttsVoices} ttsModels={ttsModels} onTtsSample={playCharacterTtsSample} characterId={route.id} assets={characterAssets} assetsLoading={characterAssetsLoading} assetDraft={assetDraft} setAssetDraft={setAssetDraft} onCreateAsset={createCharacterAsset} onUploadAsset={uploadCharacterAsset} onPatchAsset={patchCharacterAsset} onDeleteAsset={deleteCharacterAsset} onDefaultAsset={setDefaultCharacterAsset} />
+    <CharacterForm reviewMode={reviewMode} changedFields={changedFields} onCancelReview={onCancelReview} draft={draft} setDraft={setDraft} onSave={saveCharacter} onDelete={deleteCharacter} saving={busy} isNew={route.page === 'characterNew'} speechPresets={speechPresets} applyPreset={applyPreset} onAvatarUpload={uploadAvatar} ttsVoices={ttsVoices} ttsModels={ttsModels} onTtsSample={playCharacterTtsSample} characterId={route.id} assets={characterAssets} assetsLoading={characterAssetsLoading} assetDraft={assetDraft} setAssetDraft={setAssetDraft} onCreateAsset={createCharacterAsset} onUploadAsset={uploadCharacterAsset} onPatchAsset={patchCharacterAsset} onDeleteAsset={deleteCharacterAsset} onDefaultAsset={setDefaultCharacterAsset} />
   </section>;
 }

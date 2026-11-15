@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { AgentMark } from './AgentMark';
+import { AgentMarkdown } from './AgentMarkdown';
 import { useI18n } from '../i18n/I18nProvider';
 import type { UiMessageKey } from '../i18n/core';
 import { AgentError, AgentImage } from './components';
@@ -7,39 +9,38 @@ import type { AgentDraft, ContextSelection, ImageJob, ImageSelection, ImageTarge
 
 import { ImageDraftCard } from './imageDraft';
 
-const display = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 export function AgentDraftCard({ draft }: { draft: AgentDraft }) {
-  return draft.kind === 'image_generation' ? <ImageDraftCard draft={draft} /> : <GenericDraftCard draft={draft} />;
+  if (draft.kind === 'image_generation') return <ImageDraftCard draft={draft} />;
+  if (draft.kind === 'image_registration') return <ImageRegistrationCard draft={draft} />;
+  return <GenericDraftCard draft={draft} />;
 }
 function GenericDraftCard({ draft }: { draft: AgentDraft }) {
   const { t } = useI18n();
-  const { working, pending, edits } = useAgentStore();
-  const editKey = `${draft.id}:${draft.version}`;
-  const original = JSON.stringify(draft.after, null, 2);
-  const value = edits[editKey] ?? original;
-  const dirty = value !== original;
-  let fields: Record<string, unknown> | null = null;
-  try { const parsed = JSON.parse(value); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) fields = parsed; } catch { /* Keep invalid JSON editable. */ }
+  const { working, pending } = useAgentStore();
+  const name = draft.after.name || draft.after.title;
+  return <article className="agent-draft agent-proposal" data-agent-draft={draft.id}>
+    <h3>{typeof name === 'string' && name.trim() ? name : t(`agent.kind.${draft.kind}` as UiMessageKey)}</h3>
+    {draft.warnings.filter(warning => warning !== 'Owner approval requested for this exact preview.').map((warning, i) => <p role="note" key={i}>{warning}</p>)}
+    {draft.status === 'conflict' && <p role="alert">{t('agent.conflict')}</p>}
+    {draft.status === 'committed' ? <p>{t('agent.status.committed')}</p> : <button type="button" disabled={working || !!pending.length} onClick={() => agentActions.openProposal(draft)}>{t('agent.reviewProposal')}</button>}
+  </article>;
+}
+function ImageRegistrationCard({ draft }: { draft: AgentDraft }) {
+  const { t } = useI18n();
+  const { working, pending, resources } = useAgentStore();
   const terminal = draft.status === 'committed' || draft.status === 'conflict';
+  const target = resources.find(resource => resource.kind === draft.after.target_kind && resource.id === draft.after.target_id);
   return <article className="agent-draft" data-agent-draft={draft.id}>
-    <h3>{t(`agent.kind.${draft.kind}` as UiMessageKey)} · {t(`agent.status.${draft.status}` as UiMessageKey)} · v{draft.version}</h3>
-    {draft.target_id && <p>{t('agent.target')}: <code>{draft.target_id}</code></p>}
-    {draft.warnings.map((warning, i) => <p role="note" key={i}>{warning}</p>)}
-    <details open><summary>{t('agent.beforeAfter')}</summary>
-      {Array.from(new Set([...Object.keys(draft.before || {}), ...Object.keys(draft.after)])).map(key => <div className="agent-diff" key={key}><strong>{key}</strong><del>{display(draft.before?.[key]) ?? '—'}</del><ins>{display(draft.after[key]) ?? '—'}</ins></div>)}
-    </details>
-    {!terminal && <details><summary>{t('agent.editFields')}</summary><label>{t('agent.fieldsJson')}<textarea rows={8} value={value} onChange={event => useAgentStore.setState(s => ({ edits: { ...s.edits, [editKey]: event.target.value } }))} /></label>
-      {!fields && <AgentError value="agent.invalidJson" />}<button disabled={!fields || !dirty || working} onClick={() => fields && void agentActions.revise(draft, fields)}>{t('agent.revise')}</button>
-    </details>}
-    {draft.kind === 'image_generation' && <p>{t('agent.paidWarning')}</p>}
-    {draft.kind === 'image_registration' && <p>{t(draft.after.target_kind === 'world' ? 'agent.worldRegistrationHint' : 'agent.registrationHint')}</p>}
+    <h3>{t('agent.kind.image_registration')} · {t(`agent.status.${draft.status}` as UiMessageKey)}</h3>
+    {target && <p>{target.label}</p>}
+    {draft.warnings.filter(warning => warning !== 'Owner approval requested for this exact preview.').map((warning, i) => <p role="note" key={i}>{warning}</p>)}
+    <p>{t(draft.after.target_kind === 'world' ? 'agent.worldRegistrationHint' : 'agent.registrationHint')}</p>
     <div className="agent-actions">
       <button disabled={working} onClick={() => void agentActions.refreshDraft(draft.id)}>{t('agent.refresh')}</button>
-      {!terminal && <button disabled={working || dirty || draft.status !== 'draft'} onClick={() => void agentActions.approve(draft)}>{t('agent.approve')}</button>}
-      {draft.status === 'approved' && <button disabled={working || dirty || pending.length > 0} onClick={() => void agentActions.commit(draft)}>{t(draft.kind === 'image_generation' ? 'agent.generatePaid' : 'agent.commit')}</button>}
+      {!terminal && <button disabled={working || draft.status !== 'draft'} onClick={() => void agentActions.approve(draft)}>{t('agent.approve')}</button>}
+      {draft.status === 'approved' && <button disabled={working || pending.length > 0} onClick={() => void agentActions.commit(draft)}>{t('agent.commit')}</button>}
     </div>
     {draft.status === 'conflict' && <p role="alert">{t('agent.conflict')}</p>}
-    {draft.result && <details><summary>{t('agent.result')}</summary><pre>{JSON.stringify(draft.result, null, 2)}</pre></details>}
   </article>;
 }
 function ImageResults({ job }: { job: ImageJob }) {
@@ -74,11 +75,27 @@ function ContextPicker() {
     {contexts.map((context, index) => <div key={index}>{context.kind} · {context.id} · {context.fields.join(', ')}<button type="button" onClick={() => useAgentStore.setState({ contexts: contexts.filter((_, i) => i !== index) })}>{t('삭제')}</button></div>)}
   </details>;
 }
+// In-memory only: retain reading position across dock/modal and open/close mounts.
+const readingPositions = new Map<string, { top: number; following: boolean }>();
 export function AgentPanel() {
   const { t } = useI18n(); const s = useAgentStore();
   const session = s.sessions[s.selected];
-  const sendBlock = !s.settings?.enabled ? 'agent.disabledHint' : !s.settings.llm_model_option_key ? 'agent.needModel' : s.pending.length ? 'agent.uncertain' : s.working || session?.busy ? 'agent.working' : !s.input.trim() ? 'agent.needMessage' : null;
+  const sendBlock = !s.settings?.enabled ? 'agent.disabledHint' : !s.settings.llm_model_option_key ? 'agent.needModel' : s.working ? 'agent.working' : s.pending.length ? 'agent.uncertain' : session?.busy ? 'agent.working' : !s.input.trim() ? 'agent.needMessage' : null;
   const [draftId, setDraftId] = useState('');
+  const transcript = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
+  const sessionKey = s.selected || 'new';
+  useLayoutEffect(() => {
+    const node = transcript.current;
+    if (!node) return;
+    const saved = readingPositions.get(sessionKey);
+    following.current = saved?.following ?? true;
+    node.scrollTop = saved ? saved.top : node.scrollHeight;
+    return () => { readingPositions.set(sessionKey, { top: node.scrollTop, following: following.current }); };
+  }, [sessionKey]);
+  useLayoutEffect(() => {
+    if (transcript.current && following.current) transcript.current.scrollTop = transcript.current.scrollHeight;
+  }, [sessionKey, session?.messages.length, session?.messages.at(-1)?.content]);
   // Image result linkage also survives a route change or session GET recovery.
   useEffect(() => {
     for (const draft of Object.values(s.drafts)) {
@@ -87,24 +104,37 @@ export function AgentPanel() {
     }
   }, [s.drafts]);
   return <div className="agent-panel-body">
-    <div className="agent-actions"><button disabled={s.working || !!s.pending.length} onClick={() => agentActions.newChat()}>{t('agent.newSession')}</button></div>
+    <div className="agent-toolbar"><button disabled={s.working || !!s.pending.length} onClick={() => agentActions.newChat()}>{t('agent.newSession')}</button>
     <details className="agent-advanced"><summary>{t('agent.chatAdvanced')}</summary>
     <button disabled={s.working} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button>
     <details><summary>{t('agent.history')}</summary><label>{t('agent.sessions')}<select disabled={s.working || !!s.pending.length} value={s.selected} onChange={e => useAgentStore.setState({ selected: e.target.value, newChat: !e.target.value })}><option value="">{t('agent.newSession')}</option>{Object.values(s.sessions).map(item => <option value={item.id} key={item.id}>{(item.title && item.title !== 'Lore Agent' && item.title !== item.id ? item.title : item.messages.find(message => message.role === 'user')?.content || t('agent.untitledConversation')).slice(0, 80)}</option>)}</select></label></details>
     <details><summary>{t('agent.advancedRecovery')}</summary><label>{t('agent.draftId')}<input value={draftId} onChange={e => setDraftId(e.target.value)} /></label><button disabled={s.working || !draftId.trim()} onClick={() => void agentActions.refreshDraft(draftId.trim())}>{t('agent.openDraft')}</button></details>
     <ContextPicker />
     </details>
+    </div>
+    <div className="agent-transcript" ref={transcript} onScroll={event => {
+      const node = event.currentTarget;
+      following.current = node.scrollHeight - node.clientHeight - node.scrollTop < 48;
+      readingPositions.set(sessionKey, { top: node.scrollTop, following: following.current });
+    }}>
     <AgentError value={s.error} />
     {session?.last_error && <AgentError value={session.last_error} />}
-    <div className="agent-messages" aria-live="polite">{session?.messages.map(message => <article key={message.id} data-role={message.role}><strong>{t(message.role === 'user' ? 'agent.you' : 'agent.title')}</strong><p>{message.content}</p></article>)}</div>
-    <form onSubmit={event => { event.preventDefault(); void agentActions.send(); }}>
-      <label>{t('agent.message')}<textarea rows={3} value={s.input} onChange={e => useAgentStore.setState({ input: e.target.value })} /></label>
-      {sendBlock && <p id="agent-send-status" role="status">{t(sendBlock)}</p>}
-      {!!s.pending.length && <button type="button" disabled={s.working} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button>}
-      <button aria-describedby={sendBlock ? 'agent-send-status' : undefined} disabled={!!sendBlock} type="submit">{t('전송')}</button>
-    </form>
+    {!session?.messages.length && !s.working && !session?.busy && <div className="agent-empty"><AgentMark size={48} /></div>}
+    <div className="agent-messages" aria-live="polite">{session?.messages.map(message => <article key={message.id} data-role={message.role} className="agent-message">
+      {message.role !== 'user' && <AgentMark size={26} animate={false} className="agent-message-avatar" />}
+      <div className="agent-message-content"><span className="sr-only">{t(message.role === 'user' ? 'agent.you' : 'agent.title')}</span>{message.role === 'user' ? <p>{message.content}</p> : <AgentMarkdown text={message.content} />}</div>
+    </article>)}</div>
     {Object.values(s.drafts).filter(d => !d.session_id || d.session_id === s.selected).map(draft => <AgentDraftCard key={draft.id} draft={draft} />)}
     {Object.values(s.imageJobs).map(job => <ImageResults key={job.id} job={job} />)}
-    {Object.values(s.operations).map(operation => <div key={operation.request_id} role="status">{t(`agent.status.${operation.status}` as UiMessageKey)}<AgentError value={operation.error || ''} /></div>)}
+    {Object.values(s.operations).filter(operation => operation.error).map(operation => <AgentError key={operation.request_id} value={operation.error || ''} />)}
+    </div>
+    <form className="agent-composer" onSubmit={event => { event.preventDefault(); void agentActions.send(); }}>
+      <label><span className="sr-only">{t('agent.message')}</span><textarea rows={2} placeholder={t('agent.needMessage')} value={s.input} onChange={e => useAgentStore.setState({ input: e.target.value })} /></label>
+      <div className="agent-composer-actions">
+      {sendBlock && sendBlock !== 'agent.needMessage' && <p id="agent-send-status" role="status">{sendBlock === 'agent.working' ? <><AgentMark size={20} active /><span className="sr-only">{t(sendBlock)}</span></> : t(sendBlock)}</p>}
+      {!!s.pending.length && !s.working && <button type="button" disabled={s.working} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button>}
+      <button aria-describedby={sendBlock && sendBlock !== 'agent.needMessage' ? 'agent-send-status' : undefined} disabled={!!sendBlock} type="submit">{t('전송')}</button>
+      </div>
+    </form>
   </div>;
 }

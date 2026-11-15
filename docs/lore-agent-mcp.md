@@ -80,6 +80,18 @@ export LORECHAT_MCP_ALLOWED_ORIGINS='http://localhost:5174'
 
 범용 SQL, 파일·셸, 브라우저 제어, 임의 HTTP, 공급자 키 관리 도구는 노출하지 않는다. 캐릭터·세계관·에셋 작업의 허용된 도메인 기능만 제공한다.
 
+## 제품 지식과 초안 작성 지침
+
+`app/agent/knowledge.py`의 정적 제품 안내를 표준 `create_agent`의 시스템 메시지에 붙여 **첫 모델 호출부터** 전달한다. 라이브러리·사용자 페르소나·공급자 키를 자동 수집하는 RAG나 별도 추론 루프가 아니다. `lore_capabilities`는 같은 안내와 허용 필드별 의미·값 형식을 반환하며, 생성 도구 설명은 같은 필드 안내에서 만든다. 내부 LangChain과 공식 MCP SDK가 공유 `ToolSpec` 설명과 기존 입력 스키마를 그대로 사용한다. 도구 추가나 강제 도구 선택은 없다.
+
+- 실제 생성·수정 요청의 요구사항이 충분하면 `lore_stage_character` / `lore_stage_world`로 검토 가능한 초안을 만든다. 정규화된 미리보기를 확인하고 `lore_request_approval`로 검토를 요청한다. 일반론이나 일괄 질문만으로 끝내지 않도록 안내한다. 설명·아이디어 상담만 요청했다면 초안을 강제하지 않는다.
+- 새 항목은 `target_id` 없이 작성한다. 수정은 제한된 검색과 필요한 필드 조회로 대상을 확인한 뒤 바뀐 필드만 전달한다. 대상 식별 등 중요한 모호함은 질문하고, 사소한 창작 선택은 되돌릴 수 있는 가정으로 제안하여 답변에 명시한다. 승인·이미지 방식·참조·모델 선택에는 이 재량을 적용하지 않는다.
+- 세계관 `description`은 목록용 개요, `world_seed`는 지속되는 설정·규칙·기원, `opening_scene`은 첫 상황이다. `opening_line`은 방 생성 시 첫 캐릭터의 실제 발화로 들어갈 수 있다. 사용자 원문의 상세 설정을 짧은 개요로만 축약하지 않는다.
+- 캐릭터는 `name`과 `persona`가 필수이며 외형·행동·말투와 목록형 감정/금지 규칙을 분리한다. `trait_scores`는 1–5 정수이며 서술을 대체하지 않는다. 세계관 생성에는 `title`이 필수다. 안내는 `CHARACTER_FIELDS` / `WORLD_FIELDS` 안의 필드만 광고한다.
+- 대화방의 세계관은 선택 사항이다. 이 도구가 대화방·참여자를 생성하거나 연결한다고 주장하지 않는다. 초안·검토 요청은 저장 영수증이나 소유자 승인이 아니다. 이미지 선택·참조 스냅샷·유료 실행·별도 등록 승인과 자동 대체 금지는 기존 규칙을 유지한다.
+
+근거는 `app/agent/contracts.py`, `app/schemas/characters.py`, `app/schemas/world_settings.py`, `app/services/conversation_service.py`, `app/services/world_setting_service.py`, `app/engine/prompts.py`와 웹 세계관 편집 화면이다. 필드나 소비 방식을 바꾸면 제품 안내와 `tests/agent_core/test_product_guidance.py`를 함께 갱신한다. 해당 테스트는 TCP 차단·격리 저장소에서 첫 요청의 안내/도구 설명, 합성 도구 호출→초안→검토 요청, 승인 없는 저장 거부, 상세 서술 보존, MCP 설명 일치를 검증한다. 이는 실제 모델의 창작 품질이나 반드시 도구를 선택한다는 보증이 아니다.
+
 ## 실패와 비용
 
 - 결과가 불명확하면 원래 요청 식별자로 상태를 조회한다. 같은 유료 요청을 자동 재전송하지 않는다.

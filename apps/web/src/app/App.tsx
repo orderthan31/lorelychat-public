@@ -41,7 +41,8 @@ import { CharactersListView } from '../views/Characters';
 import { ConversationsListView } from '../views/Conversations';
 import { SettingsView } from '../views/Settings';
 import { AgentSettingsView } from '../agent/settings';
-import { useAgentStore } from '../agent/store';
+import { agentActions, useAgentStore } from '../agent/store';
+import { useNativeProposal } from '../agent/useNativeProposal';
 import { ModelSettingsView } from '../views/ModelSettings';
 import { StatisticsView } from '../views/Statistics';
 import { ConversationDetailView } from '../views/ConversationDetail';
@@ -49,7 +50,7 @@ import { PresetsView } from '../views/Presets';
 import { PresetDetailView } from '../views/PresetDetail';
 import { ChatCommandsView } from '../views/ChatCommands';
 import { chatCommandSavePayload, normalizeChatCommandDraft } from '../types/chatCommands';
-import { WorldSettingsDetailView, WorldSettingsListView, normalizeWorld } from '../views/WorldSettings';
+import { WorldSettingsDetailView, WorldSettingsListView, emptyWorld, normalizeWorld } from '../views/WorldSettings';
 import { ConversationEditView } from '../views/ConversationEdit';
 import { CharacterDetailView } from '../views/CharacterDetail';
 import { CharacterAssetsView } from '../views/CharacterAssets';
@@ -223,7 +224,7 @@ export function App() {
     const visit = routeWork.capture();
     const token = Symbol(operation); operationVersions.set(operation, token);
     const current = () => visit.current && operationVersions.get(operation) === token;
-    const setters = { setBusy, setStatus, setConversation, setConversationRuntimeSetting, setChatSettingsOpen, setConversationContext, setUserMemoryDraft, setRoomEditDraft, setConversationThumbnailUrl, setWorldSettingDraft, setCharacterAssets, setCharacterAssetsLoading, setAssetDraft, setMessages, setPresetDraft, setChatCommandDraft, setConversationTitle, setSelectedWorldSettingId, setHasOlderMessages, setOlderPagingReady, setParticipants, navigate };
+    const setters = { setBusy, setStatus, setDraft, setConversation, setConversationRuntimeSetting, setChatSettingsOpen, setConversationContext, setUserMemoryDraft, setRoomEditDraft, setConversationThumbnailUrl, setWorldSettingDraft, setCharacterAssets, setCharacterAssetsLoading, setAssetDraft, setMessages, setPresetDraft, setChatCommandDraft, setConversationTitle, setSelectedWorldSettingId, setHasOlderMessages, setOlderPagingReady, setParticipants, navigate };
     return Object.fromEntries(Object.entries(setters).map(([name, setter]) => [name, (...args: any[]) => {
       if (!current()) return;
       if (name === 'setBusy') {
@@ -233,6 +234,14 @@ export function App() {
       return (setter as Function)(...args);
     }])) as unknown as typeof setters;
   }
+  useEffect(() => {
+    if (route.page === 'worldSettingNew') setWorldSettingDraft({ ...emptyWorld });
+  }, [route.page, 'id' in route ? route.id : '']);
+  const nativeProposal = useNativeProposal(route, navigate, routeWork);
+  const characterReview = nativeProposal.active && nativeProposal.kind === 'character';
+  const worldReview = nativeProposal.active && nativeProposal.kind === 'world';
+  const editorCharacterDraft = characterReview ? nativeProposal.form || {} : draft;
+  const editorWorldDraft = worldReview ? nativeProposal.form || {} : worldSettingDraft;
   const { runtimeDefaultSetting, setRuntimeDefaultSetting, saveRuntimeDefaultSetting } = useRuntimeDefaultSetting({ settingsMutations: settingsMutations as any, setBusy, setStatus, ownUI });
   const chatEndRef = useRef<any>(null);
   const chatThreadRef = useRef<any>(null);
@@ -881,10 +890,41 @@ export function App() {
       setStatus(t('캐릭터 역할 수정 완료'));
     } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
+  async function saveNativeProposal() {
+    const visit = routeWork.capture();
+    const token = nativeProposal.review?.token;
+    const { setBusy, setStatus, setDraft, setWorldSettingDraft, navigate } = ownUI('saveNativeProposal');
+    const owns = () => visit.current && useAgentStore.getState().proposalRequest?.token === token;
+    setBusy(true);
+    try {
+      const committed = await nativeProposal.save();
+      const id = committed.result!.id as string;
+      await bootstrap.queryClient.invalidateQueries({ queryKey: [committed.kind === 'character' ? 'characters' : 'world-settings'] });
+      if (committed.kind === 'character') {
+        const saved = await characterApi.get(id) as any;
+        if (saved.id !== id) throw new Error('Saved character identity could not be verified.');
+        await loadCharacters();
+        if (!owns()) return;
+        setDraft(saved); setStatus(t('캐릭터 저장 완료'));
+      } else {
+        const worlds = await loadWorldSettings();
+        const saved = worlds.find(world => world.id === id);
+        if (!saved) throw new Error('Saved world identity could not be verified.');
+        if (!owns()) return;
+        setWorldSettingDraft(saved); setStatus(t('세계관 저장 완료'));
+      }
+      if (!owns()) return;
+      agentActions.closeProposal(token!);
+      navigate(`/${committed.kind === 'character' ? 'characters' : 'world-settings'}/${encodeURIComponent(id)}`);
+    } catch (error) { if (owns()) setStatus(`요청 실패 · ${error.message}`); }
+    finally { setBusy(false); }
+  }
   async function saveCharacter() {
+    const draft = editorCharacterDraft;
     const { setBusy, setStatus, navigate } = ownUI('saveCharacter');
     if (route.page !== 'characterNew' && draft.id !== routeId) { setStatus('Draft identity does not match save target. Reload this form before saving.'); return; }
-    if (!draft.name.trim() || !draft.persona.trim()) { setStatus(t('이름과 페르소나는 필수입니다.')); return; }
+    if (!draft.name?.trim() || !draft.persona?.trim()) { setStatus(t('이름과 페르소나는 필수입니다.')); return; }
+    if (characterReview) { await saveNativeProposal(); return; }
     setBusy(true);
     try {
       const isNew = route.page === 'characterNew';
@@ -1115,9 +1155,11 @@ export function App() {
   } catch (error) { setStatus(`요청 실패 · ${error.message}`); }
   }
   async function saveWorldSetting() {
+    const worldSettingDraft = editorWorldDraft;
     const { setBusy, setStatus, setWorldSettingDraft, navigate } = ownUI('saveWorldSetting');
     if (route.page !== 'worldSettingNew' && worldSettingDraft.id !== routeId) { setStatus('Draft identity does not match save target. Reload this form before saving.'); return; }
     if (!worldSettingDraft.title?.trim() || !worldSettingDraft.world_seed?.trim()) { setStatus(t('세계관 이름과 세계관/규칙은 필수입니다.')); return; }
+    if (worldReview) { await saveNativeProposal(); return; }
     setBusy(true);
     try {
       const payload = { ...worldSettingDraft, title: worldSettingDraft.title.trim(), thumbnail_url: worldSettingDraft.thumbnail_url || null, description: worldSettingDraft.description || null, genre_mode: normalizeGenreMode(worldSettingDraft.genre_mode), tags: Array.isArray(worldSettingDraft.tags) ? worldSettingDraft.tags : [], enabled: worldSettingDraft.enabled !== false };
@@ -1610,7 +1652,7 @@ export function App() {
     presetPage,
   });
 
-  const resourceDraftMismatch = ((route.page === 'characterDetail' || route.page === 'characterAssets') && draft.id !== routeId) || (route.page === 'presetDetail' && presetDraft.id !== routeId) || (route.page === 'chatCommandDetail' && chatCommandDraft.id !== routeId) || (route.page === 'conversationEdit' && roomEditDraft.id !== routeId);
+  const resourceDraftMismatch = ((route.page === 'characterDetail' || route.page === 'characterAssets') && editorCharacterDraft.id !== routeId) || (route.page === 'presetDetail' && presetDraft.id !== routeId) || (route.page === 'chatCommandDetail' && chatCommandDraft.id !== routeId) || (route.page === 'conversationEdit' && roomEditDraft.id !== routeId);
   const roomFailureStatus = !!roomLoadError && !isCompletionFeedback(status, t) && (status.includes(roomLoadError) || status.includes(t('캐릭터 초대 완료')));
   const chatGenerationStatus = isChatGenerationProgress(status, t) ? status : '';
   const chatFeedback = <>
@@ -1641,7 +1683,7 @@ export function App() {
     if (route.page === 'conversationNew') return <Button type="button" disabled={busy || !canStartConversation} onClick={startConversationRoom}>{t(busy ? '생성 중…' : '대화 시작')}</Button>;
     if (route.page === 'conversationEdit') return null;
     if (route.page === 'characters') return <Button type="button" onClick={() => navigate('/characters/new')}>{t('새 캐릭터')}</Button>;
-    if (route.page === 'characterDetail' || route.page === 'characterNew') return <><Button type="button" variant="ghost" onClick={() => navigate('/characters')}>{t('목록으로')}</Button><Button type="button" variant="ghost" onClick={() => setCardPreview(draft)}>{t('카드 미리보기')}</Button></>;
+    if (route.page === 'characterDetail' || route.page === 'characterNew') return <><Button type="button" variant="ghost" onClick={() => navigate('/characters')}>{t('목록으로')}</Button><Button type="button" variant="ghost" onClick={() => setCardPreview(editorCharacterDraft)}>{t('카드 미리보기')}</Button></>;
     if (route.page === 'characterAssets') return <Button type="button" variant="ghost" onClick={() => navigate(`/characters/${route.id}`)}>{t('캐릭터 상세로')}</Button>;
     if (route.page === 'worldSettings') return <Button type="button" onClick={() => navigate('/world-settings/new')}>{t('새 세계관')}</Button>;
     if (route.page === 'worldSettingNew' || route.page === 'worldSettingDetail') return <Button type="button" variant="ghost" onClick={() => navigate('/world-settings')}>{t('목록으로')}</Button>;
@@ -1653,13 +1695,14 @@ export function App() {
   })();
 
   return <AppShell route={route} chatHeaderReady={route.page !== 'conversationDetail' || conversation?.id === selectedConversationId} backendOnline={backendOnline} drawerOpen={drawerOpen} setDrawerOpen={setDrawerOpen} navigate={navigate} overlays={appOverlays} headerActions={headerActions}>
-    {resourceDraftMismatch && <ResourceDetailFeedback error={status && status !== t('불러오는 중…') && !isCompletionFeedback(status, t) ? status : ''} onRetry={() => setResourceReloadKey(key => key + 1)}><Button onClick={() => navigate('/' + (route.page.startsWith('character') ? 'characters' : route.page.startsWith('preset') ? 'presets' : route.page.startsWith('chatCommand') ? 'chat-commands' : 'conversations'))}>{t('목록으로')}</Button></ResourceDetailFeedback>}
+    {nativeProposal.active && !nativeProposal.ready && <section role={nativeProposal.error ? 'alert' : 'status'}><p>{nativeProposal.error || t('불러오는 중…')}</p><Button variant="ghost" onClick={nativeProposal.cancel}>{t('취소')}</Button></section>}
+    {resourceDraftMismatch && !nativeProposal.active && <ResourceDetailFeedback error={status && status !== t('불러오는 중…') && !isCompletionFeedback(status, t) ? status : ''} onRetry={() => setResourceReloadKey(key => key + 1)}><Button onClick={() => navigate('/' + (route.page.startsWith('character') ? 'characters' : route.page.startsWith('preset') ? 'presets' : route.page.startsWith('chatCommand') ? 'chat-commands' : 'conversations'))}>{t('목록으로')}</Button></ResourceDetailFeedback>}
     {route.page !== 'conversationDetail' && <OperationFeedback status={status} onDismiss={dismissStatus} showPersistent={!resourceDraftMismatch} />}
     {route.page === 'home' && <ResourceListBoundary variant="home"><HomeView conversations={conversations} characters={characterUsageRanking.length ? characterUsageRanking : characters} allCharacters={characters} worldSettings={worldSettings} navigate={navigate} openConversation={openConversation} /></ResourceListBoundary>}
     {route.page === 'conversationNew' && <ConversationCreateView busy={busy} navigate={navigate} status={status} startConversationRoom={startConversationRoom} conversationTitle={conversationTitle} setConversationTitle={setConversationTitle} selectedWorldSettingId={selectedWorldSettingId} setSelectedWorldSettingId={setSelectedWorldSettingId} worldSettings={worldSettings} scene={scene} setScene={setScene} userDescription={userDescription} setUserDescription={setUserDescription} applyPreset={applyPreset} multiCharacterIds={multiCharacterIds} multiCharacterRoles={multiCharacterRoles} updateMultiCharacterSlot={updateMultiCharacterSlot} updateMultiCharacterRole={updateMultiCharacterRole} removeMultiCharacterSlot={removeMultiCharacterSlot} addMultiCharacterSlot={addMultiCharacterSlot} selectOptions={selectOptions} />}
 
     {route.page === 'characters' && <ResourceListBoundary><CharactersListView characters={characters} navigate={navigate} /></ResourceListBoundary>}
-    {(route.page === 'characterDetail' || route.page === 'characterNew') && !resourceDraftMismatch && <CharacterDetailView route={route} draft={draft} setDraft={setDraft} ttsVoices={ttsVoices} ttsModels={ttsModels} busy={busy} navigate={navigate} setCardPreview={setCardPreview} saveCharacter={saveCharacter} deleteCharacter={deleteCharacter} uploadAvatar={uploadAvatar} playCharacterTtsSample={playCharacterTtsSample} speechPresets={speechPresets} applyPreset={applyPreset} characterAssets={characterAssets} characterAssetsLoading={characterAssetsLoading} assetDraft={assetDraft} setAssetDraft={setAssetDraft} createCharacterAsset={createCharacterAsset} uploadCharacterAsset={uploadCharacterAsset} patchCharacterAsset={patchCharacterAsset} deleteCharacterAsset={deleteCharacterAsset} setDefaultCharacterAsset={setDefaultCharacterAsset} />}
+    {(route.page === 'characterDetail' || route.page === 'characterNew') && !resourceDraftMismatch && (!nativeProposal.active || nativeProposal.ready) && <fieldset className="contents" disabled={characterReview && (busy || nativeProposal.blocked)}><CharacterDetailView reviewMode={characterReview} changedFields={characterReview ? nativeProposal.changedFields : []} onCancelReview={nativeProposal.cancel} route={route} draft={editorCharacterDraft} setDraft={characterReview ? nativeProposal.setForm : setDraft} ttsVoices={ttsVoices} ttsModels={ttsModels} busy={busy} navigate={navigate} setCardPreview={setCardPreview} saveCharacter={saveCharacter} deleteCharacter={deleteCharacter} uploadAvatar={uploadAvatar} playCharacterTtsSample={playCharacterTtsSample} speechPresets={speechPresets} applyPreset={characterReview ? (field, content) => nativeProposal.setForm(current => ({ ...current, [field]: [current[field], content].filter(Boolean).join('\n') })) : applyPreset} characterAssets={characterAssets} characterAssetsLoading={characterAssetsLoading} assetDraft={assetDraft} setAssetDraft={setAssetDraft} createCharacterAsset={createCharacterAsset} uploadCharacterAsset={uploadCharacterAsset} patchCharacterAsset={patchCharacterAsset} deleteCharacterAsset={deleteCharacterAsset} setDefaultCharacterAsset={setDefaultCharacterAsset} /></fieldset>}
     {route.page === 'characterAssets' && !resourceDraftMismatch && <CharacterAssetsView route={route} draft={draft} characterAssets={characterAssets} characterAssetsLoading={characterAssetsLoading} busy={busy} assetDraft={assetDraft} setAssetDraft={setAssetDraft} navigate={navigate} createCharacterAsset={createCharacterAsset} uploadCharacterAsset={uploadCharacterAsset} patchCharacterAsset={patchCharacterAsset} deleteCharacterAsset={deleteCharacterAsset} setDefaultCharacterAsset={setDefaultCharacterAsset} assetUrlFor={assetUrlFor} />}
 
     {route.page === 'presets' && <ResourceListBoundary><PresetsView navigate={navigate} presetQuery={presetQuery} setPresetQuery={setPresetQuery} setPresetPage={setPresetPage} loadPresets={loadPresets} visiblePresets={visiblePresets} presetPage={presetPage} pageCount={pageCount} filteredPresets={filteredPresets} /></ResourceListBoundary>}
@@ -1668,7 +1711,7 @@ export function App() {
     {route.page === 'chatCommands' && <ResourceListBoundary><ChatCommandsView route={route} navigate={navigate} chatCommands={chatCommands} chatCommandDraft={chatCommandDraft} setChatCommandDraft={setChatCommandDraft} saveChatCommand={saveChatCommand} deleteChatCommand={deleteChatCommand} loadChatCommands={loadChatCommands} busy={busy} /></ResourceListBoundary>}
     {(route.page === 'chatCommandNew' || route.page === 'chatCommandDetail') && !resourceDraftMismatch && <ChatCommandsView route={route} navigate={navigate} chatCommands={chatCommands} chatCommandDraft={chatCommandDraft} setChatCommandDraft={setChatCommandDraft} saveChatCommand={saveChatCommand} deleteChatCommand={deleteChatCommand} loadChatCommands={loadChatCommands} busy={busy} />}
     {route.page === 'worldSettings' && <ResourceListBoundary><WorldSettingsListView worldSettings={worldSettings} navigate={navigate} loadWorldSettings={loadWorldSettings} /></ResourceListBoundary>}
-    {(route.page === 'worldSettingNew' || route.page === 'worldSettingDetail') && <WorldSettingsDetailView route={route} worldSettings={worldSettings} loading={bootstrap.worldSettings.isPending} loadError={bootstrap.worldSettings.error?.message} onRetry={() => { void loadWorldSettings().catch(error => setStatus(error.message)); }} worldSettingDraft={worldSettingDraft} setWorldSettingDraft={setWorldSettingDraft} saveWorldSetting={saveWorldSetting} deleteWorldSetting={deleteWorldSetting} uploadWorldThumbnail={uploadWorldThumbnail} busy={busy} navigate={navigate} />}
+    {(route.page === 'worldSettingNew' || route.page === 'worldSettingDetail') && (!nativeProposal.active || nativeProposal.ready) && <fieldset className="contents" disabled={worldReview && (busy || nativeProposal.blocked)}><WorldSettingsDetailView reviewMode={worldReview} changedFields={worldReview ? nativeProposal.changedFields : []} onCancelReview={nativeProposal.cancel} route={route} worldSettings={worldSettings} loading={bootstrap.worldSettings.isPending} loadError={bootstrap.worldSettings.error?.message} onRetry={() => { void loadWorldSettings().catch(error => setStatus(error.message)); }} worldSettingDraft={editorWorldDraft as any} setWorldSettingDraft={worldReview ? nativeProposal.setForm : setWorldSettingDraft} saveWorldSetting={saveWorldSetting} deleteWorldSetting={deleteWorldSetting} uploadWorldThumbnail={uploadWorldThumbnail} busy={busy} navigate={navigate} /></fieldset>}
 
     {route.page === 'settings' && <SettingsView navigate={navigate} />}
     {route.page === 'agentSettings' && <AgentSettingsView />}

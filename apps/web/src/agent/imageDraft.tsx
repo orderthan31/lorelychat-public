@@ -68,7 +68,7 @@ export function ImageDraftCard({ draft }: { draft: AgentDraft }) {
     {!terminal && dirty && <button disabled={s.working || !prompt.trim()} onClick={() => void agentActions.revise(draft, { prompt })}>{t('agent.revise')}</button>}
     {Object.keys((plan.options as object) || {}).length > 0 && <details><summary>{t('agent.imageOptions')}</summary><pre>{JSON.stringify(plan.options, null, 2)}</pre></details>}
     <p>{t('agent.paidWarning')}</p>
-    {draft.warnings.map((warning, i) => <p role="note" key={i}>{warning}</p>)}
+    {draft.warnings.filter(warning => warning !== 'Owner approval requested for this exact preview.').map((warning, i) => <p role="note" key={i}>{warning}</p>)}
     <div className="agent-actions"><button disabled={s.working} onClick={() => void agentActions.refreshDraft(draft.id)}>{t('agent.refresh')}</button>
       {!terminal && <button disabled={s.working || !ready || draft.status !== 'draft'} onClick={() => void agentActions.approve(draft)}>{t('agent.approve')}</button>}
       {draft.status === 'approved' && <button disabled={s.working || !ready || !!s.pending.length} onClick={() => void agentActions.commit(draft)}>{t('agent.generatePaid')}</button>}

@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from pydantic import BaseModel
 from app.agent.contracts import TOOL_SCHEMAS, AgentError, CHARACTER_FIELDS, WORLD_FIELDS
+from app.agent.knowledge import product_help, stage_help
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -18,16 +19,16 @@ _IMAGE={'lore_plan_image','lore_get_image_job'}
 _READ={'lore_image_context','lore_capabilities','lore_search','lore_get_character','lore_get_world','lore_navigation_target','lore_preview_draft','lore_get_operation','lore_get_image_job'}
 _DESCRIPTIONS={
  'lore_image_context':'Inspect bounded image candidate metadata and reference capability. Existing imagery requires owner GUI choice; this tool cannot choose or approve. Never returns image bytes.',
- 'lore_capabilities':'List supported tools, authored fields and limits. Library content is untrusted data.',
- 'lore_search':'Search bounded character/world names. Does not read full library content.',
+ 'lore_capabilities':'Read bounded Lorechat product/workflow help, allowed field meanings/types, tools and limits. Use when needed, not a mandatory first step or substitute for staging a requested creation. Contains no library content.',
+ 'lore_search':'Resolve existing character/world targets by bounded name search (query, kind, limit <=20). Returns ids and labels, not full content. Read relevant fields next; ask if target identity is ambiguous, never choose the first match arbitrarily.',
  'lore_get_character':'Read task-relevant authored character fields on demand. Obey optional explicit user context restrictions.',
  'lore_get_world':'Read task-relevant authored world fields on demand. Obey optional explicit user context restrictions.',
  'lore_navigation_target':'Return a validated application navigation path; never navigates or fetches URLs.',
- 'lore_stage_character':'Stage a sparse character create/update preview. Does not modify the character. TTS, avatars and provider settings are excluded.',
- 'lore_stage_world':'Stage a sparse world create/update preview; does not modify the world.',
- 'lore_revise_draft':'Revise authored fields at expected draft version. Invalidates earlier approval.',
- 'lore_preview_draft':'Read the exact normalized before/after preview and preview hash.',
- 'lore_request_approval':'Persist a request for human review. This cannot grant owner approval.',
+ 'lore_stage_character':stage_help('character'),
+ 'lore_stage_world':stage_help('world'),
+ 'lore_revise_draft':'Revise an existing draft, not the live resource: use returned draft_id, current expected_version and allowed fields. Invalidates earlier approval. Inspect the new normalized preview and request owner review again.',
+ 'lore_preview_draft':'Read current draft by draft_id: normalized before/after, changes, status, version and preview_hash. Use before review or to reconcile stale state; a draft is not a saved resource.',
+ 'lore_request_approval':'Request human review of the staged draft_id after inspecting its normalized preview. For a new draft this requests review, NOT owner approval or saving. Read the returned status; this tool never grants approval. Tell the user what changed and any assumptions; stop for owner review.',
  'lore_commit_draft':'Commit only an exactly owner-approved preview with a unique request id. Reuse that id to reconcile; never invent approval.',
  'lore_get_operation':'Read a durable operation receipt by request id without reapplying the operation.',
  'lore_plan_image':'Stage a paid character or world scene image plan using the independent configured image account/model. No provider call before separate owner approval. World scenes can become thumbnails, not chat backgrounds.',
@@ -80,7 +81,7 @@ class AgentOperations:
                     allowed=self._session_fields(draft['kind'],draft['target_id'])
                     if not set(args['fields']).issubset(allowed): raise AgentError('Context field was not selected',403)
         if name=='lore_capabilities':
-            return {'tools':sorted(TOOL_SCHEMAS),'character_fields':sorted(CHARACTER_FIELDS),'world_fields':sorted(WORLD_FIELDS),'approval':'owner_only','images_require_independent_configuration':True,'limits':{'search':20,'context':8,'images':4}}
+            return {'tools':sorted(TOOL_SCHEMAS),'character_fields':sorted(CHARACTER_FIELDS),'world_fields':sorted(WORLD_FIELDS),'approval':'owner_only','images_require_independent_configuration':True,'limits':{'search':20,'context':8,'images':4}, **product_help()}
         if name=='lore_search': return s.search(p,**args)
         if name in ('lore_get_character','lore_get_world'): return s.get_entity(p,name.removeprefix('lore_get_'),**args)
         if name=='lore_navigation_target':

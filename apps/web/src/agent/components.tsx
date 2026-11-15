@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Bot, X } from 'lucide-react';
+import { X } from 'lucide-react';
+import { AgentMark } from './AgentMark';
 import { useI18n } from '../i18n/I18nProvider';
 import type { UiMessageKey } from '../i18n/core';
 import { agentActions, useAgentStore } from './store';
@@ -33,7 +34,7 @@ export function AgentLauncher() {
   const enabled = useAgentStore(s => s.settings?.enabled);
   const open = useAgentStore(s => s.open);
   if (!enabled) return null;
-  return <button type="button" className="agent-launcher" aria-label={t('agent.title')} aria-expanded={open} onClick={event => openAgentFrom(event.currentTarget, !open)}><Bot size={20} aria-hidden="true" /><span>{t('agent.launcher')}</span></button>;
+  return <button type="button" className="agent-launcher" aria-label={t('agent.title')} title={t('agent.title')} aria-expanded={open} onClick={event => openAgentFrom(event.currentTarget, !open)}><AgentMark size={30} active={open} /></button>;
 }
 export function AgentSurface() {
   const { t } = useI18n();
@@ -45,8 +46,8 @@ export function AgentSurface() {
     return () => media.removeEventListener('change', update);
   }, []);
   useEffect(() => { if (open) void agentActions.refresh(); }, [open]);
-  const close = () => useAgentStore.getState().setOpen(false);
-  const heading = <header className="agent-panel-header"><h2>{t('agent.title')}</h2><button type="button" aria-label={t('닫기')} onClick={close}><X size={20} /></button></header>;
+  const close = () => { useAgentStore.getState().setOpen(false); launcherElement?.focus(); };
+  const heading = <header className="agent-panel-header"><h2><AgentMark size={28} />{t('agent.title')}</h2><button type="button" aria-label={t('닫기')} onClick={close}><X size={20} /></button></header>;
   if (wide) return <aside className="agent-dock agent-ui" hidden={!open} aria-label={t('agent.title')}>{heading}{open && <AgentPanel />}</aside>;
   return <Dialog.Root open={open} onOpenChange={value => useAgentStore.getState().setOpen(value)}><Dialog.Portal><Dialog.Overlay className="agent-overlay" /><Dialog.Content className="agent-modal agent-ui" onCloseAutoFocus={event => { event.preventDefault(); launcherElement?.focus(); }}>
     <Dialog.Title className="sr-only">{t('agent.title')}</Dialog.Title><Dialog.Description className="sr-only">{t('agent.workspace')}</Dialog.Description>

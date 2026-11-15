@@ -1092,6 +1092,7 @@
   "agent.imageFailed": "Could not load image.",
   "agent.generatedImage": "Generated image preview",
   "agent.target": "Target",
+  "agent.reviewProposal": "Review in editor",
   "agent.beforeAfter": "Before → after",
   "agent.editFields": "Edit fields",
   "agent.fieldsJson": "Fields to change (JSON)",

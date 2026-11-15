@@ -67,12 +67,14 @@ async function setup(width, height, locale = 'en') {
       }
       if (suffix === '/sessions/s1') return json(sessionView());
       if (suffix === '/sessions/s1/messages') {
+        if (state.delayMessage) await new Promise(resolve => setTimeout(resolve, 400));
         assert.deepEqual(body.context, state.expectedContext || [], 'only explicitly selected fields are attached');
         state.operations[body.request_id] = { request_id: body.request_id, status: state.abortMessage ? 'unknown' : 'completed', kind: 'agent_turn', result: { session_id: 's1' }, error: null };
         if (state.abortMessage) return route.abort();
         state.sessions[0].messages.push({ id: 'u1', role: 'user', content: body.content }, { id: 'a1', role: 'assistant', content: 'Synthetic preview, not applied.' });
         makeDraft('d1', 'character', { name: 'After' });
-        makeDraft('world-create', 'world', { title: 'Newly committed world' });
+        // A restored committed native-form proposal supplies image registration targets.
+        Object.assign(makeDraft('world-create', 'world', { title: 'Newly committed world' }), { status: 'committed', result: { id: 'w-new', kind: 'world' } });
         makeDraft('world-plan', 'image_generation', { target_kind: 'world', target_id: 'w-new', provider_account_id: 'a', model_id: 'gpt-image-1.5', prompt: 'Synthetic world', count: 2 });
         makeDraft('image-plan', 'image_generation', { provider_account_id: 'a', model_id: 'gpt-image-1.5', prompt: 'Synthetic image prompt', count: 1, options: {}, reference_output_id: null, target_id: 'c1' });
         const image_context = { has_existing_images: true, requires_choice: true, inventory_digest: 'fixture-inventory', candidates: [{ id: 'avatar', label: 'Current portrait', kind: 'avatar', is_default: true, available: true }, { id: 'asset', label: 'Blue outfit', kind: 'asset', is_default: false, available: true }, { id: 'remote', label: 'Remote portrait', kind: 'avatar', is_default: false, available: false }] };
@@ -132,6 +134,64 @@ async function setup(width, height, locale = 'en') {
   });
   const navigate = async path => { await page.evaluate(path => { history.pushState({}, '', path); dispatchEvent(new PopStateEvent('popstate')); }, path); };
   return { page, state, navigate };
+}
+async function verifyConversation(page, state, panel, local, width) {
+  const markdown = '# A readable answer\n\n**Bold choice** and *emphasis* with `inline code`.\n\n- First item\n- Second item\n\n1. Ordered item\n\n> A quoted note\n\n```js\n' + 'const longToken = "' + 'x'.repeat(220) + '";\n```\n\n[Safe link](https://example.com) [Unsafe](javascript:alert(1))\n\n![Remote image](https://example.com/tracker.png)\n\n<script>window.agentUnsafe = true</script>\n<img src="https://example.com/raw.png" onerror="alert(1)">';
+  state.sessions[0].messages = [...Array.from({ length: 24 }, (_, i) => ({ id: `long-${i}`, role: i % 2 ? 'assistant' : 'user', content: i % 2 ? 'A useful answer with room to read. '.repeat(7) : 'A short question' })), { id: 'markdown', role: 'assistant', content: markdown }];
+  await panel.getByRole('button', { name: local['닫기'] || '닫기', exact: true }).click();
+  await page.locator('.agent-launcher').click();
+  const rich = panel.locator('.agent-markdown').last();
+  await expect(rich.locator('h1')).toHaveText('A readable answer');
+  await expect(rich.locator('strong')).toHaveText('Bold choice');
+  await expect(rich.locator('ul li')).toHaveCount(2);
+  await expect(rich.locator('ol li')).toHaveCount(1);
+  await expect(rich.locator('blockquote')).toHaveText('A quoted note');
+  await expect(rich.locator('pre code')).toHaveCount(1);
+  assert.equal(await rich.locator('pre').evaluate(node => {
+    node.scrollLeft = 80;
+    return getComputedStyle(node).overflowX === 'auto' && node.scrollWidth > node.clientWidth && node.scrollLeft > 0;
+  }), true, 'long code is independently horizontally scrollable, not lost or page-overflowing');
+  await rich.locator('pre').evaluate(node => { node.scrollLeft = 0; });
+  await expect(rich.locator('a')).toHaveCount(1);
+  await expect(rich.locator('a')).toHaveAttribute('rel', 'noopener noreferrer');
+  await expect(rich.locator('img,script,iframe')).toHaveCount(0);
+  assert.equal(await page.evaluate(() => window.agentUnsafe), undefined);
+  const composer = panel.locator('.agent-composer');
+  const transcript = panel.locator('.agent-transcript');
+  await transcript.evaluate(node => { node.scrollTop = node.scrollHeight; });
+  const box = await composer.boundingBox();
+  assert.ok(box.y >= 0 && box.y + box.height <= (await page.viewportSize()).height, 'bottom composer stays visible through long transcript');
+  assert.ok(await transcript.evaluate(node => node.scrollHeight > node.clientHeight));
+  assert.ok(await transcript.evaluate(node => node.scrollWidth <= node.clientWidth + 1), 'long fenced code stays within transcript');
+  const avatar = await panel.locator('.agent-message-avatar').last().boundingBox();
+  assert.ok(avatar.width >= 24 && avatar.width <= 30 && avatar.height >= 24, 'recognizable small Agent mark');
+  await rich.locator('h1').scrollIntoViewIfNeeded();
+  if (artifacts) await page.screenshot({ path: `${artifacts}/conversation-${width}.png` });
+  await panel.getByLabel(local['agent.message']).fill('Retained conversation draft');
+  await transcript.evaluate(node => { node.scrollTop = 100; node.dispatchEvent(new Event('scroll')); });
+  state.sessions[0].messages.push({ id: 'new-while-reading', role: 'assistant', content: 'New answer while reading above.' });
+  await panel.getByRole('button', { name: local['닫기'] || '닫기', exact: true }).click();
+  await page.locator('.agent-launcher').click();
+  await expect(panel.locator('.agent-messages')).toContainText('New answer while reading above.');
+  assert.ok(Math.abs(await transcript.evaluate(node => node.scrollTop) - 100) < 4, 'refresh preserves manual upward reading');
+  await expect(panel.getByLabel(local['agent.message'])).toHaveValue('Retained conversation draft');
+  if (width === 390) {
+    const viewport = page.viewportSize();
+    await page.setViewportSize({ width: 1440, height: viewport.height });
+    const dock = page.locator('.agent-dock:visible');
+    await expect(dock.getByLabel(local['agent.message'])).toHaveValue('Retained conversation draft');
+    assert.ok(Math.abs(await dock.locator('.agent-transcript').evaluate(node => node.scrollTop) - 100) < 4, 'dock transition retains upward reading');
+    await page.setViewportSize(viewport);
+    await expect(panel.getByLabel(local['agent.message'])).toHaveValue('Retained conversation draft');
+    assert.ok(Math.abs(await transcript.evaluate(node => node.scrollTop) - 100) < 4, 'modal transition retains upward reading');
+  }
+  await panel.getByText(local['agent.chatAdvanced'], { exact: true }).click();
+  await transcript.evaluate(node => { node.scrollTop = node.scrollHeight; node.dispatchEvent(new Event('scroll')); });
+  state.sessions[0].messages.push({ id: 'new-at-bottom', role: 'assistant', content: 'Follow this new answer at the bottom.' });
+  await panel.locator('.agent-advanced').getByRole('button', { name: local['agent.refresh'], exact: true }).click();
+  await expect(panel.locator('.agent-messages')).toContainText('Follow this new answer at the bottom.');
+  await expect.poll(() => transcript.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(4);
+  await panel.getByText(local['agent.chatAdvanced'], { exact: true }).click();
 }
 try {
   for (const [width,height] of [[390,844],[1440,1000]]) {
@@ -196,19 +256,21 @@ try {
     assert.equal(state.writes.filter(w => w.path.endsWith('/sessions')).length, 0, 'opening is GET-only, no manual creation needed');
     await expect(panel.getByLabel(t('agent.sessions'))).not.toBeVisible();
     await expect(panel.getByLabel(t('agent.contextFields'))).not.toBeVisible();
+    state.delayMessage = true;
     await panel.getByLabel(t('agent.message')).fill('Synthetic request');
     await panel.getByRole('button', { name: t('전송'), exact: true }).click();
+    await expect(panel.locator('#agent-send-status .sr-only')).toHaveText(t('agent.working'));
+    await expect(panel.locator('#agent-send-status [data-agent-mark]')).toHaveCount(1);
+    assert.equal(await panel.locator('#agent-send-status').evaluate(node => [...node.childNodes].filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join('').trim()), '', 'working indicator has no canned visible guide text');
+    await expect(panel.locator('.agent-empty')).toHaveCount(0);
     await expect.poll(() => state.writes.filter(w => w.path.includes('/sessions')).map(w => w.path)).toEqual(['/api/lore-agent/sessions', '/api/lore-agent/sessions/s1/messages']);
     const draft = panel.locator('[data-agent-draft=d1]'); await expect(draft).toContainText('After');
     assert.equal(state.writes.filter(w => w.path.endsWith('/commit')).length,0);
-    await draft.getByText(t('agent.editFields'), { exact: true }).click();
-    await draft.getByLabel(t('agent.fieldsJson')).fill('{"name":"Revised"}');
-    await expect(draft.getByRole('button', { name: t('agent.approve') })).toBeDisabled();
-    await draft.getByRole('button', { name: t('agent.revise') }).click();
-    await expect(draft).toContainText('v2');
-    await draft.getByRole('button', { name: t('agent.approve') }).click();
-    await draft.getByRole('button', { name: t('agent.commit') }).click();
-    await expect(draft).toContainText(t('agent.status.committed'));
+    await expect(draft.getByRole('heading')).toHaveText('After');
+    await expect(draft.getByRole('button', { name: t('agent.reviewProposal') })).toBeEnabled();
+    await expect(draft.locator('textarea,pre,del,ins,code,details')).toHaveCount(0);
+    await expect(draft.getByRole('button', { name: t('agent.approve') })).toHaveCount(0);
+    await expect(draft.getByRole('button', { name: t('agent.commit') })).toHaveCount(0);
     const referencePlan = panel.locator('[data-agent-draft=reference-plan]');
     await expect(referencePlan.locator('input[type=radio]:checked')).toHaveCount(0);
     await expect(referencePlan.getByRole('button', { name: t('agent.approve') })).toBeDisabled();
@@ -262,8 +324,8 @@ try {
     await registration.getByRole('button', { name: t('agent.commit') }).click();
     await expect(registration).toContainText(t('agent.status.committed'));
     const worldCreate = panel.locator('[data-agent-draft=world-create]');
-    await worldCreate.getByRole('button', { name: t('agent.approve') }).click();
-    await worldCreate.getByRole('button', { name: t('agent.commit') }).click();
+    await expect(worldCreate).toContainText(t('agent.status.committed'));
+    await expect(worldCreate.locator('textarea,pre,del,ins,code,details')).toHaveCount(0);
     const worldPlan = panel.locator('[data-agent-draft=world-plan]');
     await worldPlan.getByRole('button', { name: t('agent.approve') }).click();
     await worldPlan.getByRole('button', { name: t('agent.generatePaid') }).click();
@@ -285,6 +347,7 @@ try {
     await worldRegistration.getByRole('button', { name: t('agent.approve') }).click();
     await worldRegistration.getByRole('button', { name: t('agent.commit') }).click();
     await expect(worldRegistration).toContainText(t('agent.status.committed'));
+    await verifyConversation(page, state, panel, dict, width);
     await panel.getByLabel(t('agent.message')).fill('UNSENT AGENT DRAFT');
     if (width < 1100) { await page.keyboard.press('Escape'); await expect(page.locator('.agent-launcher')).toBeFocused(); }
     else await panel.getByRole('button', { name: t('닫기'), exact: true }).click();
@@ -307,7 +370,7 @@ try {
     await panel.getByRole('button', { name: t('agent.refresh'), exact: true }).first().click();
     await expect(panel.getByRole('button', { name: t('agent.newSession') })).toBeDisabled();
     assert.equal(state.writes.length, postCount, 'unknown recovery sends GET only');
-    await expect(panel.locator('.agent-messages')).toContainText('Synthetic preview, not applied.');
+    await expect(panel.locator('.agent-messages')).toContainText('A readable answer');
     const messageColors = await panel.locator('.agent-messages article').first().evaluate(node => ({ fg: getComputedStyle(node).color, bg: getComputedStyle(node).backgroundColor }));
     assert.notEqual(messageColors.fg, messageColors.bg, 'messages remain readable');
     const storage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
@@ -367,7 +430,9 @@ try {
     assert.deepEqual(Object.keys(state.writes.at(-1).body).sort(), ['enabled','llm_model_option_key','image_provider_account_id','image_model_id','mcp_enabled'].sort());
     const writesBeforeOpen = state.writes.length;
     await expect(page.locator('.agent-launcher')).toHaveCount(1);
-    await expect(page.locator('.agent-launcher span')).toHaveText(local['agent.launcher']);
+    await expect(page.locator('.agent-launcher')).toHaveAttribute('aria-label', local['agent.title']);
+    await expect(page.locator('.agent-launcher')).toHaveAttribute('title', local['agent.title']);
+    assert.equal(await page.locator('.agent-launcher').innerText(), '', 'icon-only launcher');
     assert.equal(await page.locator('.agent-launcher').evaluate(node => { const r = node.getBoundingClientRect(); return r.width >= 44 && r.height >= 44 && node.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); }), true, 'labeled launcher remains hittable');
     await settings.getByRole('button', { name: local['agent.open'], exact: true }).click();
     const panel = page.locator('.agent-modal');
@@ -381,6 +446,10 @@ try {
     assert.equal(state.writes.length, writesBeforeOpen, 'opening existing Agent hydrates through GET only');
     await panel.getByRole('button', { name: local['닫기'] || '닫기', exact: true }).click();
     await expect(settings.getByRole('button', { name: local['agent.open'], exact: true })).toBeFocused();
+    await settings.getByRole('button', { name: local['agent.open'], exact: true }).click();
+    await verifyConversation(page, state, panel, local, width);
+    await panel.getByRole('button', { name: local['닫기'] || '닫기', exact: true }).click();
+    await expect(page.locator('.agent-launcher')).toBeFocused();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),false);
     await expect(page.locator('[data-page=agent-settings] input[type=password]')).toHaveCount(0);
     state.unavailable = true; await page.reload();

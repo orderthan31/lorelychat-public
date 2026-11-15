@@ -10,7 +10,33 @@ function recovered(): PendingRequest[] {
   } catch { return []; }
 }
 function persist(requests: PendingRequest[]) { sessionStorage.setItem(RECOVERY_KEY, JSON.stringify(requests)); }
+export type NativeProposalRequest = { token: string; draft: AgentDraft };
+export const NATIVE_PROPOSAL_FIELDS = {
+  character: ['name', 'persona', 'description', 'appearance', 'behavior_style', 'speech_style', 'emotional_rules', 'forbidden_rules', 'trait_scores'],
+  world: ['title', 'description', 'genre_mode', 'location', 'mood', 'world_seed', 'opening_scene', 'opening_line', 'tone_preset', 'relationship_archetype', 'compression_focus', 'tags', 'enabled'],
+} as const;
+export function proposalValueEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  const left = Object.keys(a), right = Object.keys(b);
+  return left.length === right.length && left.every(key => Object.prototype.hasOwnProperty.call(b, key) && proposalValueEqual(a[key], b[key]));
+}
+export function nativeProposalFields(draft: AgentDraft, form: Record<string, unknown>, initial: Record<string, unknown>) {
+  if (draft.kind !== 'character' && draft.kind !== 'world') throw new Error('This proposal uses a separate review.');
+  const allowed: readonly string[] = NATIVE_PROPOSAL_FIELDS[draft.kind];
+  const fields: Record<string, unknown> = {};
+  for (const key of new Set([...Object.keys(initial), ...Object.keys(form)])) {
+    if (proposalValueEqual(form[key], initial[key])) continue;
+    if (!allowed.includes(key)) throw new Error('This proposal cannot save image or voice changes. Your edits have been retained.');
+    fields[key] = form[key];
+  }
+  return fields;
+}
+function matchProposal(actual: AgentDraft, expected: AgentDraft) {
+  if (actual.id !== expected.id || actual.kind !== expected.kind || actual.target_id !== expected.target_id || actual.base_revision !== expected.base_revision || actual.version !== expected.version || actual.preview_hash !== expected.preview_hash) throw new Error('The proposal changed. Reopen it before saving; your edits have been retained.');
+}
 export type AgentState = {
+  proposalRequest: NativeProposalRequest | null;
   open: boolean; settings: AgentSettings | null; settingsError: string; error: string;
   working: boolean; newChat: boolean; sessions: Record<string, AgentSession>; selected: string; input: string;
   resources: { kind: ContextSelection['kind']; id: string; label: string }[];
@@ -21,6 +47,7 @@ export type AgentState = {
   setOpen: (open: boolean) => void;
 };
 export const useAgentStore = create<AgentState>((set) => ({
+  proposalRequest: null,
   open: false, settings: null, settingsError: '', error: '', working: false, newChat: true,
   resources: [], imageChoices: {}, imageSelections: {}, sessions: {}, selected: '', input: '', contexts: [], drafts: {}, edits: {}, pending: recovered(), operations: {}, imageJobs: {},
   setOpen: open => set({ open }),
@@ -71,6 +98,54 @@ async function guarded(action: () => Promise<void>) {
   finally { set({ working: false }); }
 }
 export const agentActions = {
+  openProposal(draft: AgentDraft) {
+    if (state().working || (draft.kind !== 'character' && draft.kind !== 'world') || !['draft', 'approved'].includes(draft.status)) return;
+    // Opening is local navigation intent only. The native editor performs GETs.
+    set({ proposalRequest: { token: requestId(), draft }, open: false, error: '' });
+  },
+  closeProposal(token: string) {
+    if (state().proposalRequest?.token === token) set({ proposalRequest: null });
+  },
+  async saveProposal(expected: AgentDraft, form: Record<string, unknown>, initial: Record<string, unknown>, owns: () => boolean): Promise<AgentDraft> {
+    if (state().working || state().pending.length) throw new Error('An Agent request is unresolved. Check its result in Lore Agent before saving.');
+    const fields = nativeProposalFields(expected, form, initial);
+    const checkOwner = () => { if (!owns()) throw new Error('The editor changed. Saving was stopped.'); };
+    checkOwner();
+    set({ working: true, error: '' });
+    try {
+      let draft = await agentApi.draft(expected.id); acceptDraft(draft);
+      matchProposal(draft, expected); checkOwner();
+      if (!['draft', 'approved'].includes(draft.status)) throw new Error('This proposal is no longer editable. Reopen it in Lore Agent.');
+      if (Object.keys(fields).length) {
+        const revised = await agentApi.revise(draft, fields);
+        draft = await agentApi.draft(expected.id); acceptDraft(draft);
+        matchProposal(draft, revised); checkOwner();
+      }
+      const approved = await agentApi.approve(draft);
+      matchProposal(approved, draft);
+      draft = await agentApi.draft(expected.id); acceptDraft(draft);
+      matchProposal(draft, approved); checkOwner();
+      if (draft.status !== 'approved') throw new Error('Approval could not be verified.');
+      const id = reserve('commit', { draft_id: draft.id, ...(draft.session_id ? { session_id: draft.session_id } : {}) });
+      let accepted = false;
+      try {
+        const operation = await agentApi.commit(draft, id); accepted = true;
+        set(s => ({ operations: { ...s.operations, [id]: operation } }));
+        const committed = await agentApi.draft(draft.id); acceptDraft(committed);
+        matchProposal(committed, draft);
+        if (operation.request_id !== id) throw new Error('Save receipt could not be verified. Check the result in Lore Agent.');
+        if (operation.status === 'failed') { forget(id); throw new Error('The proposal could not be saved. Check its result in Lore Agent.'); }
+        if (operation.status !== 'completed' || committed.status !== 'committed' || typeof committed.result?.id !== 'string' || committed.result.id !== operation.result?.id || (draft.target_id && committed.result.id !== draft.target_id)) throw new Error('Save result is unresolved. Check its result in Lore Agent; do not submit again.');
+        forget(id);
+        return committed;
+      } catch (error) {
+        if (!accepted && error instanceof AgentHttpError && error.status < 500) { forget(id); acceptDraft(await agentApi.draft(draft.id)); }
+        throw error;
+      }
+    } catch (error) {
+      set({ error: describe(error) }); throw error;
+    } finally { set({ working: false }); }
+  },
   async loadSettings() {
     try { set({ settings: await agentApi.settings(), settingsError: '' }); }
     catch (error) { set({ settingsError: describe(error) }); }
