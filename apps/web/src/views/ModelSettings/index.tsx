@@ -416,11 +416,8 @@ export function ModelSettingsView({ section = 'runtime', runtimeDefaultSetting, 
   }
 
   return <section className="panel page model-settings-page grid gap-4" data-page="model-settings">
-    <header className="settings-toolbar">
-      <h1 className="sr-only">{t(section === 'providers' ? 'settings.providers' : section === 'models' ? 'settings.modelCatalog' : 'settings.defaultModels')}</h1>
-      <details className="model-help"><summary>{t('인증과 데이터 전송')}</summary><p>{t('API Key는 저장 후 다시 표시되지 않습니다. 모델 실행에 필요한 대화 내용은 선택한 Provider로 전송됩니다.')}</p></details>
-      {message ? <p className="context-muted" role="status" aria-live="polite">{message}</p> : null}
-    </header>
+    <h1 className="sr-only">{t(section === 'providers' ? 'settings.providers' : section === 'models' ? 'settings.modelCatalog' : 'settings.defaultModels')}</h1>
+    {message ? <p className="context-muted" role="status" aria-live="polite">{message}</p> : null}
 
       <div className="min-w-0">
         {section === 'runtime' && <div data-settings-section="runtime">
