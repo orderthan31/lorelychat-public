@@ -26,6 +26,16 @@
 .agent-toolbar { display: flex; align-items: flex-start; gap: 12px; padding: 4px 16px; flex-shrink: 0; max-height: 38%; overflow-y: auto; }
 .agent-toolbar > button { flex-shrink: 0; border-color: transparent; background: transparent; font-size: 12px; }
 .agent-advanced { flex: 1; min-width: 0; font-size: 12px; }
+.agent-recovery-notice { flex-shrink: 0; max-height: 28%; overflow-y: auto; margin: 0 12px 4px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--primary) 5%, var(--card)); }
+.agent-recovery-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 8px 10px; font-size: 12px; }
+.agent-recovery-row + .agent-recovery-row { border-top: 1px solid var(--border); }
+.agent-recovery-row > div { flex: 1 1 180px; min-width: 0; }
+.agent-recovery-row strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-recovery-row p { margin: 2px 0; line-height: 1.45; color: var(--muted-foreground); }
+.agent-recovery-row [role=alert] { color: var(--destructive); }
+.agent-recovery-row button { font-size: 12px; margin-left: auto; }
+.agent-recovery-focus { outline: 2px solid var(--primary); outline-offset: -2px; border-radius: 8px; background: color-mix(in srgb, var(--primary) 5%, var(--card)); }
+.agent-local-request { color: var(--muted-foreground); font-size: 12px; }
 .agent-transcript { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px 20px; scrollbar-gutter: stable; }
 .agent-transcript-content { display: flow-root; min-height: 100%; }
 .agent-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; height: 100%; gap: 12px; color: var(--muted-foreground); }

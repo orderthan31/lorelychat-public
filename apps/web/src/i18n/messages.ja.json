@@ -1,4 +1,13 @@
 {
+  "agent.imageRequestSubmitted": "生成リクエスト送信済み",
+  "agent.imageRequestUnknown": "未確定の画像リクエスト",
+  "agent.imageRequestNoOutput": "生成結果はまだ確認できていません。",
+  "agent.imageRequestUnresolved": "画像リクエストの完了状況を確認する必要があります。",
+  "agent.viewImageRequest": "該当の会話でリクエストを見る",
+  "agent.recoveryOpening": "リクエストを確認中…",
+  "agent.recoveryFailed": "リクエストを開けませんでした。もう一度確認してください。",
+  "agent.recoveryRetry": "もう一度リクエストを見る",
+  "agent.localImageRequest": "関連する会話を確認できませんでした。リクエストはここで確認できます。",
   "agent.imageLoading": "画像を読み込み中…",
   "agent.existingImages": "既存の画像",
   "agent.noExistingImages": "既存の画像はありません。",

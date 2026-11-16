@@ -185,3 +185,84 @@ try {
   assert.equal('setAgentOwnerKey' in apiModule.exports, false);
   console.log('PASS production Agent REST: settings/session/client reads and settings save without owner key; three blob paths retain same-origin/no-store/redirect protections');
 } finally { globalThis.fetch = originalFetch; }
+
+// Explicit recovery is independently GET-only, exact-linked and selection-fenced.
+const { imageRecoveryTargets, selectedImageJobs } = module.exports;
+const recoveryDraft = { ...draft, id: 'paid-draft', kind: 'image_generation', session_id: 'owned', status: 'committed', result: { job_id: 'paid-job' } };
+const owned = { ...session, id: 'owned', title: 'Exact image conversation', drafts: [recoveryDraft] };
+const other = { ...session, id: 'other', drafts: [] };
+const recoveryJob = { id: 'paid-job', status: 'unknown', outputs: [], error: 'Raw provider uncertainty' };
+const oldJournal = [{ request_id: 'paid-request', kind: 'commit', draft_id: 'paid-draft' }];
+const resetRecovery = () => { store.setState({ selected: '', newChat: true, working: false, sessions: {}, drafts: {}, imageJobs: {}, operations: { 'paid-request': { request_id: 'paid-request', kind: 'image_generation', status: 'unknown', result: { job_id: 'paid-job' } } }, pending: oldJournal, input: 'Keep local composer', recoveryFocus: null, localRecovery: null, recoveryErrors: {} }); memory.set('lore-agent-request-recovery-v1', JSON.stringify(oldJournal)); calls.length = 0; };
+api.operation = async id => { calls.push('GET operation'); return { request_id: id, kind: 'image_generation', status: 'unknown', result: { draft_id: recoveryDraft.id, job_id: recoveryJob.id } }; };
+api.draft = async id => { calls.push('GET draft'); assert.equal(id, recoveryDraft.id); return recoveryDraft; };
+api.sessions = async () => { calls.push('GET sessions'); return [other, owned]; };
+api.session = async id => { calls.push('GET session ' + id); return id === owned.id ? owned : other; };
+api.imageJob = async id => { calls.push('GET job'); assert.equal(id, recoveryJob.id); return recoveryJob; };
+resetRecovery(); store.setState({ working: true });
+await actions.openRecovery(imageRecoveryTargets(store.getState())[0]);
+assert.equal(store.getState().selected, 'owned'); assert.equal(store.getState().working, true);
+assert.equal(store.getState().input, 'Keep local composer'); assert.equal(store.getState().recoveryFocus.jobId, 'paid-job');
+assert.deepEqual(store.getState().pending, oldJournal); assert.deepEqual(JSON.parse(memory.get('lore-agent-request-recovery-v1')), oldJournal);
+assert.deepEqual(selectedImageJobs(store.getState()).map(j => j.id), ['paid-job']);
+actions.selectSession('other'); assert.deepEqual(selectedImageJobs(store.getState()), []);
+assert.ok(calls.every(c => c.startsWith('GET')));
+// A second explicit same-session click has a new focus token.
+store.setState({ working: false }); await actions.openRecovery(imageRecoveryTargets(store.getState())[0]);
+const token = store.getState().recoveryFocus.token;
+await actions.openRecovery(imageRecoveryTargets(store.getState())[0]); assert.ok(store.getState().recoveryFocus.token > token);
+// Job-only recovery must inspect exact draft links, not first listed session.
+resetRecovery(); store.setState({ pending: [{ request_id: 'job-only', kind: 'registration', image_job_id: 'paid-job' }], operations: {} });
+api.operation = async id => ({ request_id: id, status: 'unknown', kind: 'image_generation', result: null });
+await actions.openRecovery(imageRecoveryTargets(store.getState())[0]); assert.equal(store.getState().selected, 'owned');
+assert.ok(calls.includes('GET session other')); assert.ok(calls.includes('GET session owned'));
+// Ambiguous exact ownership fails closed; no invented session selection.
+api.sessions = async () => [owned, { ...other, drafts: [recoveryDraft] }];
+api.session = async id => ({ ...(id === owned.id ? owned : other), drafts: [recoveryDraft] });
+actions.newChat(); await actions.openRecovery(imageRecoveryTargets(store.getState())[0]);
+assert.equal(store.getState().selected, ''); assert.ok(store.getState().recoveryErrors['job-only']);
+api.session = async id => id === owned.id ? owned : other;
+// Late recovery must not navigate after an explicit history/new-chat intent.
+resetRecovery(); let releaseRecovery; let operationReads = 0;
+api.operation = async id => { operationReads++; await new Promise(resolve => { releaseRecovery = resolve; }); return { request_id: id, kind: 'image_generation', status: 'unknown', result: null }; };
+const recovering = actions.openRecovery(imageRecoveryTargets(store.getState())[0]);
+await actions.openRecovery(imageRecoveryTargets(store.getState())[0]); assert.equal(operationReads, 1);
+actions.selectSession('other'); releaseRecovery(); await recovering;
+assert.equal(store.getState().selected, 'other'); assert.equal(store.getState().recoveryFocus, null);
+resetRecovery(); const sameBlank = actions.openRecovery(imageRecoveryTargets(store.getState())[0]); actions.newChat(); releaseRecovery(); await sameBlank;
+assert.equal(store.getState().selected, ''); assert.equal(store.getState().recoveryFocus, null);
+// 404/network failures retain the request and offer a retry, never POST.
+api.operation = async id => ({ request_id: id, kind: 'image_generation', status: 'unknown', result: null });
+for (const error of [new AgentHttpError(404), new TypeError('GET failed')]) {
+  resetRecovery(); api.draft = async () => { throw error; };
+  await actions.openRecovery(imageRecoveryTargets(store.getState())[0]);
+  assert.equal(store.getState().selected, ''); assert.equal(store.getState().recoveryErrors['paid-request'], 'agent.recoveryFailed');
+  assert.equal(store.getState().pending.length, 1); assert.equal(store.getState().recoveryLoading, '');
+}
+// An external sessionless draft has an honest local request view, no create.
+resetRecovery(); api.draft = async () => ({ ...recoveryDraft, session_id: null });
+await actions.openRecovery(imageRecoveryTargets(store.getState())[0]);
+assert.equal(store.getState().selected, ''); assert.equal(store.getState().localRecovery.jobId, 'paid-job');
+assert.equal(store.getState().recoveryFocus.jobId, 'paid-job'); assert.ok(calls.every(c => c.startsWith('GET')));
+console.log('PASS actionable image recovery: exact old-journal draft/session/job, job-only search, ambiguity/404/network errors, same-session focus tokens, stale selection fences, independent singleflight, local external request, preserved composer/journal, zero POST');
+// A simultaneous background refresh must not turn an explicit request jump into a dead first click.
+resetRecovery();
+const freshOwned = { ...owned, messages: [{ id: 'fresh-cache', role: 'assistant', content: 'Newer verified session cache' }] };
+api.operation = async id => ({ request_id: id, kind: 'image_generation', status: 'unknown', result: { job_id: 'paid-job' } });
+api.draft = async () => recoveryDraft;
+api.sessions = async () => [freshOwned];
+let releaseOldSession;
+api.session = async () => new Promise(resolve => { releaseOldSession = resolve; });
+const duringRefresh = actions.openRecovery(imageRecoveryTargets(store.getState())[0]);
+for (let i = 0; i < 20 && !releaseOldSession; i++) await Promise.resolve();
+assert.ok(releaseOldSession, 'navigation reached held session GET');
+await actions.refresh();
+assert.equal(store.getState().sessions.owned.messages[0].id, 'fresh-cache');
+releaseOldSession(owned); await duringRefresh;
+assert.equal(store.getState().selected, 'owned', 'explicit jump survives a newer GET-only cache hydration');
+assert.equal(store.getState().sessions.owned.messages[0].id, 'fresh-cache', 'old navigation GET never overwrites fresh messages');
+assert.equal(store.getState().recoveryFocus.jobId, 'paid-job');
+assert.equal(store.getState().recoveryErrors['paid-request'], '');
+assert.deepEqual(store.getState().pending, oldJournal);
+assert.ok(calls.every(c => c.startsWith('GET')));
+console.log('PASS first-click recovery during background refresh: current exact-linked cache wins without blocking navigation or replaying requests');

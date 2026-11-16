@@ -1,4 +1,13 @@
 {
+  "agent.imageRequestSubmitted": "생성 요청 전송됨",
+  "agent.imageRequestUnknown": "미확정 이미지 요청",
+  "agent.imageRequestNoOutput": "아직 생성 결과가 확인되지 않았습니다.",
+  "agent.imageRequestUnresolved": "이미지 요청의 완료 여부를 확인해야 합니다.",
+  "agent.viewImageRequest": "해당 대화에서 요청 보기",
+  "agent.recoveryOpening": "요청 확인 중…",
+  "agent.recoveryFailed": "요청을 열지 못했습니다. 다시 확인해 주세요.",
+  "agent.recoveryRetry": "다시 요청 보기",
+  "agent.localImageRequest": "연결된 대화를 확인하지 못했습니다. 요청은 여기에서 확인할 수 있습니다.",
   "agent.imageLoading": "이미지 불러오는 중…",
   "agent.existingImages": "기존 이미지",
   "agent.noExistingImages": "기존 이미지가 없습니다.",

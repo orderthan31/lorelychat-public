@@ -56,7 +56,11 @@ moved.resolve({id:'s',messages:[],drafts:[],image_contexts:[context],busy:true})
 post.reject(new Error('lost'));await fourth;assert.equal(store.getState().pending.length,1);
 const {selectedImageJobs}=module.exports;
 store.setState({selected:'s',drafts:{a:{session_id:'s',result:{job_id:'own'},after:{}},b:{session_id:'other',result:{job_id:'private'},after:{}},r:{session_id:null,kind:'image_registration',result:null,after:{job_id:'registration'}}},pending:[{kind:'registration',request_id:'p',image_job_id:'orphan'}],imageJobs:Object.fromEntries(['own','private','registration','orphan','unlinked'].map(id=>[id,{id}]))});
-assert.deepEqual(selectedImageJobs(store.getState()).map(j=>j.id),['own','registration','orphan']);
+assert.deepEqual(selectedImageJobs(store.getState()).map(j=>j.id),['own','registration']);
+assert.equal(module.exports.imageRecoveryTargets(store.getState())[0].jobId, 'orphan', 'unowned journal stays accessible in the visible recovery notice, not another conversation transcript');
+store.setState({ localRecovery: { key: 'p', jobId: 'orphan' } });
+assert.deepEqual(selectedImageJobs(store.getState()).map(j=>j.id), ['orphan'], 'explicit local request view isolates sessionless requests');
+store.setState({ localRecovery: null });
 // GET recovery remains usable during an unsettled POST; unknown paid IDs survive.
 reset(); api.sessions=async()=>[];
 const paid={request_id:'paid-unknown',kind:'commit',session_id:'s'};

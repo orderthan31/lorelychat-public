@@ -38,7 +38,10 @@ export function nativeProposalFields(draft: AgentDraft, form: Record<string, unk
 function matchProposal(actual: AgentDraft, expected: AgentDraft) {
   if (actual.id !== expected.id || actual.kind !== expected.kind || actual.target_id !== expected.target_id || actual.base_revision !== expected.base_revision || actual.version !== expected.version || actual.preview_hash !== expected.preview_hash) throw new Error('The proposal changed. Reopen it before saving; your edits have been retained.');
 }
+export type RecoveryTarget = { key: string; requestId?: string; sessionId?: string; draftId?: string; jobId?: string };
+export type RecoveryFocus = RecoveryTarget & { token: number };
 export type AgentState = {
+  recoveryLoading: string; recoveryErrors: Record<string, string>; recoveryFocus: RecoveryFocus | null; localRecovery: RecoveryTarget | null;
   surfaceMode: 'dock' | 'sheet';
   activeMessage: string | null;
   proposalRequest: NativeProposalRequest | null;
@@ -53,6 +56,7 @@ export type AgentState = {
 };
 export const useAgentStore = create<AgentState>((set) => ({
   surfaceMode: typeof window !== 'undefined' && window.matchMedia?.(AGENT_DOCK_QUERY).matches ? 'dock' : 'sheet',
+  recoveryLoading: '', recoveryErrors: {}, recoveryFocus: null, localRecovery: null,
   activeMessage: null, proposalRequest: null,
   open: false, settings: null, settingsError: '', error: '', refreshing: false, working: false, newChat: true,
   resources: [], imageChoices: {}, imageSelections: {}, sessions: {}, selected: '', input: '', contexts: [], drafts: {}, edits: {}, pending: recovered(), operations: {}, imageJobs: {},
@@ -155,14 +159,114 @@ function pollMessage(id: string, sessionId: string) {
   timer = setTimeout(() => void poll(), 2000);
   return stop;
 }
-// A job belongs to the conversation that staged it, not to the global cache.
-// Unresolved registration journals remain reachable even without a session.
+const stringId = (value: unknown) => typeof value === 'string' && value ? value : undefined;
+function draftJob(draft?: AgentDraft) { return stringId(draft?.result?.job_id) || stringId(draft?.after.job_id); }
+export function imageRecoveryTargets(s: AgentState): RecoveryTarget[] {
+  const targets: RecoveryTarget[] = [];
+  for (const pending of s.pending) {
+    if (pending.request_id === s.activeMessage) continue;
+    const operation = s.operations[pending.request_id];
+    const draftId = pending.draft_id || stringId(operation?.result?.draft_id);
+    const draft = draftId ? s.drafts[draftId] : undefined;
+    const jobId = pending.image_job_id || stringId(operation?.result?.job_id) || draftJob(draft);
+    if (!jobId && !draft?.kind.startsWith('image_') && !operation?.kind?.includes('image') && pending.kind !== 'registration') continue;
+    if (operation?.status === 'running' && s.working) continue;
+    targets.push({ key: pending.request_id, requestId: pending.request_id, sessionId: pending.session_id || draft?.session_id || undefined, draftId, jobId });
+  }
+  for (const job of Object.values(s.imageJobs)) {
+    if (job.status !== 'unknown' || targets.some(t => t.jobId === job.id)) continue;
+    const linked = Object.values(s.drafts).filter(d => draftJob(d) === job.id);
+    const owners = [...new Set(linked.map(d => d.session_id).filter(Boolean))];
+    targets.push({ key: `job:${job.id}`, jobId: job.id, ...(owners.length === 1 ? { sessionId: owners[0]! } : {}), ...(linked.length === 1 ? { draftId: linked[0].id } : {}) });
+  }
+  return targets.filter((target, i) => !targets.slice(0, i).some(other => target.jobId ? other.jobId === target.jobId : target.draftId ? other.draftId === target.draftId : other.key === target.key));
+}
+// A sessionless receipt is not permission to expose another conversation's job.
 export function selectedImageJobs(s: AgentState): ImageJob[] {
-  const linked = new Set(Object.values(s.drafts).filter(d => d.session_id === s.selected || (!d.session_id && d.kind === 'image_registration')).flatMap(d => [d.result?.job_id, d.after.job_id]));
-  for (const p of s.pending) if (p.image_job_id && (!p.session_id || p.session_id === s.selected)) linked.add(p.image_job_id);
+  if (s.localRecovery) return Object.values(s.imageJobs).filter(job => job.id === s.localRecovery?.jobId);
+  const linked = new Set(Object.values(s.drafts).filter(d => d.session_id === s.selected && !!s.selected || (!d.session_id && d.kind === 'image_registration')).map(draftJob));
+  for (const p of s.pending) if (p.image_job_id && p.session_id === s.selected && !!s.selected) linked.add(p.image_job_id);
+  if (s.recoveryFocus?.sessionId === s.selected && s.recoveryFocus.jobId) linked.add(s.recoveryFocus.jobId);
   return Object.values(s.imageJobs).filter(job => linked.has(job.id));
 }
+let recoveryToken = 0;
 export const agentActions = {
+  selectSession(id: string) {
+    selectionEpoch++;
+    set({ selected: id, newChat: !id, localRecovery: null, recoveryFocus: null });
+  },
+  async openRecovery(target: RecoveryTarget) {
+    if (state().recoveryLoading) return;
+    const epoch = selectionEpoch;
+    const versions = new Map(sessionVersions);
+    const owns = () => selectionEpoch === epoch;
+    set(s => ({ recoveryLoading: target.key, recoveryErrors: { ...s.recoveryErrors, [target.key]: '' } }));
+    try {
+      let { sessionId, draftId, jobId } = target;
+      const exact = (a: string | undefined, b: string | undefined) => {
+        if (a && b && a !== b) throw new Error('Conflicting linkage');
+        return a || b;
+      };
+      if (target.requestId) {
+        try {
+          const operation = await agentApi.operation(target.requestId);
+          if (operation.request_id !== target.requestId) throw new Error('Mismatched receipt');
+          draftId = exact(draftId, stringId(operation.result?.draft_id));
+          jobId = exact(jobId, stringId(operation.result?.job_id));
+          sessionId = exact(sessionId, stringId(operation.result?.session_id));
+        } catch (error) {
+          if (!(error instanceof AgentHttpError && error.status === 404 && (draftId || jobId))) throw error;
+        }
+      }
+      let draft: AgentDraft | undefined;
+      if (draftId) {
+        draft = await agentApi.draft(draftId);
+        if (draft.id !== draftId || !draft.kind.startsWith('image_')) throw new Error('Mismatched draft');
+        sessionId = exact(sessionId, draft.session_id || undefined);
+        jobId = exact(jobId, draftJob(draft));
+      }
+      let session: AgentSession | undefined;
+      if (!sessionId && jobId && !draft) {
+        // Search exact relationships, never labels, ordering or target resource IDs.
+        const listed = await agentApi.sessions();
+        const candidates = new Map([...Object.values(state().sessions), ...listed].map(s => [s.id, s]));
+        const matches: AgentSession[] = [];
+        for (const id of candidates.keys()) {
+          if (!owns()) return;
+          const candidate = await agentApi.session(id);
+          if (candidate.id !== id) throw new Error('Mismatched session');
+          if (candidate.drafts.some(d => draftJob(d) === jobId)) matches.push(candidate);
+        }
+        if (matches.length > 1) throw new Error('Ambiguous linkage');
+        if (matches.length === 1) { session = matches[0]; sessionId = session.id; }
+      }
+      if (sessionId) {
+        session ||= await agentApi.session(sessionId);
+        if (session.id !== sessionId) throw new Error('Mismatched session');
+        if (draft && draft.session_id !== sessionId) throw new Error('Mismatched draft owner');
+        if (!draft && !session.drafts.some(d => draftJob(d) === jobId)) throw new Error('Missing exact linkage');
+      }
+      if (!draftId && !jobId) throw new Error('Missing linkage');
+      const job = jobId ? await agentApi.imageJob(jobId) : undefined;
+      if (job && job.id !== jobId) throw new Error('Mismatched job');
+      if (!owns()) return;
+      // A background GET may already have hydrated this same conversation.
+      // Keep that newer cache, but do not discard the user's explicit jump.
+      if (session && sessionVersions.get(session.id) !== versions.get(session.id)) {
+        const current = state().sessions[session.id];
+        const linked = current?.drafts.some(d => draftId ? d.id === draftId && (!jobId || draftJob(d) === jobId) : draftJob(d) === jobId);
+        if (!current || !linked) throw new Error('Newer session no longer has the exact request');
+        session = current;
+        draft = undefined; // Never overwrite a newer draft with a staged GET.
+      } else if (session) acceptSession(session);
+      if (draft) acceptDraft(draft);
+      if (job) set(s => ({ imageJobs: { ...s.imageJobs, [job.id]: job } }));
+      const resolved = { ...target, sessionId, draftId, jobId };
+      set({ selected: sessionId || '', newChat: !sessionId, open: true, localRecovery: sessionId ? null : resolved, recoveryFocus: { ...resolved, token: ++recoveryToken } });
+    } catch {
+      if (owns()) set(s => ({ recoveryErrors: { ...s.recoveryErrors, [target.key]: 'agent.recoveryFailed' } }));
+    } finally { set({ recoveryLoading: '' }); }
+  },
   openProposal(draft: AgentDraft) {
     if (state().working || (draft.kind !== 'character' && draft.kind !== 'world') || !['draft', 'approved'].includes(draft.status)) return;
     // Opening is local navigation intent only. The native editor performs GETs.
@@ -227,7 +331,7 @@ export const agentActions = {
   newChat: () => {
     // Explicit new-chat intent also fences a creation begun from the blank view.
     selectionEpoch++;
-    set({ selected: '', newChat: true, error: '' });
+    set({ selected: '', newChat: true, error: '', localRecovery: null, recoveryFocus: null });
   },
   createSession: () => guarded(async () => {
     if (conversationPending(state())) return;
@@ -250,7 +354,7 @@ export const agentActions = {
         acceptSession(session); sessionId = session.id;
         forget(creationId);
         if (selectionEpoch !== epoch) return;
-        set({ selected: sessionId, newChat: false }); epoch = selectionEpoch;
+        set({ selected: sessionId, newChat: false, localRecovery: null, recoveryFocus: null }); epoch = selectionEpoch;
       } catch (error) {
         if (error instanceof AgentHttpError && error.status < 500) forget(creationId);
         throw error;
@@ -293,7 +397,11 @@ export const agentActions = {
       const imageJobId = operation.result?.job_id;
       if (typeof imageJobId === 'string') await agentActions.loadImageJob(imageJobId);
       if (operation.status === 'completed' || operation.status === 'failed') forget(pending.request_id);
-      } catch (error) { set({ error: describe(error) }); }
+      } catch (error) {
+        const target = imageRecoveryTargets(state()).find(t => t.requestId === pending.request_id);
+        if (target) set(s => ({ recoveryErrors: { ...s.recoveryErrors, [target.key]: 'agent.recoveryFailed' } }));
+        else set({ error: describe(error) });
+      }
     }
     const versions = new Map(sessionVersions);
     const sessions = await agentApi.sessions();

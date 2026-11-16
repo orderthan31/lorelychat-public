@@ -1,4 +1,13 @@
 {
+  "agent.imageRequestSubmitted": "Generation request submitted",
+  "agent.imageRequestUnknown": "Unresolved image request",
+  "agent.imageRequestNoOutput": "No generated result has been verified yet.",
+  "agent.imageRequestUnresolved": "This image request still needs verification.",
+  "agent.viewImageRequest": "View request in conversation",
+  "agent.recoveryOpening": "Opening request…",
+  "agent.recoveryFailed": "Could not open the request. Please check again.",
+  "agent.recoveryRetry": "Try viewing request again",
+  "agent.localImageRequest": "No linked conversation was found. You can review this request here.",
   "agent.imageLoading": "Loading image…",
   "agent.existingImages": "Existing images",
   "agent.noExistingImages": "No existing images.",

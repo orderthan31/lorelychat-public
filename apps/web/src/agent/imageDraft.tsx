@@ -44,8 +44,8 @@ export function ImageDraftCard({ draft }: { draft: AgentDraft }) {
   const confirmed = !needsChoice || plan.owner_choice_confirmed === true;
   const ready = !!context && !!savedMode && confirmed && !choiceDirty && !dirty && !unsupported && (savedMode !== 'reference' || (!!reference && !!candidate?.available && previewReady));
   const selectedLabel = candidates.find(c => c.id === reference?.source_id)?.label || t('agent.referencePreview');
-  return <article className="agent-draft agent-image-plan" data-agent-draft={draft.id}>
-    <h3>{t('agent.kind.image_generation')} · {t(`agent.status.${draft.status}` as UiMessageKey)} · v{draft.version}</h3>
+  return <article className="agent-draft agent-image-plan" data-agent-draft={draft.id} tabIndex={-1} aria-labelledby={`agent-draft-heading-${draft.id}`}>
+    <h3 id={`agent-draft-heading-${draft.id}`}>{t('agent.kind.image_generation')} · {t(draft.status === 'committed' ? 'agent.imageRequestSubmitted' : `agent.status.${draft.status}` as UiMessageKey)} · v{draft.version}</h3>
     <p>{t('agent.target')}: {s.resources.find(r => r.kind === kind && r.id === target)?.label || target}</p>
     <p>{t('agent.imageModel')}: {model?.label || String(plan.model_id || '—')} · {account?.alias || String(plan.provider_account_id || '—')}</p>
     <p>{t('agent.imageCount')}: {String(plan.count || 1)}</p>

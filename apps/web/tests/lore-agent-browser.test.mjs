@@ -103,8 +103,13 @@ async function setup(width, height, locale = 'en') {
       }
       if (suffix.startsWith('/drafts/')) {
         const [, , id, action] = suffix.split('/'); const draft = state.drafts[id];
-        if (!draft) return json({},404);
-        if (action === 'reference') return route.fulfill({ body: image, contentType: 'image/webp' });
+        if (state.holdDraft === id) await new Promise(resolve => { state.releaseDraft = resolve; });
+        if (state.failDraft === id) return json({}, 503);
+        if (!draft || state.missingDraft === id) return json({},404);
+        if (action === 'reference') {
+          if (state.holdThumbnails) await new Promise(resolve => { (state.thumbnailReleases ||= []).push(resolve); });
+          return route.fulfill({ body: image, contentType: 'image/webp' });
+        }
         if (action === 'image-choice') { assert.equal(body.expected_version, draft.version); draft.version++; draft.status = 'draft'; draft.after.generation_mode = body.generation_mode; draft.after.owner_choice_confirmed = true; draft.after.reference = body.generation_mode === 'reference' ? { source_id: body.reference_id, snapshot_id: 'snapshot-' + draft.version, sha256: 'fixture-digest', mime_type: 'image/webp' } : null; draft.preview_hash = `hash-${id}-${draft.version}`; }
         if (action === 'revise') { assert.equal(body.expected_version, draft.version); draft.version++; draft.after = { ...draft.after, ...body.fields }; if (draft.kind === 'image_generation' && draft.after.image_context.has_existing_images) { draft.after.generation_mode = 'undecided'; draft.after.owner_choice_confirmed = false; draft.after.reference = null; } draft.preview_hash = `hash-${id}-${draft.version}`; draft.status = 'draft'; }
         if (action === 'approve' || action === 'commit') { assert.equal(body.expected_version, draft.version); assert.equal(body.preview_hash, draft.preview_hash); }
@@ -118,6 +123,7 @@ async function setup(width, height, locale = 'en') {
         }
         return json(draft);
       }
+      if (method === 'GET' && /^\/image-jobs\/[^/]+$/.test(suffix) && state.jobs[suffix.split('/').at(-1)]) return json(state.jobs[suffix.split('/').at(-1)]);
       if (suffix === '/image-jobs/jw') return json(state.jobs.jw);
       if (suffix === '/image-jobs/jw/registration') {
         assert.equal(body.target_kind, 'world'); assert.equal(body.target_id, 'w-new'); assert.deepEqual(body.output_ids, ['ow2']); assert.deepEqual(body.metadata, {});
@@ -328,9 +334,100 @@ async function verifyPendingRecovery() {
   console.log('PASS pending image recovery 390: usable history under POST, independent slow GET singleflight, retained unknown journal, new text/new chat, stale POST composer fence, no paid/replayed POST');
   assertions++;await page.close();
 }
+async function verifyRecoveryNavigation(width, height, locale) {
+  const { page, state } = await setup(width, height, locale);
+  const local = JSON.parse(readFileSync(`src/i18n/messages.${locale}.json`, 'utf8'));
+  Object.assign(state.settings, { enabled: true, llm_model_option_key: 'agent-llm' });
+  state.sessions = [{ id: 's2', title: 'Unrelated history', messages: [], busy: false }, { id: 's1', title: 'Named portrait conversation', messages: Array.from({ length: 30 }, (_, i) => ({ id: `r-${i}`, role: 'assistant', content: 'Synthetic long conversation. '.repeat(12) })), busy: false }];
+  const plan = { id: 'recovery-plan', session_id: 's1', kind: 'image_generation', target_id: 'c1', version: 1, base_revision: null, before: null, after: { target_kind: 'character', target_id: 'c1', provider_account_id: 'a', model_id: 'gpt-image-1.5', prompt: 'Synthetic portrait', count: 1, generation_mode: 'new', owner_choice_confirmed: true, image_context: { has_existing_images: false, requires_choice: false, candidates: [] } }, changes: {}, preview_hash: 'synthetic', status: 'committed', warnings: [], result: { job_id: 'recovery-job' } };
+  plan.after.generation_mode = 'reference';
+  plan.after.reference = { source_id: 'avatar', snapshot_id: 'snapshot', sha256: 'synthetic', mime_type: 'image/webp' };
+  plan.after.image_context = { has_existing_images: true, requires_choice: true, candidates: Array.from({ length: 4 }, (_, i) => ({ id: i ? `asset-${i}` : 'avatar', label: `Synthetic reference ${i}`, kind: 'asset', available: true })) };
+  state.holdThumbnails = true;
+  state.drafts[plan.id] = plan;
+  state.jobs['recovery-job'] = { id: 'recovery-job', plan: plan.after, status: 'unknown', outputs: [], error: 'Raw provider uncertainty' };
+  // A trailing completed result prevents a false pass from merely going to bottom.
+  state.drafts.trailing = { ...plan, id: 'trailing', result: { job_id: 'trailing-job' } };
+  state.jobs['trailing-job'] = { id: 'trailing-job', plan: plan.after, status: 'completed', outputs: Array.from({ length: 4 }, (_, i) => ({ id: `trailing-${i}` })), error: null };
+  const journal = [{ request_id: 'recovery-request', kind: 'commit', draft_id: plan.id, ...(width === 390 ? {} : { session_id: 's1' }) }];
+  state.operations['recovery-request'] = { request_id: 'recovery-request', kind: 'image_generation', status: 'unknown', result: { draft_id: plan.id, job_id: 'recovery-job' }, error: 'Raw provider uncertainty' };
+  await page.addInitScript(journal => sessionStorage.setItem('lore-agent-request-recovery-v1', JSON.stringify(journal)), journal);
+  await page.goto(origin + '/settings'); await page.locator('.agent-launcher').click();
+  const panel = page.locator('.agent-surface'), notice = panel.locator('.agent-recovery-notice'), transcript = panel.locator('.agent-transcript');
+  const input = panel.getByLabel(local['agent.message']);
+  const refresh = panel.locator('.agent-composer').getByRole('button', { name: local['agent.refresh'], exact: true });
+  const view = () => notice.getByRole('button');
+  const job = panel.locator('[data-agent-image-job=recovery-job]');
+  const advanced = panel.getByText(local['agent.chatAdvanced'], { exact: true });
+  const history = panel.getByLabel(local['agent.sessions']);
+  await expect(refresh).toBeEnabled();
+  await expect(notice).toContainText('Named portrait conversation');
+  await expect(view()).toHaveText(local['agent.viewImageRequest']);
+  await expect(view()).toBeInViewport();
+  await expect(panel.locator('.agent-advanced')).not.toHaveAttribute('open');
+  await expect(job).toHaveCount(0);
+  await input.fill('Keep my unsent composer');
+  await expect(panel.locator('.agent-composer button[type=submit]')).toBeEnabled();
+  if (artifacts) await page.screenshot({ path: `${artifacts}/recovery-notice-${width}.png` });
+  await view().click();
+  await expect(job).toBeFocused(); await expect(job.locator('h3')).toBeInViewport();
+  await expect(panel.locator('[data-agent-draft=recovery-plan] h3')).toContainText(local['agent.imageRequestSubmitted']);
+  await expect(panel.locator('[data-agent-draft=recovery-plan] h3')).not.toContainText(local['agent.status.committed']);
+  await expect(job).toContainText(local['agent.imageRequestNoOutput']); await expect(job.locator('img')).toHaveCount(0);
+  await expect(panel.getByText('Raw provider uncertainty', { exact: true })).toHaveCount(0);
+  await expect(input).toHaveValue('Keep my unsent composer');
+  await expect(history).toHaveValue('s1');
+  await expect.poll(() => transcript.evaluate(n => n.scrollHeight - n.scrollTop - n.clientHeight)).toBeGreaterThan(100);
+  // Real late reference/snapshot decoding above the target must retain its anchor.
+  await expect.poll(() => state.thumbnailReleases?.length || 0).toBeGreaterThan(0);
+  const anchorTop = await job.evaluate(n => n.getBoundingClientRect().top);
+  const priorHeight = await transcript.evaluate(n => n.scrollHeight);
+  state.holdThumbnails = false; for (const release of state.thumbnailReleases) release();
+  await expect.poll(() => panel.locator('[data-agent-draft=recovery-plan] img').evaluateAll(nodes => nodes.length === 5 && nodes.every(n => n.complete && n.naturalWidth > 0))).toBe(true);
+  await expect.poll(() => transcript.evaluate(n => n.scrollHeight)).toBeGreaterThan(priorHeight);
+  await expect.poll(() => job.evaluate(n => n.getBoundingClientRect().top)).toBeCloseTo(anchorTop, 0);
+  await expect(job).toBeFocused();
+  await expect(job.locator('h3')).toBeInViewport();
+  if (artifacts) await page.screenshot({ path: `${artifacts}/recovery-focus-${width}.png` });
+  // Same-session explicit navigation restores focus and position after manual reading.
+  await transcript.evaluate(n => { n.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -100 })); n.scrollTop = 100; n.dispatchEvent(new Event('scroll')); });
+  await view().click(); await expect(job).toBeFocused(); await expect(job.locator('h3')).toBeInViewport();
+  // Background readback retains manual reading, no repeat focus/navigation.
+  await transcript.evaluate(n => { n.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -100 })); n.scrollTop = 100; n.dispatchEvent(new Event('scroll')); });
+  await refresh.click(); await expect(refresh).toBeEnabled();
+  assert.ok(Math.abs(await transcript.evaluate(n => n.scrollTop) - 100) < 4);
+  await advanced.click(); await panel.getByText(local['agent.history'], { exact: true }).click();
+  await history.selectOption('s2'); await advanced.click(); await expect(job).toHaveCount(0);
+  await view().click(); await expect(history).toHaveValue('s1'); await expect(job).toBeFocused();
+  // A held GET belongs to its explicit selection epoch, not a later history view.
+  state.holdDraft = plan.id; await view().click();
+  await expect.poll(() => typeof state.releaseDraft).toBe('function'); await expect(view()).toBeDisabled();
+  await advanced.click(); await history.selectOption('s2'); await advanced.click();
+  state.holdDraft = null; state.releaseDraft(); await expect(view()).toBeEnabled();
+  await expect(history).toHaveValue('s2'); await expect(job).toHaveCount(0);
+  // Missing and failed GETs show a live retry without changing conversation.
+  for (const failure of ['missingDraft', 'failDraft']) {
+    await advanced.click(); await history.selectOption('s2'); await advanced.click();
+    state[failure] = plan.id; await view().click();
+    await expect(notice.getByRole('alert')).toHaveText(local['agent.recoveryFailed']);
+    await expect(view()).toHaveText(local['agent.recoveryRetry']); await expect(history).toHaveValue('s2');
+    state[failure] = null; await view().click(); await expect(job).toBeFocused();
+    await expect(notice.getByRole('alert')).toHaveCount(0);
+    await panel.getByRole('button', { name: local['agent.newSession'], exact: true }).click();
+    await expect(history).toHaveValue(''); await expect(job).toHaveCount(0);
+    await expect(panel.locator('.agent-composer button[type=submit]')).toBeEnabled();
+  }
+  assert.deepEqual(await page.evaluate(() => JSON.parse(sessionStorage.getItem('lore-agent-request-recovery-v1'))), journal);
+  assert.equal(state.writes.length, 0, 'all request navigation, retry, refresh and new-chat actions are GET/local only');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  assert.deepEqual(state.errors, []);
+  console.log(`PASS recovery navigation ${locale} ${width}: visible notice from blank/other history, exact named session, long-history target focus not bottom, same-session focus, old journal, 404/503 retry, stale selection fence, preserved composer/journal, zero writes`);
+  assertions++; await page.close();
+}
 try {
+  for (const profile of [[390,844,'ko'], [820,1180,'en']]) await verifyRecoveryNavigation(...profile);
   await verifyPendingRecovery();
-  for (const profile of [[320,740,'ko'],[390,844,'en'],[820,1180,'ja'],[1440,1000,'en']]) await verifyImageFeedback(...profile);
+  for (const profile of (process.env.AGENT_IMAGE_ONLY ? [[390,844,'ko'],[820,1180,'ja']] : [[320,740,'ko'],[390,844,'en'],[820,1180,'ja'],[1440,1000,'en']])) await verifyImageFeedback(...profile);
   for (const [width,height] of (process.env.AGENT_IMAGE_ONLY ? [] : [[390,844],[1440,1000]])) {
     const { page, state, navigate } = await setup(width,height);
     await page.goto(origin + '/settings/lore-agent');
