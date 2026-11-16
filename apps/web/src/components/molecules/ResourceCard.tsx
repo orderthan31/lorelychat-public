@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { Button, type ButtonProps } from '../atoms';
 import { cn } from '../../lib/utils';
-import { PanelRightOpen } from 'lucide-react';
+
 
 export type ResourceCardProps = {
   variant?: 'row' | 'media';
@@ -12,10 +12,7 @@ export type ResourceCardProps = {
   media?: ReactNode;
   actions?: ReactNode;
   onOpen: () => void;
-  onPreview?: () => void;
-  previewLabel?: string;
-  previewPlacement?: 'footer' | 'actions';
-  selected?: boolean;
+
   openLabel?: string;
   className?: string;
 };
@@ -29,24 +26,21 @@ export function ResourceCard({
   media,
   actions,
   onOpen,
-  onPreview,
-  previewLabel,
-  previewPlacement = 'footer',
-  selected = false,
+
   openLabel,
   className,
 }: ResourceCardProps) {
   const isMedia = variant === 'media';
-  const inlinePreview = !!onPreview && previewPlacement === 'actions';
+
 
   return <article
     className={cn(
       'group relative h-full min-w-0 overflow-hidden rounded-xl border border-border bg-card text-foreground shadow-[0_1px_2px_rgba(15,23,42,.06)] transition-colors hover:border-primary/45',
       className,
-      onPreview && !inlinePreview && 'resource-card-with-preview',
+
     )}
     data-resource-card={variant}
-    data-selected={selected || undefined}
+
   >
     <button
       type="button"
@@ -70,10 +64,9 @@ export function ResourceCard({
         {meta && <span className="mt-auto flex w-full min-w-0 items-center justify-between gap-3 overflow-hidden pt-0.5 text-xs leading-4 text-muted-foreground">{meta}</span>}
       </span>
     </button>
-    {onPreview && !inlinePreview && <button type="button" className="resource-preview-toggle" data-resource-preview aria-pressed={selected} onClick={onPreview}>{previewLabel}</button>}
-    {(actions || inlinePreview) && <div className="absolute right-2 top-2 z-10 flex items-center gap-1" data-resource-actions data-resource-actions-inline={inlinePreview || undefined}>
+    {actions && <div className="absolute right-2 top-2 z-10 flex items-center gap-1" data-resource-actions>
       {actions}
-      {inlinePreview && <button type="button" className="resource-preview-action" data-resource-preview aria-label={previewLabel} title={previewLabel} aria-pressed={selected} onClick={onPreview}><PanelRightOpen size={16} aria-hidden="true" /></button>}
+
     </div>}
   </article>;
 }

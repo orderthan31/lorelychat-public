@@ -9,7 +9,7 @@ import { genreModeLabel } from '../../utils/genre';
 import { avatarUrlFor, conversationThumbnailUrlFor, lorelyAppIconUrlForTheme } from '../../utils/assets';
 import { useUiStore } from '../../stores/uiStore';
 import { LIST_PAGE_SIZE } from '../../constants/domain';
-import { Button, Input } from '../../components/atoms';
+import { Input } from '../../components/atoms';
 import { ResourceWorkspace } from '../../components/molecules/ResourceWorkspace';
 import { Pager, ResourceCard, ResourceCardAction, ResourceListPendingBar } from '../../components/molecules';
 import { useI18n } from '../../i18n/I18nProvider';
@@ -101,7 +101,7 @@ export function ConversationsListView({ conversations = [], busy = false, naviga
   const worldById = useMemo(() => new Map(worldSettings.map((world) => [world.id, world])), [worldSettings]);
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+
   useEffect(() => setPage(1), [query, loadedConversations.length]);
 
   const filteredConversations = useMemo(() => {
@@ -114,20 +114,14 @@ export function ConversationsListView({ conversations = [], busy = false, naviga
   const maxPage = Math.max(1, Math.ceil(total / LIST_PAGE_SIZE));
   const safePage = Math.min(page, maxPage);
   const visibleConversations = filteredConversations.slice((safePage - 1) * LIST_PAGE_SIZE, safePage * LIST_PAGE_SIZE);
-  const selected = visibleConversations.find(room => room.id === selectedId);
+
 
   return <section className="panel page grid gap-3" aria-busy={conversationQuery.isFetching} data-page="conversations-list" data-modernized="uniform resource cards and corner actions suspense query">
     <h1 className="sr-only">{t('대화방 목록')}</h1>
     <Input aria-label={t('대화방 검색')} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('대화방명, 장르, 참여 캐릭터 검색')} />
     <ResourceListPendingBar pending={conversationQuery.isFetching} />
-    <ResourceWorkspace selectionKey={selected?.id} onClear={() => setSelectedId(null)} selection={selected && <>
-      <h2>{selected.title || t('이름 없는 대화방')}</h2>
-      <p>{selected.world_setting_id ? worldById.get(selected.world_setting_id)?.title : t('연결된 세계관 없음')}</p>
-      <ul className="resource-preview-cast">{participantCharactersFor(selected.participants, characterById).map(character => <li key={character.id}>{character.name || t('캐릭터')}</li>)}</ul>
-      <Button type="button" onClick={() => openConversation(selected.id)}>{t('대화 시작')}</Button>
-      <Button type="button" variant="ghost" onClick={() => navigate(`/conversations/${selected.id}/edit`)}>{t('편집')}</Button>
-    </>}>
-    <div className="grid items-stretch gap-2 sm:grid-cols-2 xl:grid-cols-3">
+    <ResourceWorkspace>
+    <div className="resource-list-grid grid items-stretch gap-2">
       {visibleConversations.map((c) => {
         const participantCount = participantCharactersFor(c.participants, characterById).length;
         const worldTitle = c.world_setting_id ? worldById.get(c.world_setting_id)?.title : '';
@@ -137,12 +131,12 @@ export function ConversationsListView({ conversations = [], busy = false, naviga
           title={<span className="flex min-w-0 items-center gap-2"><span className="truncate">{c.title || t('이름 없는 대화방')}</span>{!!c.has_unread && <b className="inline-flex h-5 w-5 flex-none items-center justify-center rounded-full bg-danger text-[11px] font-bold leading-none text-white" aria-label={formatUnreadCount(c.unread_count || 1, locale)}>{c.unread_count && c.unread_count > 9 ? '9+' : c.unread_count || ''}</b>}</span>}
           description={worldTitle ? `${t('세계관')} · ${worldTitle}` : t('연결된 세계관 없음')}
           descriptionLines={1}
-          meta={<span className="conversation-card-metadata"><span className="conversation-card-summary"><span className="min-w-0 truncate">{t(genreModeLabel(c.genre_mode) as UiMessageKey)}</span><span className="shrink-0">{formatUiCount(participantCount, 'people', locale)}</span></span><ParticipantProfiles participants={c.participants} characterById={characterById} /></span>}
+          meta={<span className="conversation-card-metadata"><span className="conversation-card-summary"><ParticipantProfiles participants={c.participants} characterById={characterById} /><span className="shrink-0">{formatUiCount(participantCount, 'people', locale)}</span></span><span className="conversation-card-genre">{t(genreModeLabel(c.genre_mode) as UiMessageKey)}</span></span>}
           media={<ConversationThumbnail conversation={c} />}
           actions={<><ResourceCardAction label={formatNamedAction(c.title || t('대화방'), 'edit', locale)} disabled={busy} onClick={() => navigate(`/conversations/${c.id}/edit`)}><Pencil aria-hidden="true" className="size-4" /></ResourceCardAction><ResourceCardAction label={formatNamedAction(c.title || t('대화방'), 'delete', locale)} variant="destructive" disabled={busy} onClick={(event) => deleteConversation(c.id, event)}><Trash2 aria-hidden="true" className="size-4" /></ResourceCardAction></>}
           openLabel={formatNamedAction(c.title || t('대화방'), 'open', locale)}
           onOpen={() => openConversation(c.id)}
-          onPreview={() => setSelectedId(c.id)} previewLabel={t('미리보기')} previewPlacement="actions" selected={selected?.id === c.id}
+
         />;
       })}
       {!visibleConversations.length && <div className="rounded-xl border border-dashed border-border py-10 text-center text-sm text-muted-foreground">{t('검색 결과가 없습니다.')}</div>}

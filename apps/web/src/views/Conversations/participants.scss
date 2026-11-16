@@ -1,34 +1,38 @@
 [data-page='conversations-list'] {
   .conversation-card-metadata {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
     width: 100%;
     min-width: 0;
     gap: 8px;
+    height: 24px;
   }
 
   .conversation-card-summary {
     display: flex;
-    min-width: 0;
+    flex: 0 0 auto;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    gap: 6px;
+    white-space: nowrap;
+  }
+
+  .conversation-card-genre {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .conversation-participant-profiles {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    gap: 4px;
-    min-height: 28px;
+    gap: 3px;
   }
 
   .conversation-participant-avatar {
-    width: 28px;
-    height: 28px;
-    flex: 0 0 28px;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
     border-radius: 50%;
     object-fit: cover;
     border: 1px solid var(--color-border);
@@ -37,11 +41,9 @@
   .conversation-participant-extra {
     display: grid;
     place-items: center;
-    min-width: 28px;
-    min-height: 28px;
-    border-radius: 50%;
-    background: var(--color-surface-muted);
-    color: var(--color-foreground);
-    font-weight: 600;
+    min-width: 22px;
+    height: 22px;
+    color: var(--color-muted-foreground);
+    font-size: 11px;
   }
 }

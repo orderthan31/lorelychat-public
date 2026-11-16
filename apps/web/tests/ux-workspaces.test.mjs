@@ -15,5 +15,5 @@ assert.match(models,/data-model-filter-toggle/,'mobile secondary filters have a 
 assert.match(models,/aria-expanded/,'filter state has accessible semantics');
 assert.match(models,/data-model-filter-fields/,'filter content is a distinct controlled region');
 assert.doesNotMatch(models,/statusBadge\(t, providerAccounts\[0\]\)/,'group readiness must not impersonate first account');
-const card=readFileSync('src/components/molecules/ResourceCard.tsx','utf8');assert.match(card,/onPreview/);assert.match(card,/data-resource-preview/);
-console.log('Adaptive workspaces: real unknown/zero formatter and scoped filter/preview contracts passed');
+const card=readFileSync('src/components/molecules/ResourceCard.tsx','utf8');assert.doesNotMatch(card,/onPreview|data-resource-preview/);
+console.log('Adaptive workspaces: real unknown/zero formatter and scoped filter/no-list-preview contracts passed');

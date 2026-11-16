@@ -244,7 +244,7 @@ try {
       for(const avatar of geometry.avatars) {
         assert.equal(overlap(avatar,geometry.media),false,'profiles are separate from room photo');
         assert.equal(overlap(avatar,geometry.controls),false,'profiles are separate from actions');
-        assert.ok(avatar.width>=35&&avatar.height>=35);
+        assert.ok(avatar.width>=22&&avatar.width<=24&&avatar.height>=22&&avatar.height<=24,'compact nonoverlapping participant portraits');
       }
       if(out&&width===390) await page.screenshot({path:`${out}/synthetic-participants-390.png`});
       checks.push({case:'participant metadata geometry',width,height,...geometry});

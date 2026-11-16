@@ -1,12 +1,17 @@
 /* Workspaces adapt the task, not just the number of card columns. */
 .resource-workspace, .resource-results { min-width: 0; }
-.resource-workspace { display: grid; gap: 16px; align-items: start; }
-.resource-inspector, .resource-preview-toggle { display: none; }
-.resource-preview-image { width: 100%; height: 220px; object-fit: contain; background: var(--surface-muted); }
-.resource-preview-prose { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
-.resource-preview-cast { padding-left: 20px; }
-.resource-inspector h2 { font-size: 18px; margin: 0; overflow-wrap: anywhere; }
-.resource-inspector p { margin: 0; }
+.resource-workspace { container: resource-list / inline-size; }
+.resource-list-grid { grid-template-columns: minmax(0,1fr); }
+@container resource-list (min-width: 640px) {
+  .resource-list-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@container resource-list (min-width: 1000px) {
+  .resource-list-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
+}
+/* Rooms reserve a separate 44px management column and readable cast row. */
+@container resource-list (max-width: 759px) {
+  [data-page="conversations-list"] .resource-list-grid { grid-template-columns: minmax(0,1fr); }
+}
 .resource-open-hint { margin-left: auto; font-size: 12px; color: var(--muted-foreground); }
 .conversation-cast-row { display: grid; grid-template-columns: minmax(0,1fr) 44px; grid-template-areas: "character remove" "role remove"; gap: 8px 10px; min-width: 0; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .conversation-cast-row[data-removable="false"] { grid-template-columns: minmax(0,1fr); grid-template-areas: "character" "role"; }
@@ -26,11 +31,7 @@
 [data-page="conversations-list"] [data-resource-card="media"] > button:first-child { grid-column: 1; grid-row: 1; grid-template-columns: 56px minmax(0,1fr); grid-template-rows: auto; align-items: center; gap: 10px; padding: 8px; }
 [data-page="conversations-list"] [data-resource-media] { width: 56px; height: 56px; aspect-ratio: 1; border: 1px solid var(--border); border-radius: 6px; }
 [data-page="conversations-list"] [data-resource-media] + span { padding: 0; }
-[data-page="conversations-list"] [data-resource-actions] { position: static; grid-column: 2; grid-row: 1; flex-direction: row; justify-content: center; align-items: center; gap: 0; padding: 0 2px 0 0; }
-[data-page="conversations-list"] .resource-preview-toggle { grid-column: 1 / -1; }
-.resource-preview-action { display: none; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border-radius: 8px; color: var(--muted-foreground); background: transparent; }
-.resource-preview-action:hover, .resource-preview-action[aria-pressed="true"] { color: var(--foreground); background: var(--surface-muted); }
-.resource-preview-action:focus-visible { outline: 2px solid var(--foreground); outline-offset: -2px; }
+[data-page="conversations-list"] [data-resource-actions] { position: static; grid-column: 2; grid-row: 1; flex-direction: column; justify-content: center; align-items: center; gap: 0; padding: 0 2px 0 0; }
 
 .model-search-toolbar { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 10px; }
 .model-filter-fields, .model-manual-fields { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,160px),1fr)); gap: 10px; min-width: 0; align-items: end; }
@@ -95,17 +96,7 @@
   .asset-workspace[data-asset-inspector="true"] .asset-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
 }
 
-@media (min-width: 960px) {
-  .resource-preview-action { display: inline-flex; }
-  .resource-workspace[data-has-selection="true"] { grid-template-columns: minmax(0,1fr) 280px; }
-  .resource-workspace[data-has-selection="true"] .resource-results > .grid { grid-template-columns: minmax(0,1fr); }
-  .resource-inspector { position: sticky; top: 76px; display: grid; gap: 14px; max-height: calc(100dvh - 100px); overflow-y: auto; padding: 0 0 16px 20px; border-left: 1px solid var(--border); min-width: 0; }
-  .resource-inspector > header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-  .resource-card-with-preview { display: grid; grid-template-rows: minmax(0,1fr) auto; }
-  .resource-preview-toggle { display: block; min-height: 44px; padding: 8px 12px; border-top: 1px solid var(--border); background: transparent; color: var(--muted-foreground); text-align: right; font-size: 12px; }
-  .resource-preview-toggle:hover, [data-resource-card][data-selected="true"] .resource-preview-toggle { color: var(--foreground); background: var(--surface-muted); }
-  .resource-preview-toggle:focus-visible { outline: 2px solid var(--foreground); outline-offset: -3px; }
-}
+
 @media (min-width: 1200px) {
   .statistics-panels { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .usage-metrics { grid-template-columns: repeat(4,minmax(0,1fr)); }

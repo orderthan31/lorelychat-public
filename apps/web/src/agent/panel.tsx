@@ -75,7 +75,7 @@ function ContextPicker() {
     {contexts.map((context, index) => <div key={index}>{context.kind} · {context.id} · {context.fields.join(', ')}<button type="button" onClick={() => useAgentStore.setState({ contexts: contexts.filter((_, i) => i !== index) })}>{t('삭제')}</button></div>)}
   </details>;
 }
-// In-memory only: retain reading position across dock/modal and open/close mounts.
+// In-memory only: retain reading position across routes and hidden surfaces.
 const readingPositions = new Map<string, { top: number; following: boolean }>();
 export function AgentPanel() {
   const { t } = useI18n(); const s = useAgentStore();
@@ -87,17 +87,23 @@ export function AgentPanel() {
   const transcript = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const sessionKey = s.selected || 'new';
+  const visible = s.open && !!s.settings?.enabled;
   useLayoutEffect(() => {
     const node = transcript.current;
-    if (!node) return;
+    if (!node || !visible) return;
     const saved = readingPositions.get(sessionKey);
     following.current = saved?.following ?? true;
     node.scrollTop = saved ? saved.top : node.scrollHeight;
-    return () => { readingPositions.set(sessionKey, { top: node.scrollTop, following: following.current }); };
-  }, [sessionKey]);
+    const observer = new ResizeObserver(() => {
+      const position = readingPositions.get(sessionKey);
+      node.scrollTop = following.current ? node.scrollHeight : position?.top ?? node.scrollTop;
+    });
+    observer.observe(node);
+    return () => { observer.disconnect(); readingPositions.set(sessionKey, { top: node.scrollTop, following: following.current }); };
+  }, [sessionKey, visible]);
   useLayoutEffect(() => {
-    if (transcript.current && following.current) transcript.current.scrollTop = transcript.current.scrollHeight;
-  }, [sessionKey, session?.messages.length, session?.messages.at(-1)?.content]);
+    if (visible && transcript.current && following.current) transcript.current.scrollTop = transcript.current.scrollHeight;
+  }, [sessionKey, visible, session?.messages.length, session?.messages.at(-1)?.content]);
   // Image result linkage also survives a route change or session GET recovery.
   useEffect(() => {
     for (const draft of Object.values(s.drafts)) {
@@ -115,6 +121,7 @@ export function AgentPanel() {
     </details>
     </div>
     <div className="agent-transcript" ref={transcript} onScroll={event => {
+      if (!visible) return;
       const node = event.currentTarget;
       following.current = node.scrollHeight - node.clientHeight - node.scrollTop < 48;
       readingPositions.set(sessionKey, { top: node.scrollTop, following: following.current });

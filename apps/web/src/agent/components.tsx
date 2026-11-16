@@ -1,10 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { AgentMark } from './AgentMark';
 import { useI18n } from '../i18n/I18nProvider';
 import type { UiMessageKey } from '../i18n/core';
-import { agentActions, useAgentStore } from './store';
+import { AGENT_DOCK_QUERY, agentActions, useAgentStore } from './store';
 import { agentApi } from './api';
 import { AgentPanel } from './panel';
 import './agent.css';
@@ -38,21 +37,41 @@ export function AgentLauncher() {
 }
 export function AgentSurface() {
   const { t } = useI18n();
+  const enabled = useAgentStore(s => !!s.settings?.enabled);
   const open = useAgentStore(s => s.open && !!s.settings?.enabled);
-  const [wide, setWide] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 1100px)').matches);
+  const mode = useAgentStore(s => s.surfaceMode);
+
   useEffect(() => {
-    const media = window.matchMedia('(min-width: 1100px)');
-    const update = () => setWide(media.matches); media.addEventListener('change', update); update();
+    const media = window.matchMedia(AGENT_DOCK_QUERY);
+    const update = () => useAgentStore.setState({ surfaceMode: media.matches ? 'dock' : 'sheet' });
+    media.addEventListener('change', update); update();
     return () => media.removeEventListener('change', update);
   }, []);
   useEffect(() => { if (open) void agentActions.refresh(); }, [open]);
-  const close = () => { useAgentStore.getState().setOpen(false); launcherElement?.focus(); };
-  const heading = <header className="agent-panel-header"><h2><AgentMark size={28} />{t('agent.title')}</h2><button type="button" aria-label={t('닫기')} onClick={close}><X size={20} /></button></header>;
-  if (wide) return <aside className="agent-dock agent-ui" hidden={!open} aria-label={t('agent.title')}>{heading}{open && <AgentPanel />}</aside>;
-  return <Dialog.Root open={open} onOpenChange={value => useAgentStore.getState().setOpen(value)}><Dialog.Portal><Dialog.Overlay className="agent-overlay" /><Dialog.Content className="agent-modal agent-ui" onCloseAutoFocus={event => { event.preventDefault(); launcherElement?.focus(); }}>
-    <Dialog.Title className="sr-only">{t('agent.title')}</Dialog.Title><Dialog.Description className="sr-only">{t('agent.workspace')}</Dialog.Description>
-    {heading}<AgentPanel />
-  </Dialog.Content></Dialog.Portal></Dialog.Root>;
+  const close = () => {
+    useAgentStore.getState().setOpen(false);
+    const opener = launcherElement?.isConnected ? launcherElement : document.querySelector<HTMLButtonElement>('.agent-launcher');
+    opener?.focus({ preventScroll: true });
+  };
+  useEffect(() => {
+    if (!open) return;
+    // No focus trap/dismissable layer: page controls and other dialogs keep
+    // their own focus and Escape behavior. Closed surfaces install no handler.
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+      const otherDialog = Array.from(document.querySelectorAll('[role="dialog"]:not(.agent-surface), [role="alertdialog"]')).some(node => node.getClientRects().length > 0);
+      if (otherDialog) return;
+      event.preventDefault(); close();
+    };
+    document.addEventListener('keydown', onEscape);
+    return () => document.removeEventListener('keydown', onEscape);
+  }, [open]);
+  // One DOM owner throughout resize/open/close; no Portal/branch remount can
+  // interrupt an IME composition, textarea selection or transcript reading.
+  return <aside className={`agent-surface agent-ui ${mode === 'dock' ? 'agent-dock' : 'agent-modal'}`} data-surface={mode} hidden={!open} role={mode === 'sheet' ? 'dialog' : 'complementary'} aria-label={t('agent.title')} aria-modal={mode === 'sheet' ? false : undefined}>
+    <header className="agent-panel-header"><h2><AgentMark size={28} />{t('agent.title')}</h2><button type="button" aria-label={t('닫기')} onClick={close}><X size={20} /></button></header>
+    {enabled && <AgentPanel />}
+  </aside>;
 }
 export function AgentImage({ id }: { id: string }) {
   const { t } = useI18n();

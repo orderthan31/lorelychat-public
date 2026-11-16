@@ -2,6 +2,7 @@ import { ProposalField, type ProposalFormProps } from '../../agent/ProposalField
 import { arrayToLines, linesToArray } from '../../utils/text';
 import { EditorActionBar } from '../../components/molecules/EditorActionBar';
 import { WebpImage } from '../../components/atoms/WebpImage';
+import { ResourceWorkspace } from '../../components/molecules/ResourceWorkspace';
 import { useEffect, useState, useTransition } from 'react';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import { Field, FormSection, ResourceCard } from '../../components/molecules';
@@ -89,7 +90,8 @@ export function WorldSettingsListView({ worldSettings = [], navigate, loadWorldS
     <h1 className="sr-only">{t('세계관')}</h1>
     <Input aria-label={t('세계관 검색')} value={queryInput} onChange={(e) => updateQuery(e.target.value)} placeholder={t('세계관 이름, 설명, 배경 검색')} />
     <ResourceListPendingBar pending={isPending || pageQuery.isFetching} />
-    <div className={`grid items-stretch gap-2 transition-opacity sm:grid-cols-2 xl:grid-cols-3 ${isPending ? 'opacity-60' : 'opacity-100'}`}>
+    <ResourceWorkspace>
+    <div className={`resource-list-grid grid items-stretch gap-2 transition-opacity ${isPending ? 'opacity-60' : 'opacity-100'}`}>
       {visibleWorldSettings.map((world) => <ResourceCard
         key={world.id || world.title}
         title={world.title || t('이름 없는 세계관')}
@@ -101,6 +103,7 @@ export function WorldSettingsListView({ worldSettings = [], navigate, loadWorldS
       />)}
       {!visibleWorldSettings.length && <div className="rounded-xl border border-dashed border-border py-10 text-center text-sm text-muted-foreground">{t('세계관이 없습니다.')}</div>}
     </div>
+    </ResourceWorkspace>
     <Pager page={pageData.page || page} total={total} onPage={(nextPage) => startTransition(() => setPage(nextPage))} />
   </section>;
 }

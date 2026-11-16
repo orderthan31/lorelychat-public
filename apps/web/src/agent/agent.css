@@ -34,10 +34,12 @@
 .agent-composer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .agent-composer-actions p { display: flex; align-items: center; gap: 6px; margin-right: auto; font-size: 12px; min-width: 0; }
 .agent-composer-actions button[type=submit] { background: var(--primary); color: var(--primary-foreground); }
-.agent-dock { width: clamp(340px, 30vw, 460px); flex-shrink: 0; position: sticky; top: 56px; height: calc(100dvh - 56px); border-left: 1px solid var(--border); display: flex; flex-direction: column; }
-.agent-dock[hidden] { display: none; }
-.agent-overlay { position: fixed; inset: 0; background: #0008; z-index: 100; }
-.agent-modal { position: fixed; z-index: 101; inset: max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom)); max-width: 680px; margin: auto; border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; }
+.agent-surface { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.agent-surface[hidden] { display: none; }
+.agent-dock { width: clamp(300px, 30vw, 420px); flex-shrink: 0; position: sticky; top: 57px; height: calc(100dvh - 57px); border-left: 1px solid var(--border); }
+.agent-modal { position: fixed; z-index: 40; inset: auto 0 0; height: min(100dvh, max(320px, 65dvh)); border: 1px solid var(--border); border-bottom: 0; border-radius: 18px 18px 0 0; box-shadow: 0 -8px 28px #0002; padding-bottom: env(safe-area-inset-bottom); }
+.agent-modal .agent-panel-header { padding: 4px 12px; }
+.agent-modal .agent-composer { padding: 6px 12px 8px; }
 .agent-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .agent-error { color: var(--destructive, #b42318); }
 .agent-draft, .agent-image-results, .agent-client { border-top: 1px solid var(--border); padding: 16px 0; margin-top: 16px; }
@@ -72,6 +74,7 @@
 .agent-markdown :is(td,th) { padding: 6px; border: 1px solid var(--border); }
 .agent-ui summary::before { content: "›"; margin-right: 8px; }
 .agent-ui details[open] > summary::before { transform: rotate(90deg); }
+.agent-layout:has(.chat-shell) > .shell { isolation: isolate; }
 .agent-layout:has(.chat-shell) > .agent-dock { top: 0; height: 100dvh; }
 .agent-image-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .agent-image-grid img { width: 100%; height: auto; border-radius: 8px; }
@@ -79,6 +82,6 @@
 .agent-reference-preview { margin: 12px 0; }
 .agent-reference-preview img { width: 100%; max-height: 240px; object-fit: contain; }
 .agent-image-plan legend { font-weight: 600; }
-@media (max-width: 1099px) { .agent-layout { display: block; } }
+.agent-layout:has(> [data-surface=sheet]) { display: block; }
 /* Runtime-confirmed progress; no timer-driven stages or percentages. */
 .agent-progress { min-width: 0; line-height: 1.4; overflow-wrap: anywhere; }

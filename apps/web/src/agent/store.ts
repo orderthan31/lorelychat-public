@@ -3,6 +3,7 @@ import { agentApi, AgentHttpError } from './api';
 import type { AgentDraft, AgentOperation, AgentSession, AgentSettings, ContextSelection, ImageJob, ImageSelection, ImageChoice, ImageTargetKind, PendingRequest } from './types';
 
 const RECOVERY_KEY = 'lore-agent-request-recovery-v1';
+export const AGENT_DOCK_QUERY = '(min-width: 768px)';
 function recovered(): PendingRequest[] {
   try {
     const value: unknown = JSON.parse(sessionStorage.getItem(RECOVERY_KEY) || '[]');
@@ -38,6 +39,7 @@ function matchProposal(actual: AgentDraft, expected: AgentDraft) {
   if (actual.id !== expected.id || actual.kind !== expected.kind || actual.target_id !== expected.target_id || actual.base_revision !== expected.base_revision || actual.version !== expected.version || actual.preview_hash !== expected.preview_hash) throw new Error('The proposal changed. Reopen it before saving; your edits have been retained.');
 }
 export type AgentState = {
+  surfaceMode: 'dock' | 'sheet';
   activeMessage: string | null;
   proposalRequest: NativeProposalRequest | null;
   open: boolean; settings: AgentSettings | null; settingsError: string; error: string;
@@ -50,6 +52,7 @@ export type AgentState = {
   setOpen: (open: boolean) => void;
 };
 export const useAgentStore = create<AgentState>((set) => ({
+  surfaceMode: typeof window !== 'undefined' && window.matchMedia?.(AGENT_DOCK_QUERY).matches ? 'dock' : 'sheet',
   activeMessage: null, proposalRequest: null,
   open: false, settings: null, settingsError: '', error: '', working: false, newChat: true,
   resources: [], imageChoices: {}, imageSelections: {}, sessions: {}, selected: '', input: '', contexts: [], drafts: {}, edits: {}, pending: recovered(), operations: {}, imageJobs: {},
@@ -139,9 +142,9 @@ export const agentActions = {
     // Opening is local navigation intent only. The native editor performs GETs.
     const current = state().proposalRequest;
     if (current && current.draft.id === draft.id && current.draft.kind === draft.kind && current.draft.target_id === draft.target_id && current.draft.version === draft.version && current.draft.preview_hash === draft.preview_hash && current.draft.base_revision === draft.base_revision) {
-      set({ open: false }); return;
+      set({ open: state().open && state().surfaceMode === 'dock' }); return;
     }
-    set({ proposalRequest: { token: requestId(), draft }, open: false, error: '' });
+    set({ proposalRequest: { token: requestId(), draft }, open: state().open && state().surfaceMode === 'dock', error: '' });
   },
   closeProposal(token: string) {
     if (state().proposalRequest?.token === token) set({ proposalRequest: null });

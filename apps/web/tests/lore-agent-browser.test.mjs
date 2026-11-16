@@ -244,14 +244,13 @@ try {
     await page.locator('.chat-thread').evaluate(node => { node.scrollTop = 150; });
     const beforeScroll = await page.locator('.chat-thread').evaluate(node => node.scrollTop);
     await page.locator('.agent-launcher').click();
-    const panel = page.locator(width >= 1100 ? '.agent-dock:visible' : '.agent-modal');
+    const panel = page.locator('.agent-surface');
     await expect(panel).toBeVisible();
     const launcherBox = await page.locator('.agent-launcher').boundingBox();
     assert.ok(launcherBox.width >= 44 && launcherBox.height >= 44, 'launcher hit target');
-    if (width < 1100) {
-      assert.equal(await page.evaluate(() => getComputedStyle(document.body).overflow), 'hidden', 'modal locks body');
-      for (let index = 0; index < 6; index++) { await page.keyboard.press('Tab'); assert.equal(await page.evaluate(() => !!document.activeElement.closest('.agent-modal')),true,'modal contains keyboard focus'); }
-    }
+    await expect(page.locator('.agent-overlay')).toHaveCount(0);
+    await page.locator('.agent-launcher').focus();
+    await expect(page.locator('.agent-launcher')).toBeFocused();
     await expect(page.locator('.context-drawer:visible')).toHaveCount(0);
     assert.equal(state.writes.filter(w => w.path.endsWith('/sessions')).length, 0, 'opening is GET-only, no manual creation needed');
     await expect(panel.getByLabel(t('agent.sessions'))).not.toBeVisible();
@@ -435,7 +434,7 @@ try {
     assert.equal(await page.locator('.agent-launcher').innerText(), '', 'icon-only launcher');
     assert.equal(await page.locator('.agent-launcher').evaluate(node => { const r = node.getBoundingClientRect(); return r.width >= 44 && r.height >= 44 && node.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); }), true, 'labeled launcher remains hittable');
     await settings.getByRole('button', { name: local['agent.open'], exact: true }).click();
-    const panel = page.locator('.agent-modal');
+    const panel = page.locator('.agent-surface');
     await expect(panel.getByLabel(local['agent.sessions'])).not.toBeVisible();
     await panel.getByText(local['agent.chatAdvanced'], { exact: true }).click();
     await panel.getByText(local['agent.history'], { exact: true }).click();

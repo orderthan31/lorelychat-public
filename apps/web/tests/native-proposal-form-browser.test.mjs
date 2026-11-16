@@ -54,7 +54,10 @@ async function setup(width = 1360) {
       await s.messageHold;
       return json({id:'session',title:'Synthetic',messages:[{id:'answer',role:'assistant',content:'Finished synthetic request'}],drafts:[],busy:false});
     }
-    if (path === '/api/lore-agent/sessions') return json([{ id: 'session', title: 'Synthetic', messages: [], drafts: Object.values(s.drafts), busy: false }]);
+    if (path === '/api/lore-agent/sessions' || path === '/api/lore-agent/sessions/session') {
+      const session = { id: 'session', title: 'Synthetic', messages: s.history || [], drafts: Object.values(s.drafts), busy: false };
+      return json(path.endsWith('/session') ? session : [session]);
+    }
     if (path.startsWith('/api/lore-agent/operations/')) {
       if (s.progressTest) {
         s.pollCount = (s.pollCount || 0) + 1;
@@ -123,13 +126,83 @@ async function setup(width = 1360) {
   });
   const navigate = path => page.evaluate(path => { history.pushState({}, '', path); dispatchEvent(new PopStateEvent('popstate')); }, path);
   const open = async id => {
-    await page.locator('.agent-launcher').click();
+    if (!await page.locator('.agent-surface').isVisible()) await page.locator('.agent-launcher').click();
     await page.locator(`[data-agent-draft="${id}"]`).getByRole('button', { name: t('agent.reviewProposal'), exact: true }).click();
-    await expect(page.locator('.agent-dock:visible, .agent-modal:visible')).toHaveCount(0);
+    await expect(page.locator('.agent-surface:visible')).toHaveCount(page.viewportSize().width >= 768 ? 1 : 0);
   };
   return { page, s, navigate, open };
 }
 try {
+  // Bounded presentation gate can run without replaying unrelated paid-action
+  // fixture scenarios. The default invocation still runs all existing coverage.
+  {
+    const { page, s, open } = await setup(390);
+    s.history = Array.from({ length: 30 }, (_, i) => ({ id: `history-${i}`, role: 'assistant', content: 'Synthetic reading history. '.repeat(12) }));
+    await page.goto(origin + '/characters/c1');
+    await page.locator('.agent-launcher').click();
+    const panel = page.locator('.agent-surface');
+    await panel.getByText(t('agent.chatAdvanced'), { exact: true }).click();
+    await panel.getByText(t('agent.history'), { exact: true }).click();
+    await panel.getByLabel(t('agent.sessions')).selectOption('session');
+    await panel.getByText(t('agent.chatAdvanced'), { exact: true }).click();
+    const input = panel.locator('.agent-composer textarea');
+    await input.fill('Retained draft 한글 composition');
+    await input.evaluate(node => { window.retainedComposer = node; node.focus(); node.setSelectionRange(3, 8); node.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '한' })); });
+    const transcript = panel.locator('.agent-transcript');
+    await transcript.evaluate(node => { window.retainedTranscript = node; node.scrollTop = 100; node.dispatchEvent(new Event('scroll')); });
+    for (const [width, height] of [[390,844], [820,1180], [1024,768], [1440,1000], [667,375], [390,844]]) {
+      await page.setViewportSize({ width, height });
+      await expect(panel).toHaveAttribute('data-surface', width >= 768 ? 'dock' : 'sheet');
+      await expect(input).toBeFocused();
+      await expect(input).toHaveValue('Retained draft 한글 composition');
+      assert.equal(await input.evaluate(node => node === window.retainedComposer), true);
+      assert.deepEqual(await input.evaluate(node => [node.selectionStart, node.selectionEnd]), [3, 8]);
+      assert.equal(await transcript.evaluate(node => node === window.retainedTranscript), true);
+      await expect.poll(() => transcript.evaluate(node => Math.abs(node.scrollTop - 100))).toBeLessThan(4);
+      const box = await panel.boundingBox(), composer = await panel.locator('.agent-composer').boundingBox();
+      assert.ok(composer.y >= 0 && composer.y + composer.height <= height + 1, 'composer remains reachable');
+      if (width >= 768) {
+        const main = await page.locator('main.shell').boundingBox();
+        assert.ok(main.x + main.width <= box.x + 1 && main.width >= 450, 'dock is a non-overlapping layout sibling');
+        assert.ok(box.width >= 300 && box.width <= 420);
+      } else {
+        assert.ok(Math.abs(box.y + box.height - height) < 2, 'sheet anchored at bottom');
+        if (height > 500) assert.ok(box.height / height >= .6 && box.height / height <= .68);
+      }
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      if (artifacts) await page.screenshot({ path: resolve(artifacts, `responsive-agent-${width}.png`) });
+    }
+    await input.evaluate(node => node.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '한글' })));
+    await panel.getByRole('button', { name: t('닫기'), exact: true }).click();
+    await expect(panel).toBeHidden();
+    await page.locator('.agent-launcher').click();
+    assert.equal(await input.evaluate(node => node === window.retainedComposer), true);
+    await expect.poll(() => transcript.evaluate(node => Math.abs(node.scrollTop - 100))).toBeLessThan(4);
+    await page.setViewportSize({ width: 820, height: 1180 });
+    const name = page.getByLabel(t('이름'), { exact: true });
+    await name.click(); await name.fill('Page remains interactive');
+    await expect(panel).toBeVisible(); await expect(name).toBeFocused();
+    await open('character'); await expect(name).toHaveValue('Proposed character');
+    await name.fill('Retained native proposal');
+    await name.evaluate(node => { window.retainedNative = node; node.setSelectionRange(2, 7); });
+    const reads = s.reads.filter(p => p === '/api/lore-agent/drafts/character').length;
+    await open('character');
+    await expect(name).toHaveValue('Retained native proposal');
+    assert.equal(await name.evaluate(node => node === window.retainedNative), true);
+    assert.deepEqual(await name.evaluate(node => [node.selectionStart,node.selectionEnd]), [2,7]);
+    assert.equal(s.reads.filter(p => p === '/api/lore-agent/drafts/character').length, reads);
+    await page.keyboard.press('Escape'); await expect(panel).toBeHidden();
+    await expect(page.locator('.agent-launcher')).toBeFocused();
+    await page.locator('.agent-launcher').click(); await expect(input).toHaveValue('Retained draft 한글 composition');
+    assert.equal(await input.evaluate(node => node === window.retainedComposer), true);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await open('character'); await expect(panel).toBeHidden();
+    await expect(name).toHaveValue('Retained native proposal');
+    assert.equal(s.writes.length, 0, 'resize/reopen/proposal review never sends or saves');
+    assert.deepEqual(s.errors, []); await page.close();
+    console.log('PASS responsive Agent: 390 sheet, 820/1024/1440 dock, short landscape, one composer/transcript DOM, draft/selection/focus/reading retention, interactive native editor, repeated proposal CAS identity, Escape/reopen, phone proposal dismissal; zero writes.');
+  }
+  if (!process.env.AGENT_RESPONSIVE_ONLY) {
   // A real pending POST is polled independently of panel renders. The delayed
   // first GET exceeds the poll interval and must still complete and display.
   {
@@ -269,7 +342,8 @@ try {
     s.abortCommit = true; await page.getByRole('button', { name: t('저장'), exact: true }).click();
     await expect(page.getByRole('button', { name: t('저장'), exact: true })).toBeDisabled();
     await expect.poll(() => s.writes.filter(w => w.path.endsWith('/commit-form')).length).toBe(1);
-    await page.locator('.agent-launcher').click();
+    await page.locator('.agent-surface').getByText(t('agent.chatAdvanced'), { exact: true }).click();
+    await page.locator('.agent-advanced').getByRole('button', { name: t('agent.refresh'), exact: true }).click();
     await expect.poll(() => s.reads.filter(path => path.includes('/operations/')).length).toBeGreaterThan(0);
     assert.equal(s.writes.filter(w => w.path.endsWith('/commit-form')).length, 1);
     assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem('lore-agent-request-recovery-v1')).length), 1);
@@ -362,4 +436,5 @@ try {
     assert.deepEqual(s.errors, []); await page.close();
   }
   console.log('PASS production native proposal forms: real delayed progress, repeat-open node/caret/no document navigation, manual avatar upload/assets/default/voice and bound rebased commit-form, save-first new resource controls; world create/prefill/exact Save, partial character/full baseline/highlights/unsaved cancel, stale rejection, unknown journal GET-only recovery, slow-read route isolation, unchanged ordinary CRUD.');
+  }
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
