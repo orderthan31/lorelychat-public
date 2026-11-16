@@ -130,11 +130,17 @@ class AgentMessage(StrictModel):
     id: str
     role: Literal['user','assistant']
     content: str
+class SessionImageContextView(StrictModel):
+    target_kind: Literal['character','world']
+    target_id: str
+    target_label: str
+    context: dict[str, Any]
 class AgentSessionView(StrictModel):
     id: str
     title: str
     messages: list[AgentMessage]
     drafts: list[AgentDraftView]
+    image_contexts: list[SessionImageContextView] = Field(default_factory=list, max_length=8)
     busy: bool
     last_error: str | None
 class OperationProgress(StrictModel):

@@ -32,7 +32,7 @@ async function setup(width, height, locale = 'en') {
   // The real-backend probe compares selectors against the actual SDK-backed settings catalog.
   const settings = { enabled: false, llm_model_option_key: null, image_provider_account_id: null, image_model_id: null, mcp_enabled: false, llm_accounts: [{ id: 'a', alias: 'Registered OpenAI', provider_type: 'openai' }, { id: 'v', alias: 'Registered Vertex', provider_type: 'vertex' }, { id: 'a2', alias: 'Second OpenAI', provider_type: 'openai' }], llm_options: [{ key: 'agent-llm', label: 'Synthetic independent LLM', provider_account_id: 'a', provider_type: 'openai' }, { key: 'vertex-model', label: 'Synthetic Vertex', provider_account_id: 'v', provider_type: 'vertex' }, { key: 'second-openai', label: 'Synthetic second account', provider_account_id: 'a2', provider_type: 'openai' }], image_accounts: [{ id: 'a', alias: 'Synthetic images', provider_type: 'openai' }, { id: 'x', alias: 'Synthetic xAI images', provider_type: 'xai' }], image_models: [...['gpt-image-2.5-sunburst', 'gpt-image-1.5', 'gpt-image-1-mini'].map(id => ({ id, label: id === 'gpt-image-2.5-sunburst' ? id : `${id} (deprecated; shuts down 2026-12-01)`, provider_type: 'openai', supports_reference: true, deprecated: id !== 'gpt-image-2.5-sunburst', shutdown_date: id === 'gpt-image-2.5-sunburst' ? null : '2026-12-01' })), { id: 'grok-imagine-image', label: 'grok-imagine-image', provider_type: 'xai', supports_reference: false }] };
   const state = { settings, clients: [], sessions: [], drafts: {}, operations: {}, jobs: {}, abortMessage: false, unavailable: false, writes, reads, errors };
-  const sessionView = () => ({ ...state.sessions[0], drafts: Object.values(state.drafts).filter(d => d.session_id === 's1') });
+  const sessionView = (id = 's1') => ({ image_contexts: [], ...state.sessions.find(s => s.id === id), drafts: Object.values(state.drafts).filter(d => d.session_id === id) });
   function makeDraft(id, kind, after, session_id = 's1') { if (kind === 'image_generation') after = { generation_mode: 'new', owner_choice_confirmed: false, reference: null, image_context: { has_existing_images: false, requires_choice: false, candidates: [], inventory_digest: 'empty' }, ...after }; return state.drafts[id] = { id, session_id, kind, target_id: 'c1', version: 1, base_revision: 1, before: kind === 'character' ? { name: 'Before' } : null, after, changes: after, preview_hash: `hash-${id}-1`, status: 'draft', warnings: [], result: null }; }
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(locale => { localStorage.setItem('lorechat-language', locale); window.agentBlobLifecycle = { made: [], revoked: [] }; const make = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL); URL.createObjectURL = blob => { const url = make(blob); window.agentBlobLifecycle.made.push(url); return url; }; URL.revokeObjectURL = url => { window.agentBlobLifecycle.revoked.push(url); revoke(url); }; }, locale);
@@ -63,10 +63,20 @@ async function setup(width, height, locale = 'en') {
       }
       if (suffix === '/sessions') {
         if (method === 'POST') { state.sessions = [{ id: 's1', title: 'Synthetic session', messages: [], busy: false, last_error: null }]; state.operations[body.request_id] = { request_id: body.request_id, status: 'completed', kind: 'session', result: { id: 's1' }, error: null }; return json(sessionView()); }
-        return json(state.sessions.length ? [sessionView()] : []);
+        return json(state.sessions.map(s => sessionView(s.id)));
       }
-      if (suffix === '/sessions/s1') return json(sessionView());
+      if (/^\/sessions\/[^/]+$/.test(suffix)) return json(sessionView(suffix.split('/').at(-1)));
       if (suffix === '/sessions/s1/messages') {
+        if (state.inFlightContext) {
+          state.sessions[0].messages.push({id:'accepted',role:'user',content:body.content});
+          state.sessions[0].busy = true;
+          state.sessions[0].image_contexts = [state.inFlightContext];
+          state.operations[body.request_id] = {request_id:body.request_id,status:'running',kind:'agent_turn',progress:{stage:'image_context',sequence:1},result:null,error:null};
+          await new Promise(resolve => { state.releaseMessage = resolve; });
+          state.sessions[0].busy = false;
+          state.operations[body.request_id].status = 'completed';
+          return json(sessionView());
+        }
         if (state.delayMessage) await new Promise(resolve => setTimeout(resolve, 400));
         assert.deepEqual(body.context, state.expectedContext || [], 'only explicitly selected fields are attached');
         state.operations[body.request_id] = { request_id: body.request_id, status: state.abortMessage ? 'unknown' : 'completed', kind: 'agent_turn', result: { session_id: 's1' }, error: null };
@@ -82,8 +92,15 @@ async function setup(width, height, locale = 'en') {
         makeDraft('unsupported-plan', 'image_generation', { target_kind: 'character', target_id: 'c1', provider_account_id: 'x', model_id: 'grok-imagine-image', prompt: 'Fresh design', count: 1, generation_mode: 'undecided', image_context });
         return json(sessionView());
       }
-      if (suffix.includes('/references/')) return route.fulfill({ body: image, contentType: 'image/webp' });
-      if (suffix.startsWith('/operations/')) return json(state.operations[suffix.split('/').at(-1)] || { status: 'unknown', request_id: suffix.split('/').at(-1), kind: 'unknown', result: null, error: null });
+      if (suffix.includes('/references/')) {
+        if (suffix.endsWith('/broken')) return json({},404);
+        if (state.holdThumbnails) await new Promise(resolve => { (state.thumbnailReleases ||= []).push(resolve); });
+        return route.fulfill({ body: image, contentType: 'image/webp' });
+      }
+      if (suffix.startsWith('/operations/')) {
+        if (state.holdRecovery && suffix.endsWith('/paid-unknown')) await new Promise(resolve => { state.releaseRecovery = resolve; });
+        return json(state.operations[suffix.split('/').at(-1)] || { status: 'unknown', request_id: suffix.split('/').at(-1), kind: 'unknown', result: null, error: null });
+      }
       if (suffix.startsWith('/drafts/')) {
         const [, , id, action] = suffix.split('/'); const draft = state.drafts[id];
         if (!draft) return json({},404);
@@ -193,8 +210,128 @@ async function verifyConversation(page, state, panel, local, width) {
   await expect.poll(() => transcript.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(4);
   await panel.getByText(local['agent.chatAdvanced'], { exact: true }).click();
 }
+async function verifyImageFeedback(width, height, locale) {
+  const { page, state } = await setup(width, height, locale);
+  const local = JSON.parse(readFileSync(`src/i18n/messages.${locale}.json`, 'utf8'));
+  Object.assign(state.settings, { enabled: true, llm_model_option_key: 'agent-llm' });
+  const item = { target_kind: 'character', target_id: 'c1', target_label: 'Synthetic portrait subject', context: { has_existing_images: true, requires_choice: true, inventory_digest: 'fixture', candidates: [
+    { id: 'avatar', label: 'Portrait', kind: 'avatar', is_default: true, available: true },
+    { id: 'unavailable', label: 'Unavailable asset', kind: 'asset', is_default: false, available: false },
+    { id: 'broken', label: 'Missing file', kind: 'asset', is_default: false, available: true },
+  ] } };
+  state.sessions = [{id:'s1',title:'Image conversation',messages:[],image_contexts:[item],busy:false,last_error:null},{id:'s2',title:'Other conversation',messages:[],image_contexts:[],busy:false,last_error:null}];
+  state.holdThumbnails = true;
+  await page.goto(origin + '/settings'); await page.locator('.agent-launcher').click();
+  const panel=page.locator('.agent-surface'), transcript=panel.locator('.agent-transcript');
+  await panel.getByText(local['agent.chatAdvanced'],{exact:true}).click();
+  await panel.getByText(local['agent.history'],{exact:true}).click();
+  await panel.getByLabel(local['agent.sessions']).selectOption('s1');
+  await panel.getByText(local['agent.chatAdvanced'],{exact:true}).click();
+  const card=panel.locator('[data-agent-image-context=c1]');
+  await expect(card).toHaveCount(1);
+  await expect(card.getByText(local['agent.imageLoading'],{exact:true})).toBeVisible();
+  await expect(card.getByText(local['agent.referenceUnavailable'],{exact:true})).toBeVisible();
+  await expect(card.getByText(local['agent.imageFailed'],{exact:true})).toBeVisible();
+  await expect(card.getByText(local['agent.imageNotGenerated'],{exact:true})).toBeVisible();
+  assert.equal(state.writes.length,0);
+  assert.ok(!state.reads.some(path=>path.endsWith('/unavailable')));
+  state.holdThumbnails=false; for (const release of state.thumbnailReleases || []) release();
+  await expect(card.locator('img')).toHaveCount(1);
+  await expect.poll(()=>card.locator('img').evaluate(img=>img.complete && img.naturalWidth>0)).toBe(true);
+  assert.ok((await card.locator('img').getAttribute('src')).startsWith('blob:'));
+  await expect(card.getByText(local['agent.imageLoading'],{exact:true})).toHaveCount(0);
+  const composer=await panel.locator('.agent-composer').boundingBox();
+  assert.ok(composer.y>=0 && composer.y+composer.height<=height);
+  assert.equal(await transcript.evaluate(n=>n.scrollWidth>n.clientWidth+1),false);
+  if (artifacts) await page.screenshot({path:`${artifacts}/image-context-${width}.png`});
+  // Session switching must never show another conversation's context.
+  await panel.getByText(local['agent.chatAdvanced'],{exact:true}).click();
+  await panel.getByLabel(local['agent.sessions']).selectOption('s2'); await expect(card).toHaveCount(0);
+  await panel.getByLabel(local['agent.sessions']).selectOption('s1'); await expect(card).toHaveCount(1);
+  await panel.getByText(local['agent.chatAdvanced'],{exact:true}).click();
+  // Reset context via GET, then expose accepted message/context and plan during one held POST.
+  state.sessions[0].image_contexts=[{target_kind:'world',target_id:'empty',target_label:'Empty world',context:{has_existing_images:false,requires_choice:false,inventory_digest:'empty',candidates:[]}}];
+  await panel.getByRole('button',{name:local['닫기'] || '닫기',exact:true}).click(); await page.locator('.agent-launcher').click();
+  await expect(panel.locator('[data-agent-image-context=empty]')).toContainText(local['agent.noExistingImages']);
+  state.sessions[0].image_contexts=[];
+  state.sessions[0].messages=Array.from({length:20},(_,i)=>({id:`history-${i}`,role:'assistant',content:'Synthetic history to verify reading position. '.repeat(8)}));
+  await panel.getByRole('button',{name:local['닫기'] || '닫기',exact:true}).click(); await page.locator('.agent-launcher').click();
+  await expect(card).toHaveCount(0);
+  await transcript.evaluate(n=>{n.scrollTop=100;n.dispatchEvent(new Event('scroll'));});
+  state.inFlightContext=item;
+  await panel.getByLabel(local['agent.message']).fill('Synthetic in-flight image request');
+  await panel.getByRole('button',{name:local['전송'] || '전송',exact:true}).click();
+  await expect(panel.locator('.agent-messages')).toContainText('Synthetic in-flight image request',{timeout:8000});
+  await expect(card).toHaveCount(1);
+  await expect(card.getByText(local['agent.imagePlanPreparing'],{exact:true})).toBeVisible();
+  assert.equal(state.writes.length,1,'only explicitly submitted message; no choice, approval or generation');
+  assert.ok(Math.abs(await transcript.evaluate(n=>n.scrollTop)-100)<4,'context arrival preserves upward reading');
+  await transcript.evaluate(n=>{n.scrollTop=n.scrollHeight;n.dispatchEvent(new Event('scroll'));});
+  state.holdThumbnails=true;state.thumbnailReleases=[];
+  state.drafts.plan={id:'plan',session_id:'s1',kind:'image_generation',target_id:'c1',version:1,base_revision:null,before:null,after:{target_kind:'character',target_id:'c1',provider_account_id:'a',model_id:'gpt-image-1.5',prompt:'Synthetic prompt',count:1,generation_mode:'undecided',image_context:item.context},changes:{},preview_hash:'fixture',status:'draft',warnings:[],result:null};
+  await expect(panel.locator('[data-agent-draft=plan]')).toHaveCount(1,{timeout:8000});
+  await expect(card).toHaveCount(0);
+  await expect.poll(()=>state.thumbnailReleases.length).toBeGreaterThan(0);
+  state.holdThumbnails=false;for(const release of state.thumbnailReleases) release();
+  await expect.poll(()=>panel.locator('[data-agent-draft=plan] img').first().evaluate(img=>img.complete && img.naturalWidth>0)).toBe(true);
+  await expect.poll(()=>transcript.evaluate(n=>n.scrollHeight-n.clientHeight-n.scrollTop)).toBeLessThan(4);
+  await expect(panel.locator('[data-agent-draft=plan] input[type=radio]:checked')).toHaveCount(0);
+  assert.equal(state.writes.length,1);
+  state.releaseMessage();
+  await expect(panel.getByLabel(local['agent.message'])).toHaveValue('');
+  if (artifacts) await page.screenshot({path:`${artifacts}/image-plan-final-${width}.png`});
+  await expect(panel.getByRole('button',{name:local['agent.newSession'],exact:true})).toBeEnabled();
+  assert.equal(await transcript.evaluate(n=>n.scrollWidth>n.clientWidth+1),false);
+  assert.deepEqual(state.errors,[]);
+  console.log(`PASS image feedback ${locale} ${width}x${height}: context without draft, loading/unavailable/404, authenticated blob, session isolation, pending POST context/plan, no implicit writes, visible composer`);
+  assertions++; await page.close();
+}
+async function verifyPendingRecovery() {
+  const {page,state}=await setup(390,844);
+  Object.assign(state.settings,{enabled:true,llm_model_option_key:'agent-llm'});
+  state.sessions=[{id:'s1',title:'First',messages:[],busy:false},{id:'s2',title:'Second',messages:[],busy:false}];
+  const paid={request_id:'paid-unknown',kind:'commit',session_id:'s1'};
+  await page.addInitScript(p=>sessionStorage.setItem('lore-agent-request-recovery-v1',JSON.stringify([p])),paid);
+  await page.goto(origin+'/settings');await page.locator('.agent-launcher').click();
+  const panel=page.locator('.agent-surface'), composer=panel.locator('.agent-composer');
+  const input=panel.getByLabel(t('agent.message')), send=composer.locator('button[type=submit]');
+  const recover=composer.getByRole('button',{name:t('agent.refresh'),exact:true});
+  await expect(recover).toBeEnabled();
+  await panel.getByText(t('agent.chatAdvanced'),{exact:true}).click();
+  await panel.getByText(t('agent.history'),{exact:true}).click();
+  const history=panel.getByLabel(t('agent.sessions'));await expect(history).toBeEnabled();await history.selectOption('s1');
+  await panel.getByText(t('agent.chatAdvanced'),{exact:true}).click();
+  state.inFlightContext={target_kind:'world',target_id:'empty',target_label:'Empty',context:{candidates:[],has_existing_images:false}};
+  await input.fill('Explicit new text despite unknown image');await expect(send).toBeEnabled();await send.click();
+  await expect.poll(()=>typeof state.releaseMessage).toBe('function');
+  state.holdRecovery=true;await expect(recover).toBeEnabled();await recover.click();
+  await expect.poll(()=>typeof state.releaseRecovery).toBe('function');await expect(recover).toBeDisabled();
+  await expect(send).toBeDisabled();
+  await panel.getByText(t('agent.chatAdvanced'),{exact:true}).click();await expect(history).toBeEnabled();await history.selectOption('s2');
+  await panel.getByText(t('agent.chatAdvanced'),{exact:true}).click();
+  await input.fill('Other conversation draft');
+  state.holdRecovery=false;state.releaseRecovery();await expect(recover).toBeEnabled();await expect(send).toBeDisabled();
+  assert.equal(state.writes.length,1,'GET recovery never replays POST');
+  state.releaseMessage();await expect(send).toBeEnabled();await expect(input).toHaveValue('Other conversation draft');
+  await panel.getByText(t('agent.chatAdvanced'),{exact:true}).click();await expect(history).toHaveValue('s2');
+  await panel.getByText(t('agent.chatAdvanced'),{exact:true}).click();
+  assert.deepEqual(await page.evaluate(()=>JSON.parse(sessionStorage.getItem('lore-agent-request-recovery-v1'))),[paid]);
+  state.inFlightContext=null;await panel.getByRole('button',{name:t('agent.newSession'),exact:true}).click();
+  await input.fill('Explicit fresh conversation');await send.click();
+  await expect(input).toHaveValue('');
+  assert.equal(state.writes.length,3,'only explicit message plus fresh session/message');
+  assert.deepEqual(await page.evaluate(()=>JSON.parse(sessionStorage.getItem('lore-agent-request-recovery-v1'))),[paid]);
+  assert.ok(state.writes.every(w=>w.path.endsWith('/messages') || w.path.endsWith('/sessions')));
+  await expect(panel.locator('[data-agent-draft=image-plan]').getByRole('button',{name:t('agent.generatePaid'),exact:true})).toHaveCount(0);
+  assert.deepEqual(state.errors,[]);
+  if(artifacts) await page.screenshot({path:`${artifacts}/pending-image-recovery-390.png`});
+  console.log('PASS pending image recovery 390: usable history under POST, independent slow GET singleflight, retained unknown journal, new text/new chat, stale POST composer fence, no paid/replayed POST');
+  assertions++;await page.close();
+}
 try {
-  for (const [width,height] of [[390,844],[1440,1000]]) {
+  await verifyPendingRecovery();
+  for (const profile of [[320,740,'ko'],[390,844,'en'],[820,1180,'ja'],[1440,1000,'en']]) await verifyImageFeedback(...profile);
+  for (const [width,height] of (process.env.AGENT_IMAGE_ONLY ? [] : [[390,844],[1440,1000]])) {
     const { page, state, navigate } = await setup(width,height);
     await page.goto(origin + '/settings/lore-agent');
     const settings = page.locator('[data-page=agent-settings]');
@@ -387,7 +524,7 @@ try {
     console.log(`PASS production Agent ${width}x${height}: direct settings without owner credentials, MCP issue/revoke, version approval, paid-plan gate, image blob, separate registration, composer/scroll/route retention, unknown GET-only recovery`);
     await page.close();
   }
-  for (const [width,height,locale] of [[320,740,'ko'],[820,1180,'ja']]) {
+  for (const [width,height,locale] of (process.env.AGENT_IMAGE_ONLY ? [] : [[320,740,'ko'],[820,1180,'ja']])) {
     const { page, state } = await setup(width,height,locale); state.settings.owner_configured = false;
     await page.goto(origin + '/settings/lore-agent');
     const local = JSON.parse(readFileSync(`src/i18n/messages.${locale}.json`, 'utf8'));

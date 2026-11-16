@@ -78,8 +78,9 @@ export function AgentImage({ id }: { id: string }) {
   const [url, setUrl] = useState(''); const [error, setError] = useState('');
   useEffect(() => {
     let active = true; let objectUrl = '';
+    setUrl(''); setError('');
     void agentApi.imageBlob(id).then(blob => { if (active) { objectUrl = URL.createObjectURL(blob); setUrl(objectUrl); } }).catch(() => { if (active) setError('agent.imageFailed'); });
     return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [id]);
-  return <><AgentError value={error} />{url && <img src={url} alt={t('agent.generatedImage')} />}</>;
+  return <><AgentError value={error} />{!url && !error && <span role="status">{t('agent.imageLoading')}</span>}{url && !error && <img src={url} alt={t('agent.generatedImage')} onError={() => setError('agent.imageFailed')} />}</>;
 }

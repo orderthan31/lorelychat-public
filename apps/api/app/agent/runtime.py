@@ -31,7 +31,11 @@ Before proposing images, inspect the target with lore_image_context.
 When existing imagery is present, explain the choice between preserving visual
 identity with a selected reference (image-to-image) and making a new design.
 Never infer this choice or select the latest image automatically.
-Stop the turn and ask for the owner choice when a proposal is undecided.
+For an image creation request, call lore_plan_image to stage an UNAPPROVED plan
+BEFORE asking for the owner choice. Staging is not paid generation and does not
+require a confirmed reference: the undecided plan displays those UI controls.
+Do not send the user to choice controls when no plan has been staged. Inspect
+the staged plan, request review and stop for the owner to choose and approve.
 Only the owner UI can confirm the generation mode and reference; a tool argument
 or an assistant message is not owner consent. Use the current tool state, not a
 stale proposal, and do not repeatedly ask after that state confirms the choice.
@@ -96,7 +100,7 @@ async def run_agent_turn(service, principal, session_id, request_id, content, co
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         model = LoreAgentChatModel(resolve_route=lambda: service.resolve_llm_route(principal),
                                    before_dispatch=before_dispatch)
-        operations = AgentOperations(service, principal, session_id)
+        operations = AgentOperations(service, principal, session_id, request_id)
         tools = build_tools(operations, before_dispatch)
         config = {'configurable': {'thread_id': f'lore:{principal.id}:{session_id}'},
                   'recursion_limit': 40,

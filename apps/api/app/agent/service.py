@@ -477,6 +477,7 @@ class AgentService:
         # Filter by session in SQL, not after a library-wide LIMIT.
         ds=c.execute(select(m.drafts.c.data).where(m.drafts.c.data['session_id'].as_string()==id).limit(100)).scalars()
         result=public(data); result['drafts']=[public(d) for d in ds]
+        result['image_contexts']=deepcopy(data.get('_image_contexts',[]))
         return result
 
     def create_session(self,principal,request_id):
@@ -663,10 +664,27 @@ class AgentService:
         self._verified_image(data, mime)
         return {'data':data, 'mime_type':mime, 'sha256':hashlib.sha256(data).hexdigest()}
 
-    def image_context(self, principal, target_id, target_kind='character'):
+    def image_context(self, principal, target_id, target_kind='character', *, session_id=None, request_id=None):
         with self.engine.connect() as c:
             self._authorize(c, principal)
             context, _, _ = self._image_inventory(c, principal, target_id, target_kind)
+            entity, _ = self._entity(c, target_kind, target_id)
+        if session_id is not None:
+            # A read tool may publish its bounded, URL-free UI projection. It
+            # never chooses a reference, creates a plan or grants paid consent.
+            item={'target_kind':target_kind,'target_id':target_id,
+                  'target_label':entity['name' if target_kind=='character' else 'title'],
+                  'context':deepcopy(context)}
+            with self._write() as c:
+                self._authorize(c,principal)
+                data=self._get(c,m.sessions,session_id,principal)
+                if data.get('_owner_id')!=principal.id:
+                    raise AgentError('Image context belongs to another session',403)
+                if request_id is not None and (not data.get('busy') or data.get('_active_run')!=request_id):
+                    raise AgentError('Image context run changed',409)
+                items=[x for x in data.get('_image_contexts',[]) if (x['target_kind'],x['target_id'])!=(target_kind,target_id)]
+                data['_image_contexts']=bounded((items+[item])[-8:],256000)
+                self._put(c,m.sessions,session_id,data)
         view = self.settings_view()
         account = next((a for a in view['image_accounts'] if a['id'] == view['image_provider_account_id']), None)
         model = next((x for x in view['image_models'] if account and x['id'] == view['image_model_id'] and x['provider_type'] == account['provider_type']), None)

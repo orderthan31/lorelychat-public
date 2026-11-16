@@ -1,4 +1,10 @@
 {
+  "agent.imageLoading": "Loading image…",
+  "agent.existingImages": "Existing images",
+  "agent.noExistingImages": "No existing images.",
+  "agent.imagePlanPreparing": "Preparing an image plan…",
+  "agent.imageNotGenerated": "Not generated yet.",
+  "agent.imagePlanNext": "Ask for an image plan, then review the choices before generating.",
   "추론 깊이": "Reasoning depth",
   "공통 설정 상속": "Use common setting",
   "추론 낮음": "Low",

@@ -1,4 +1,10 @@
 {
+  "agent.imageLoading": "画像を読み込み中…",
+  "agent.existingImages": "既存の画像",
+  "agent.noExistingImages": "既存の画像はありません。",
+  "agent.imagePlanPreparing": "画像の生成プランを準備中…",
+  "agent.imageNotGenerated": "まだ生成していません。",
+  "agent.imagePlanNext": "画像の生成プランを依頼し、生成前に選択内容を確認してください。",
   "추론 깊이": "推論の深さ",
   "공통 설정 상속": "共通設定を継承",
   "추론 낮음": "低",

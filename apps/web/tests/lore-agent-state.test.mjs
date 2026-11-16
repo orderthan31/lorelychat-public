@@ -134,7 +134,7 @@ await actions.refresh(); assert.equal(store.getState().pending.length, 1, 'missi
 api.operation = async request_id => ({ request_id, status: 'completed', kind: 'session', result: { id: 's' }, error: null });
 const priorSessionGet = api.session; api.session = async id => { assert.equal(id, 's'); return priorSessionGet(id); };
 await actions.refresh();
-assert.equal(store.getState().selected, 's'); assert.equal(store.getState().pending.length, 0);
+assert.equal(store.getState().selected, '', 'GET recovery caches resolved session without changing browsing intent'); assert.equal(store.getState().sessions.s.id, 's'); assert.equal(store.getState().pending.length, 0);
 assert.equal(calls.filter(call => call === 'POST message').length, 0, 'resolved create never auto-replays a paid turn');
 assert.equal(store.getState().input, 'Preserved local draft'); assert.deepEqual(store.getState().contexts, contexts);
 actions.newChat(); api.createSession = async () => { calls.push('POST session'); throw new AgentHttpError(422); };

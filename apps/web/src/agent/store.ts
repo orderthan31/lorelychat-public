@@ -43,7 +43,7 @@ export type AgentState = {
   activeMessage: string | null;
   proposalRequest: NativeProposalRequest | null;
   open: boolean; settings: AgentSettings | null; settingsError: string; error: string;
-  working: boolean; newChat: boolean; sessions: Record<string, AgentSession>; selected: string; input: string;
+  refreshing: boolean; working: boolean; newChat: boolean; sessions: Record<string, AgentSession>; selected: string; input: string;
   resources: { kind: ContextSelection['kind']; id: string; label: string }[];
   imageChoices: Record<string, ImageChoice>;
   imageSelections: Record<string, ImageSelection>;
@@ -54,14 +54,27 @@ export type AgentState = {
 export const useAgentStore = create<AgentState>((set) => ({
   surfaceMode: typeof window !== 'undefined' && window.matchMedia?.(AGENT_DOCK_QUERY).matches ? 'dock' : 'sheet',
   activeMessage: null, proposalRequest: null,
-  open: false, settings: null, settingsError: '', error: '', working: false, newChat: true,
+  open: false, settings: null, settingsError: '', error: '', refreshing: false, working: false, newChat: true,
   resources: [], imageChoices: {}, imageSelections: {}, sessions: {}, selected: '', input: '', contexts: [], drafts: {}, edits: {}, pending: recovered(), operations: {}, imageJobs: {},
   setOpen: open => set({ open }),
 }));
 const state = useAgentStore.getState;
 const set = useAgentStore.setState;
 const describe = (error: unknown) => error instanceof AgentHttpError ? error.message : 'agent.requestFailed';
+let selectionEpoch = 0;
+useAgentStore.subscribe((next, previous) => { if (next.selected !== previous.selected) selectionEpoch++; });
+const sessionVersions = new Map<string, number>();
+export function conversationPending(s: AgentState, selected = s.selected) {
+  return s.pending.some(p => p.kind === 'session' || (p.kind === 'message' && (!p.session_id || p.session_id === selected)));
+}
+async function readSession(id: string) {
+  const version = sessionVersions.get(id);
+  const session = await agentApi.session(id);
+  if (session.id !== id) throw new Error('Mismatched session receipt');
+  if (sessionVersions.get(id) === version) acceptSession(session);
+}
 function acceptSession(session: AgentSession) {
+  sessionVersions.set(session.id, (sessionVersions.get(session.id) || 0) + 1);
   session.drafts.forEach(acceptDraft);
   set(s => ({ sessions: { ...s.sessions, [session.id]: session }, drafts: { ...s.drafts, ...Object.fromEntries(session.drafts.map(d => [d.id, d])) } }));
 }
@@ -129,12 +142,25 @@ function pollMessage(id: string, sessionId: string) {
       } else if (operation.status === 'unknown' || operation.status === 'completed' || operation.status === 'failed') {
         set(s => ({ operations: { ...s.operations, [id]: { ...operation, progress: null } } }));
       }
+      // Serialized readback exposes accepted messages and staged previews while
+      // the POST is still running. Never let a late GET replace its final result.
+      if (!owns()) return;
+      const session = await agentApi.session(sessionId, controller.signal);
+      if (!owns() || session.id !== sessionId) return;
+      acceptSession(session);
       if (operation.status === 'completed' || operation.status === 'failed') { stop(); return; }
     } catch { /* A missing receipt is not acceptance and never permits a retry POST. */ }
     finally { if (owns()) timer = setTimeout(() => void poll(), 2000); }
   };
   timer = setTimeout(() => void poll(), 2000);
   return stop;
+}
+// A job belongs to the conversation that staged it, not to the global cache.
+// Unresolved registration journals remain reachable even without a session.
+export function selectedImageJobs(s: AgentState): ImageJob[] {
+  const linked = new Set(Object.values(s.drafts).filter(d => d.session_id === s.selected || (!d.session_id && d.kind === 'image_registration')).flatMap(d => [d.result?.job_id, d.after.job_id]));
+  for (const p of s.pending) if (p.image_job_id && (!p.session_id || p.session_id === s.selected)) linked.add(p.image_job_id);
+  return Object.values(s.imageJobs).filter(job => linked.has(job.id));
 }
 export const agentActions = {
   openProposal(draft: AgentDraft) {
@@ -199,19 +225,22 @@ export const agentActions = {
     catch (error) { set({ settingsError: describe(error) }); }
   },
   newChat: () => {
-    if (state().working || state().pending.length) return;
+    // Explicit new-chat intent also fences a creation begun from the blank view.
+    selectionEpoch++;
     set({ selected: '', newChat: true, error: '' });
   },
   createSession: () => guarded(async () => {
-    if (state().pending.length) return;
+    if (conversationPending(state())) return;
+    const epoch = selectionEpoch;
     const id = reserve('session');
-    try { const session = await agentApi.createSession(id); acceptSession(session); set({ selected: session.id, newChat: false }); forget(id); }
+    try { const session = await agentApi.createSession(id); acceptSession(session); if (selectionEpoch === epoch) set({ selected: session.id, newChat: false }); forget(id); }
     catch (error) { if (error instanceof AgentHttpError && error.status < 500) forget(id); throw error; }
   }),
   send: () => guarded(async () => {
     const s = state();
-    if (!s.input.trim() || !s.settings?.enabled || !s.settings.llm_model_option_key || s.pending.length || s.sessions[s.selected]?.busy) return;
+    if (!s.input.trim() || !s.settings?.enabled || !s.settings.llm_model_option_key || conversationPending(s) || s.sessions[s.selected]?.busy) return;
     let sessionId = s.selected;
+    let epoch = selectionEpoch;
     if (!sessionId) {
       // One guard owns both steps. Journal creation before dispatch; never replay
       // the model turn automatically if session creation has an unknown outcome.
@@ -219,37 +248,42 @@ export const agentActions = {
       try {
         const session = await agentApi.createSession(creationId);
         acceptSession(session); sessionId = session.id;
-        set({ selected: sessionId, newChat: false }); forget(creationId);
+        forget(creationId);
+        if (selectionEpoch !== epoch) return;
+        set({ selected: sessionId, newChat: false }); epoch = selectionEpoch;
       } catch (error) {
         if (error instanceof AgentHttpError && error.status < 500) forget(creationId);
         throw error;
       }
     }
-    if (!state().settings?.enabled || !state().settings?.llm_model_option_key || state().pending.length || state().sessions[sessionId]?.busy) return;
+    if (!state().settings?.enabled || !state().settings?.llm_model_option_key || conversationPending(state(), sessionId) || state().sessions[sessionId]?.busy) return;
     const id = reserve('message', { session_id: sessionId });
     set({ activeMessage: id });
     const stopPolling = pollMessage(id, sessionId);
     try {
       const session = await agentApi.message(sessionId, id, s.input, s.contexts);
+      stopPolling();
       acceptSession(session); forget(id);
-      if (state().input === s.input) set({ input: '' });
+      if (selectionEpoch === epoch && state().selected === sessionId && state().input === s.input) set({ input: '' });
     } catch (error) { if (error instanceof AgentHttpError && error.status < 500) forget(id); throw error; }
     finally { stopPolling(); if (state().activeMessage === id) set({ activeMessage: null }); }
   }),
-  refresh: () => guarded(async () => {
+  refresh: async () => {
+    if (state().refreshing) return;
+    set({ refreshing: true });
+    try {
     // Recovery is GET-only. Missing receipts never authorize replay.
     for (const pending of state().pending) {
       try {
       const operation = await agentApi.operation(pending.request_id);
+      if (operation.request_id !== pending.request_id) throw new Error('Mismatched receipt');
       set(s => ({ operations: { ...s.operations, [operation.request_id]: operation } }));
       if (pending.kind === 'session' && operation.status === 'completed') {
         const sessionId = operation.result?.id;
         if (typeof sessionId !== 'string' || !sessionId) throw new Error('Missing session receipt');
-        const session = await agentApi.session(sessionId);
-        if (session.id !== sessionId) throw new Error('Mismatched session receipt');
-        acceptSession(session); set({ selected: session.id, newChat: false });
+        await readSession(sessionId); // Recovery never changes the browsing selection.
       }
-      if (pending.session_id) acceptSession(await agentApi.session(pending.session_id));
+      if (pending.session_id) await readSession(pending.session_id);
       if (pending.draft_id) acceptDraft(await agentApi.draft(pending.draft_id));
       if (pending.image_job_id) {
         const job = await agentApi.imageJob(pending.image_job_id); set(s => ({ imageJobs: { ...s.imageJobs, [job.id]: job } }));
@@ -261,9 +295,13 @@ export const agentActions = {
       if (operation.status === 'completed' || operation.status === 'failed') forget(pending.request_id);
       } catch (error) { set({ error: describe(error) }); }
     }
-    const sessions = await agentApi.sessions(); sessions.forEach(acceptSession);
-    if (state().selected) acceptSession(await agentApi.session(state().selected));
-  }),
+    const versions = new Map(sessionVersions);
+    const sessions = await agentApi.sessions();
+    sessions.forEach(session => { if (sessionVersions.get(session.id) === versions.get(session.id)) acceptSession(session); });
+    if (state().selected) await readSession(state().selected);
+    } catch (error) { set({ error: describe(error) }); }
+    finally { set({ refreshing: false }); }
+  },
   refreshDraft: (id: string) => guarded(async () => {
     const draft = await agentApi.draft(id); acceptDraft(draft);
     if (draft.session_id && draft.session_id !== state().selected) { acceptSession(await agentApi.session(draft.session_id)); set({ selected: draft.session_id }); }

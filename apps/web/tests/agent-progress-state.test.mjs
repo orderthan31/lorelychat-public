@@ -9,8 +9,9 @@ const schedule = (fn, delay) => { const id = ++tid; timers.set(id, { fn, at: clo
 const tick = async ms => { clock += ms; for (const [id,t] of [...timers]) if (t.at <= clock) { timers.delete(id); t.fn(); } await flush(); };
 const flush = async () => { for (let i=0;i<12;i++) await Promise.resolve(); };
 const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => { resolve=a; reject=b; }); return {promise,resolve,reject}; };
-let post, gets, posts, liveGets, maxGets;
+let post, gets, posts, liveGets, maxGets, sessionGet;
 const api = {
+  session: async (id,signal) => sessionGet ? sessionGet(id,signal) : {id,messages:[],drafts:[],image_contexts:[],busy:true},
   message: async (_session,id) => { posts.push(id); return post.promise; },
   operation: async (id,signal) => { const d=deferred(); gets.push({id,signal,...d}); liveGets++; maxGets=Math.max(maxGets,liveGets); try { return await d.promise; } finally { liveGets--; } },
 };
@@ -18,7 +19,7 @@ const code=ts.transpileModule(readFileSync(new URL('../src/agent/store.ts',impor
 const module={exports:{}};
 new Function('require','module','exports','setTimeout','clearTimeout',code)(n => n==='zustand'?{create}:{agentApi:api,AgentHttpError:class extends Error{}},module,module.exports,schedule,id=>timers.delete(id));
 const {agentActions:actions,useAgentStore:store}=module.exports;
-function reset() { post=deferred(); gets=[];posts=[];liveGets=0;maxGets=0;timers.clear();memory.clear();store.setState({working:false,pending:[],operations:{},activeMessage:null,selected:'s',sessions:{s:{id:'s',drafts:[],messages:[],busy:false}},settings:{enabled:true,llm_model_option_key:'fixture'},input:'Synthetic request'}); }
+function reset() { sessionGet=null; post=deferred(); gets=[];posts=[];liveGets=0;maxGets=0;timers.clear();memory.clear();store.setState({working:false,pending:[],operations:{},activeMessage:null,selected:'s',drafts:{}, imageJobs:{}, sessions:{s:{id:'s',drafts:[],image_contexts:[],messages:[],busy:false}},settings:{enabled:true,llm_model_option_key:'fixture'},input:'Synthetic request'}); }
 const operation=(g,stage,sequence,status='running')=>({request_id:g.id,status,kind:'message',progress:{stage,sequence},result:null,error:null});
 reset();const send=actions.send();await flush();assert.equal(posts.length,1);assert.equal(gets.length,0);
 await tick(1999);assert.equal(gets.length,0);await tick(1);assert.equal(gets.length,1);
@@ -31,4 +32,81 @@ await tick(2000);gets[3].resolve({...operation(gets[3],'draft',3),request_id:'wr
 await tick(2000);gets[4].resolve(operation(gets[4],'read',4,'unknown'));await flush();assert.equal(store.getState().operations[posts[0]].progress,null,'unknown does not claim an accepted stage');
 await tick(2000);assert.equal(gets.length,6);post.resolve({id:'s',messages:[],drafts:[],busy:false});await send;assert.equal(gets[5].signal.aborted,true);gets[5].resolve(operation(gets[5],'draft',9));await flush();await tick(10000);assert.equal(gets.length,6);assert.equal(posts.length,1);assert.equal(store.getState().activeMessage,null);assert.equal(maxGets,1);
 reset();const second=actions.send();await tick(2000);store.setState({selected:'other'});assert.equal(gets[0].signal.aborted,true);gets[0].resolve(operation(gets[0],'draft',1));await flush();assert.deepEqual(store.getState().operations,{});post.reject(new Error('lost POST'));await second;await tick(10000);assert.equal(gets.length,1);assert.equal(posts.length,1);assert.equal(store.getState().pending.length,1,'lost POST keeps GET-only recovery journal');
+// A deferred session read must not overlap the next operation or overwrite POST.
+reset(); const readback=deferred(); let sessionReads=0, readSignal;
+sessionGet=async (id,signal)=>{sessionReads++;readSignal=signal;return readback.promise;};
+const third=actions.send(); await tick(2000); gets[0].resolve(operation(gets[0],'image_context',1)); await flush();
+assert.equal(sessionReads,1); await tick(10000); assert.equal(gets.length,1);
+const context={target_kind:'character',target_id:'c',target_label:'Synthetic',context:{has_existing_images:true,requires_choice:true,inventory_digest:'i',candidates:[{id:'avatar',label:'Portrait',is_default:true,available:true}]}};
+readback.resolve({id:'s',messages:[{id:'u',role:'user',content:'Accepted'}],drafts:[],image_contexts:[context],busy:true}); await flush();
+assert.equal(store.getState().sessions.s.messages[0].content,'Accepted'); assert.equal(store.getState().sessions.s.image_contexts.length,1);
+const stale=deferred(); sessionGet=async (_id,signal)=>{readSignal=signal;return stale.promise;};
+await tick(2000); gets[1].resolve(operation(gets[1],'image_plan',2)); await flush();
+post.resolve({id:'s',messages:[{id:'final',role:'assistant',content:'Final'}],drafts:[],image_contexts:[context],busy:false}); await third;
+assert.equal(readSignal.aborted,true); stale.resolve({id:'s',messages:[],drafts:[{id:'stale',kind:'image_generation',after:{},result:null}],image_contexts:[],busy:true}); await flush();
+assert.equal(store.getState().sessions.s.messages[0].content,'Final'); assert.equal(store.getState().drafts.stale,undefined); assert.equal(posts.length,1);
+reset(); const wrong=actions.send(); sessionGet=async()=>({id:'other',messages:[],drafts:[],image_contexts:[context],busy:true});
+await tick(2000); gets[0].resolve(operation(gets[0],'image_context',1)); await flush(); assert.equal(store.getState().sessions.other,undefined);
+post.resolve({id:'s',messages:[],drafts:[],image_contexts:[],busy:false}); await wrong;
+reset(); const moved=deferred(); let movedSignal;
+sessionGet=async (_id,signal)=>{movedSignal=signal;return moved.promise;};
+const fourth=actions.send();await tick(2000);gets[0].resolve(operation(gets[0],'image_context',1));await flush();
+store.setState({selected:'other'});assert.equal(movedSignal.aborted,true);
+moved.resolve({id:'s',messages:[],drafts:[],image_contexts:[context],busy:true});await flush();assert.deepEqual(store.getState().sessions.s.image_contexts,[]);
+post.reject(new Error('lost'));await fourth;assert.equal(store.getState().pending.length,1);
+const {selectedImageJobs}=module.exports;
+store.setState({selected:'s',drafts:{a:{session_id:'s',result:{job_id:'own'},after:{}},b:{session_id:'other',result:{job_id:'private'},after:{}},r:{session_id:null,kind:'image_registration',result:null,after:{job_id:'registration'}}},pending:[{kind:'registration',request_id:'p',image_job_id:'orphan'}],imageJobs:Object.fromEntries(['own','private','registration','orphan','unlinked'].map(id=>[id,{id}]))});
+assert.deepEqual(selectedImageJobs(store.getState()).map(j=>j.id),['own','registration','orphan']);
+// GET recovery remains usable during an unsettled POST; unknown paid IDs survive.
+reset(); api.sessions=async()=>[];
+const paid={request_id:'paid-unknown',kind:'commit',session_id:'s'};
+store.setState({pending:[paid]});
+const text=actions.send(); await flush(); assert.equal(posts.length,1);
+const recovery=actions.refresh(); await flush();
+assert.equal(store.getState().refreshing,true); assert.equal(store.getState().working,true);
+await actions.refresh(); assert.equal(gets.length,1,'recovery singleflight');
+gets[0].resolve({request_id:'paid-unknown',status:'unknown'}); await flush();
+assert.equal(gets.length,2); gets[1].resolve({request_id:posts[0],status:'running'}); await recovery;
+assert.equal(store.getState().working,true,'GET must not release unsettled POST owner');
+assert.equal(store.getState().refreshing,false); assert.equal(posts.length,1);
+store.setState({selected:'other'});
+post.resolve({id:'s',messages:[],drafts:[],busy:false}); await text;
+assert.equal(store.getState().input,'Synthetic request','late POST cannot clear other composer even identical text');
+assert.equal(store.getState().selected,'other'); assert.deepEqual(store.getState().pending,[paid]);
+assert.deepEqual(JSON.parse(memory.get('lore-agent-request-recovery-v1')),[paid]);
+actions.newChat(); assert.equal(store.getState().selected,'');
+let creations=0; api.createSession=async()=>{creations++;return {id:'new',messages:[],drafts:[],busy:false};};
+post=deferred();const fresh=actions.send();await flush();assert.equal(creations,1);assert.equal(posts.length,2);
+post.resolve({id:'new',messages:[],drafts:[],busy:false});await fresh;assert.deepEqual(store.getState().pending,[paid]);
+// A refresh session GET started before final POST cannot overwrite final hydration.
+reset();const hold=deferred(); let reads=0;
+sessionGet=async id=>{reads++;return hold.promise;};api.sessions=async()=>[];
+const finalSend=actions.send();const lateRefresh=actions.refresh();await flush();
+gets[0].resolve({request_id:posts[0],status:'running'});await flush();assert.equal(reads,1);
+post.resolve({id:'s',messages:[{id:'final',content:'Final'}],drafts:[],busy:false});await finalSend;
+store.setState({selected:'other'});sessionGet=async id=>({id,messages:[],drafts:[],busy:false});
+hold.resolve({id:'s',messages:[],drafts:[],busy:true});await lateRefresh;
+assert.equal(store.getState().sessions.s.messages[0].content,'Final');
+// Session creation settlement after browsing away must not send or snap back.
+reset();store.setState({selected:''});const creation=deferred();api.createSession=()=>creation.promise;
+const abandoned=actions.send();await flush();store.setState({selected:'other'});
+creation.resolve({id:'created',messages:[],drafts:[],busy:false});await abandoned;
+assert.equal(posts.length,0);assert.equal(store.getState().selected,'other');assert.equal(store.getState().input,'Synthetic request');
+assert.equal(store.getState().pending.length,0);
+reset();store.setState({selected:''});const blankCreation=deferred();api.createSession=()=>blankCreation.promise;
+const blankSend=actions.send();await flush();actions.newChat();blankCreation.resolve({id:'created',messages:[],drafts:[],busy:false});await blankSend;
+assert.equal(posts.length,0);assert.equal(store.getState().selected,'');
+// Unknown image work still blocks every paid/resource-save boundary.
+reset();store.setState({pending:[paid]});let mutations=0;
+api.commit=async()=>{mutations++;};api.registration=async()=>{mutations++;};
+await actions.commit({id:'paid-draft',status:'approved'});
+await actions.registration('job',['output'],'target',{});
+await assert.rejects(()=>actions.saveProposal({}, {}, {}, ()=>true),/unresolved/);
+assert.equal(mutations,0);assert.deepEqual(store.getState().pending,[paid]);
+store.setState({pending:[{request_id:'turn',kind:'message',session_id:'s'}]});await actions.send();assert.equal(posts.length,0);
+store.setState({selected:'other'});const otherSend=actions.send();await flush();assert.equal(posts.length,1);
+post.resolve({id:'other',messages:[],drafts:[],busy:false});await otherSend;
+assert.equal(store.getState().pending[0].request_id,'turn');
+console.log('PASS recovery: independent singleflight GET under POST latency, unknown retention, new text/new chat, late POST composer/selection fences, stale GET final fence, no extra POST.');
+console.log('PASS session readback: accepted context while POST pending, serialization, stale-final and wrong-session fences; selected job privacy and orphan recovery.');
 console.log('PASS real progress owner: serialized completion-based 2s GET, delayed responses, stage/sequence/identity fences, unknown receipt, session-change abort, POST settlement cleanup, no replay.');

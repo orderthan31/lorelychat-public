@@ -18,7 +18,7 @@ _COMMIT={'lore_commit_draft','lore_generate_image'}
 _IMAGE={'lore_plan_image','lore_get_image_job'}
 _READ={'lore_image_context','lore_capabilities','lore_search','lore_get_character','lore_get_world','lore_navigation_target','lore_preview_draft','lore_get_operation','lore_get_image_job'}
 _DESCRIPTIONS={
- 'lore_image_context':'Inspect bounded image candidate metadata and reference capability. Existing imagery requires owner GUI choice; this tool cannot choose or approve. Never returns image bytes.',
+ 'lore_image_context':'Inspect existing image candidates and reference capability; thumbnails appear in the session. For an image creation request, next call lore_plan_image to display the unapproved plan and owner reference-choice controls. No choice is needed to stage that plan. This read does not choose, approve or generate images.',
  'lore_capabilities':'Read bounded Lorechat product/workflow help, allowed field meanings/types, tools and limits. Use when needed, not a mandatory first step or substitute for staging a requested creation. Contains no library content.',
  'lore_search':'Resolve existing character/world targets by bounded name search (query, kind, limit <=20). Returns ids and labels, not full content. Read relevant fields next; ask if target identity is ambiguous, never choose the first match arbitrarily.',
  'lore_get_character':'Read task-relevant authored character fields on demand. Obey optional explicit user context restrictions.',
@@ -31,7 +31,7 @@ _DESCRIPTIONS={
  'lore_request_approval':'Request human review of the staged draft_id after inspecting its normalized preview. For a new draft this requests review, NOT owner approval or saving. Read the returned status; this tool never grants approval. Tell the user what changed and any assumptions; stop for owner review.',
  'lore_commit_draft':'Commit only an exactly owner-approved preview with a unique request id. Reuse that id to reconcile; never invent approval.',
  'lore_get_operation':'Read a durable operation receipt by request id without reapplying the operation.',
- 'lore_plan_image':'Stage a paid character or world scene image plan using the independent configured image account/model. No provider call before separate owner approval. World scenes can become thumbnails, not chat backgrounds.',
+ 'lore_plan_image':'Stage an UNAPPROVED character or world image plan so the UI can show reference thumbnails and owner choice controls. Call before asking the owner to choose a reference in the UI, even when the generation mode is undecided. Staging costs nothing and does not grant consent; paid dispatch still requires exact owner approval. World scenes can become thumbnails, not chat backgrounds.',
  'lore_generate_image':'Execute an exactly owner-approved image plan once. Generation does not register assets or change avatars or world thumbnails.',
  'lore_get_image_job':'Read image job status and retained output identifiers.',
  'lore_stage_image_registration':'Stage retained outputs as non-default character assets, or exactly one output as a world thumbnail (empty metadata). Must match plan target kind; requires separate owner approval.'
@@ -41,10 +41,11 @@ TOOL_SPECS={name:ToolSpec(name,_DESCRIPTIONS[name],schema,
     name in _READ,name in _COMMIT) for name,schema in TOOL_SCHEMAS.items()}
 
 class AgentOperations:
-    def __init__(self, service, principal, session_id=None):
+    def __init__(self, service, principal, session_id=None, request_id=None):
         self.service=service
         self.principal=principal
         self.session_id=session_id
+        self.request_id=request_id
         self._context_targets=set()
 
     def _session_fields(self,kind,id):
@@ -104,7 +105,7 @@ class AgentOperations:
             if name=='lore_generate_image' and s.get_draft(args['draft_id'],p)['kind']!='image_generation': raise AgentError('Expected image generation draft',422)
             return await s.commit_draft(p,**args)
         if name=='lore_get_operation': return s.get_operation(args['request_id'],p)
-        if name=='lore_image_context': return s.image_context(p,**args)
+        if name=='lore_image_context': return s.image_context(p,session_id=self.session_id,request_id=self.request_id,**args)
         if name=='lore_plan_image': return s.plan_image(p,session_id=self.session_id,**args)
         if name=='lore_get_image_job': return s.get_image_job(args['job_id'],p)
         if name=='lore_stage_image_registration': return s.stage_image_registration(p,session_id=self.session_id,**args)

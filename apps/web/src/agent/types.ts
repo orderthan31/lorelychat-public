@@ -14,11 +14,12 @@ export type AgentDraft = {
   before: Record<string, unknown> | null; after: Record<string, unknown>; changes: Record<string, unknown>;
   preview_hash: string; status: 'draft' | 'approved' | 'committed' | 'conflict'; warnings: string[]; result: Record<string, unknown> | null;
 };
-export type AgentSession = { id: string; title: string; messages: { id: string; role: 'user' | 'assistant'; content: string }[]; drafts: AgentDraft[]; busy: boolean; last_error: string | null };
+export type AgentSession = { id: string; title: string; messages: { id: string; role: 'user' | 'assistant'; content: string }[]; drafts: AgentDraft[]; image_contexts?: SessionImageContext[]; busy: boolean; last_error: string | null };
 export type AgentProgress = { stage: 'model' | 'search' | 'read' | 'draft' | 'review' | 'image_context' | 'image_plan' | 'navigation'; sequence: number; round?: number | null };
 export type AgentOperation = { progress?: AgentProgress | null; request_id: string; status: 'completed' | 'running' | 'unknown' | 'failed'; kind: string; result: Record<string, unknown> | null; error: string | null };
 export type ImageCandidate = { id: string; label: string; kind: string; is_default: boolean; available: boolean; reason?: string };
 export type ImageContext = { has_existing_images: boolean; requires_choice: boolean; candidates: ImageCandidate[]; inventory_digest: string };
+export type SessionImageContext = { target_kind: 'character' | 'world'; target_id: string; target_label: string; context: ImageContext };
 export type ImageChoice = { version: number; mode: 'new' | 'reference' | ''; referenceId: string };
 export type ImageTargetKind = 'character' | 'world';
 export type ImageSelection = { selected: string[]; target: string; targetKind: ImageTargetKind; label: string };

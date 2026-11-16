@@ -1,4 +1,10 @@
 {
+  "agent.imageLoading": "이미지 불러오는 중…",
+  "agent.existingImages": "기존 이미지",
+  "agent.noExistingImages": "기존 이미지가 없습니다.",
+  "agent.imagePlanPreparing": "생성 계획 준비 중…",
+  "agent.imageNotGenerated": "아직 생성 전입니다.",
+  "agent.imagePlanNext": "이미지 생성 계획을 요청한 뒤 생성 방식을 확인해 주세요.",
   "추론 깊이": "추론 깊이",
   "공통 설정 상속": "공통 설정 상속",
   "추론 낮음": "낮음",
