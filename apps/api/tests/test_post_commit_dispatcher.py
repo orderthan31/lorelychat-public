@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.services import generation_preparation, post_commit_execution
 
 import asyncio
 import threading
@@ -11,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from app.api import conversations as conversations_api
-from app.api.conversations import _execute_claimed_post_commit_task, _run_scene_compression_in_session
+from app.services.post_commit_execution import execute_claimed_post_commit_task as _execute_claimed_post_commit_task, run_scene_compression_in_session as _run_scene_compression_in_session
 from app.db.models import Conversation, ConversationRelationshipState, Message, PostCommitTask, SceneState
 from app.services import conversation_service
 from app.services.post_commit_dispatcher import PostCommitDispatcher
@@ -240,7 +241,7 @@ async def test_scene_compression_worker_rejects_completed_without_progress(monke
     conversation_id = "conv_compression_no_progress"
     _compression_room_with_backlog(session, conversation_id)
     monkeypatch.setattr(
-        conversations_api,
+        post_commit_execution,
         "get_settings",
         lambda: SimpleNamespace(context_management_mode="shadow"),
     )
@@ -264,7 +265,7 @@ async def test_scene_compression_worker_accepts_persisted_boundary_progress(monk
     conversation_id = "conv_compression_progress"
     _compression_room_with_backlog(session, conversation_id)
     monkeypatch.setattr(
-        conversations_api,
+        post_commit_execution,
         "get_settings",
         lambda: SimpleNamespace(context_management_mode="shadow"),
     )
@@ -300,7 +301,7 @@ async def test_scene_compression_worker_forwards_the_same_token_selector_to_upda
     conversation_id = "conv_compression_selector_parity"
     _compression_room_with_backlog(session, conversation_id)
     monkeypatch.setattr(
-        conversations_api,
+        post_commit_execution,
         "get_settings",
         lambda: SimpleNamespace(context_management_mode="shadow"),
     )
@@ -341,7 +342,7 @@ async def test_automatic_scene_compression_worker_recomputes_selector_from_curre
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(
-        conversations_api,
+        post_commit_execution,
         "get_settings",
         lambda: SimpleNamespace(context_management_mode="automatic"),
     )
@@ -353,7 +354,7 @@ async def test_automatic_scene_compression_worker_recomputes_selector_from_curre
         ),
     )
     monkeypatch.setattr(
-        conversations_api.model_provider_service,
+        generation_preparation.model_provider_service,
         "option_by_key",
         lambda *_args, **_kwargs: None,
     )
@@ -399,7 +400,7 @@ async def test_automatic_scene_compression_worker_skips_stale_task_at_low_pressu
     conversation_id = "conv_compression_automatic_low_noop"
     _compression_room_with_backlog(session, conversation_id)
     monkeypatch.setattr(
-        conversations_api,
+        post_commit_execution,
         "get_settings",
         lambda: SimpleNamespace(context_management_mode="automatic"),
     )
@@ -411,7 +412,7 @@ async def test_automatic_scene_compression_worker_skips_stale_task_at_low_pressu
         ),
     )
     monkeypatch.setattr(
-        conversations_api.model_provider_service,
+        generation_preparation.model_provider_service,
         "option_by_key",
         lambda *_args, **_kwargs: None,
     )

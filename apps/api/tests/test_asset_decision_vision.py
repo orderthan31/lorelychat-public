@@ -1,3 +1,4 @@
+from app.services import post_commit_execution
 """Actual selector -> media worker -> native HTTP wire -> fenced attachment."""
 import asyncio
 import base64
@@ -63,7 +64,7 @@ def test_real_media_route_preserves_protocol_capability_and_none(session,tmp_pat
     async def wire(route,**kwargs):
         return await real(route,**kwargs,_transport=httpx.MockTransport(handler))
     monkeypatch.setattr(transport,'decide_assets',wire)
-    asyncio.run(api._execute_claimed_post_commit_task(session,session.get(PostCommitTask,'task'),lease_owner='worker'))
+    asyncio.run(post_commit_execution.execute_claimed_post_commit_task(session,session.get(PostCommitTask,'task'),lease_owner='worker'))
     session.expire_all()
     assert len(calls)==1
     assert [(x.message_id,x.asset_id) for x in session.exec(select(MessageAsset)).all()]==([('m1','a1')] if outcome=='asset' else [])

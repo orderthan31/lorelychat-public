@@ -1,3 +1,4 @@
+from app.services import generation_execution
 import pytest
 from datetime import datetime, timedelta, timezone
 from sqlmodel import Session, select
@@ -92,7 +93,7 @@ def test_user_bang_command_stores_clean_content_and_metadata(client, session: Se
     async def fake_generate_replies_from_message(**kwargs):
         return [kwargs['incoming_message']]
 
-    monkeypatch.setattr(conversations_api, 'generate_replies_from_message', fake_generate_replies_from_message)
+    monkeypatch.setattr(generation_execution, 'generate_replies_from_message', fake_generate_replies_from_message)
 
     char = client.post('/characters', json={'name': '미나', 'persona': '다정한 아이돌'}).json()
     room = client.post('/conversations', json={
@@ -127,7 +128,7 @@ def test_bang_command_activates_until_badge_clear_and_is_exposed_on_conversation
     async def fake_generate_replies_from_message(**kwargs):
         return [kwargs['incoming_message']]
 
-    monkeypatch.setattr(conversations_api, 'generate_replies_from_message', fake_generate_replies_from_message)
+    monkeypatch.setattr(generation_execution, 'generate_replies_from_message', fake_generate_replies_from_message)
 
     char = client.post('/characters', json={'name': '미나', 'persona': '다정한 아이돌'}).json()
     room = client.post('/conversations', json={
@@ -186,7 +187,7 @@ def test_multiple_commands_can_stay_active_until_badge_clear(client, session: Se
     async def fake_generate_replies_from_message(**kwargs):
         return [kwargs['incoming_message']]
 
-    monkeypatch.setattr(conversations_api, 'generate_replies_from_message', fake_generate_replies_from_message)
+    monkeypatch.setattr(generation_execution, 'generate_replies_from_message', fake_generate_replies_from_message)
 
     char = client.post('/characters', json={'name': '미나', 'persona': '다정한 아이돌'}).json()
     room = client.post('/conversations', json={
@@ -621,7 +622,7 @@ async def test_last_bubble_overlay_is_after_full_generated_result(session: Sessi
 
 @pytest.mark.asyncio
 async def test_overlay_command_rejects_whole_generated_response_before_persistence(session: Session):
-    from app.api.conversations import persist_generated_reply_messages
+    from app.services.generation_execution import persist_generated_reply_messages
     from app.db.models import Character
     from app.engine.character_runtime import CharacterRuntimeError
     from app.schemas.conversations import MessageCreate

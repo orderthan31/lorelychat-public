@@ -6,11 +6,21 @@ const text = (p) => readFileSync(new URL(p, base), 'utf8');
 const transpile = (s) => ts.transpileModule(s, {compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
 const load = (s) => import(`data:text/javascript;base64,${Buffer.from(transpile(s)).toString('base64')}`);
 const {RoomWork, GenerationOwners, RoomWorkCancelledError} = await load(text('src/utils/roomWork.ts'));
-const source = ts.createSourceFile('App.tsx',text('src/app/App.tsx'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
-const app = source.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='App');
 const names=['renameConversation','clearActiveCommand','compressConversationNow','updateSceneSummary','loadConversationEditDraft','loadCharacterAssets','ownUI','saveConversationRuntimeSetting','fetchConversation','stopTrackingUnknownSubmission','retryMessage','loadGeneratedJobMessages','pollGenerationJob','resumeGeneration','submitConversationPayload','saveCharacter','savePreset','patchCharacterAsset'];
-const declarations=app.body.statements.filter(n=>ts.isFunctionDeclaration(n)&&names.includes(n.name?.text)).map(n=>n.getText(source)).join('\n');
-const instantiate=new Function('env',`with(env){${transpile(declarations)};return {${names.join(',')}}}`);
+const owners = [['src/app/App.tsx', 'App'], ['src/views/ConversationDetail/hooks/useConversationSession.ts', 'useConversationSession'], ['src/views/CharacterAssets/useAssetEditor.ts', 'useAssetEditor']].map(([path, name]) => {
+  const ast = ts.createSourceFile(path, text(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  return { ast, owner: ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === name) };
+});
+const factories = owners.map(({ ast, owner }) => {
+  const functions = owner.body.statements.filter(n => ts.isFunctionDeclaration(n) && names.includes(n.name?.text));
+  const exported = functions.map(n => n.name.text).filter(name => name !== 'ownUI');
+  return new Function('env', `with(env){${transpile(functions.map(n => n.getText(ast)).join('\n'))};return {${exported.join(',')}}}`);
+});
+const instantiate = env => Object.assign({}, ...factories.map(factory => factory(env)));
+const { queryKeys } = await load(text('src/api/queryKeys.ts'));
+const { refreshAfterMutation } = await load(text('src/hooks/refreshAfterMutation.ts'));
+const ownershipSource = transpile(text('src/hooks/useOperationOwnership.ts')).replace(/^import .*;\n/gm, '').replace('export function useOperationOwnership', 'function useOperationOwnership');
+const useOperationOwnership = new Function('useRef', `${ownershipSource};return useOperationOwnership;`)(value => ({ current: value }));
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b});return {promise,resolve,reject}};
 let passed=0,failed=0;
 async function test(name,fn){try{await fn();console.log('PASS',name);passed++}catch(e){console.error('FAIL',name,e.message);failed++}}
@@ -21,8 +31,7 @@ if (!ready) { env.readyVisitRef.current = null; env.conversation = null; env.mes
 for(const k of ['Conversation','ConversationRuntimeSetting','Messages','Busy','RoomLoadError']) env['set'+k]=v=>{const key=k[0].toLowerCase()+k.slice(1);env[key]=typeof v==='function'?v(env[key]):v};
 env.setStatus=s=>env.statuses.push(s);
 for(const k of ['PresetDraft','ChatCommandDraft','ConversationThumbnailUrl','WorldSettingDraft','UserMemoryDraft','RoomEditDraft','CharacterAssets','CharacterAssetsLoading','AssetDraft','ConversationTitle','SelectedWorldSettingId','ContextDrawerOpen','OlderPagingReady','ShowJumpToLatest','HasOlderMessages','Participants','ConversationContext','BattleState','BattleControlDraft','SpeakerId','ChatSettingsOpen'])env['set'+k]=()=>{};
-env.ownUI=()=>{const owner=roomWork.capture();const f={};for(const k of Object.keys(env).filter(k=>k.startsWith('set')||k==='navigate'))f[k]=(...args)=>{if(owner.current)return env[k](...args)};return f};
-env.routeWork=roomWork;env.operationVersions=new Map();env.busyOwner={current:null};env.deletedMessageIdsRef={current:new Map()};
+env.routeWork=roomWork;env.guardUI=useOperationOwnership(roomWork,env.setBusy,env.setStatus);env.setDraft=()=>{};env.queryKeys=queryKeys;env.queryClient={fetchQuery:({queryFn})=>queryFn()};env.characterReview=false;Object.defineProperties(env,{editorCharacterDraft:{get:()=>env.draft},ordinaryCharacterId:{get:()=>env.draft.id},editorCharacterId:{get:()=>env.draft.id}});env.operationVersions=new Map();env.busyOwner={current:null};env.deletedMessageIdsRef={current:new Map()};
 const f=instantiate(env);Object.assign(env,f);return {env,f,visit};}
 await test('failed B→A room load clears previous room snapshot and stays unready',async()=>{
  const {env,f}=setup();
@@ -45,10 +54,10 @@ await test('A→B→A stale settings cannot write into newer A visit',async()=>{
 await test('caught character save failure keeps draft and exposes visible status',async()=>{const {env,f}=setup();env.draft.id='B';env.characterMutations.saveCharacter.mutateAsync=async()=>{throw Error('validation fields')};await f.saveCharacter();assert.equal(env.draft.persona,'A');assert.ok(env.statuses.some(s=>s.includes('validation fields')));assert.equal(env.busy,false)});
 await test('completed reconciliation pages to all IDs in job order without resurrecting deleted source',async()=>{const {env,f}=setup();env.conversationApi.messages=async(_id,cursor)=>cursor?[{id:'r1'}]:[{id:'r2'}];const rows=await f.loadGeneratedJobMessages('A',{id:'deleted-source',content:'stale receipt'},{generated_message_ids:['r1','r2']});assert.deepEqual(rows.map(m=>m?.id),[undefined,'r1','r2'])});
 await test('fresh app entry discovers durable job before authoritative message snapshot',async()=>{const {env,f}=setup({ready:false});const order=[];env.conversationApi.activeGenerationJobs=async()=>{order.push('active');return {jobs:[{id:'durable',incoming_message_id:'source',status:'running'}]}};env.conversationApi.messages=async()=>{order.push('messages');return [{id:'source'}]};env.conversationApi.generationJob=async()=>({status:'failed',state_version:2});await f.fetchConversation('A');await new Promise(r=>setTimeout(r,0));assert.deepEqual(order.slice(0,2),['active','messages']);assert.equal(env.messages[0].failed,true);assert.equal(env.messages[0].retryJob.id,'durable')});
-await test('actual mutation hook invalidates world/command sibling page keys',async()=>{const {QueryClient}=await import('@tanstack/react-query');const client=new QueryClient();for(const family of ['world-settings','chat-commands'])for(const suffix of [['include_disabled'],['page',1,'query'],['page',2,'other']])client.setQueryData([family,...suffix],[]);const hook=text('src/hooks/useSettingsMutations.ts').split('\n').filter(l=>!l.startsWith('import ')).join('\n').replace('export function useSettingsMutations','function useSettingsMutations');const factory=new Function('useQueryClient','useMutation','settingsApi','queryKeys',transpile(hook).replace('export {};','')+';return useSettingsMutations();');const mutations=factory(()=>client,x=>x,{},{});for(const key of ['saveWorldSetting','deleteWorldSetting','saveChatCommand','deleteChatCommand'])await mutations[key].onSuccess();for(const q of client.getQueryCache().getAll())assert.equal(q.state.isInvalidated,true);client.clear()});
+await test('actual mutation hook invalidates world/command sibling page keys',async()=>{const {QueryClient}=await import('@tanstack/react-query');const client=new QueryClient();for(const family of ['world-settings','chat-commands'])for(const suffix of [['include_disabled'],['page',1,'query'],['page',2,'other']])client.setQueryData([family,...suffix],[]);const hook=text('src/hooks/useSettingsMutations.ts').split('\n').filter(l=>!l.startsWith('import ')).join('\n').replace('export function useSettingsMutations','function useSettingsMutations');const factory=new Function('useQueryClient','useMutation','settingsApi','queryKeys','refreshAfterMutation',transpile(hook).replace('export {};','')+';return useSettingsMutations();');const mutations=factory(()=>client,x=>x,{},queryKeys,refreshAfterMutation);for(const key of ['saveWorldSetting','deleteWorldSetting','saveChatCommand','deleteChatCommand'])await mutations[key].onSuccess();for(const q of client.getQueryCache().getAll())assert.equal(q.state.isInvalidated,true);client.clear()});
 await test('remaining production room/context/edit/assets owners reject late A→B→A writes',async()=>{
  for(const name of ['renameConversation','clearActiveCommand','compressConversationNow','updateSceneSummary','loadConversationEditDraft','loadCharacterAssets']){
-  const {env,f}=setup(),d=deferred();let calls=0;const request=()=>{calls++;return d.promise};env.routeId='A';env.resourceRouteIdRef={current:'A'};env.characterApi={assets:request};env.contextDrawerOpen=false;env.loadConversationContext=async()=>{};env.sceneDraftFromContext=room=>({id:room.id,title:'source'});env.setConversations=()=>{};
+  const {env,f}=setup(),d=deferred();let calls=0;const request=()=>{calls++;return d.promise};env.routeId='A';env.routeIdRef={current:'A'};env.characterApi={assets:request};env.contextDrawerOpen=false;env.loadConversationContext=async()=>{};env.sceneDraftFromContext=room=>({id:room.id,title:'source'});env.setConversations=()=>{};
   env.conversationApi.clearActiveCommand=request;env.conversationApi.compressNow=request;env.conversationApi.updateSceneSummary=request;env.conversationApi.get=request;env.conversationApi.context=async()=>({});env.conversationMutations.updateConversation.mutateAsync=request;
   const work=f[name](name==='updateSceneSummary'?'Authored summary':'A',1);await Promise.resolve();assert.equal(calls,1,`${name} must execute its actual transport`);env.roomWork.enter('B');env.roomWork.enter('A');env.conversation={id:'new-A'};env.busy=true;env.statuses=[];d.resolve(name==='loadCharacterAssets'?[]:{id:'A'});await work;assert.equal(env.conversation.id,'new-A',name);assert.equal(env.busy,true,name);assert.deepEqual(env.statuses,[],name);
  }
@@ -127,7 +136,7 @@ await test('asset PATCH rejects mismatched draft identity and foreign assets bef
   assert.equal(env.busy, false);
 });
 await test('production handlers using ownUI also own their bare status writes', async () => {
-  for (const handler of app.body.statements.filter(ts.isFunctionDeclaration)) {
+  for (const { ast: source, owner } of owners) for (const handler of owner.body.statements.filter(ts.isFunctionDeclaration)) {
     if (!handler.body || !handler.getText(source).includes('setStatus(')) continue;
     const owned = [];
     const visit = node => {

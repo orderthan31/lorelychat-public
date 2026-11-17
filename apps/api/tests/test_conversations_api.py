@@ -11,7 +11,9 @@ from app.engine.prompt_harness import approx_tokens
 from app.services import conversation_service
 from app.services.conversation_service import apply_conversation_compression_update
 from app.services.context_management_service import ContextCapacity
-from app.api.conversations import ContextMaintenanceRequired, _run_message_generation_job_in_session, _serialize_generation_sse_event, assign_generated_turn_group, build_generated_turn_post_commit_tasks, normalize_incoming_message, persist_generated_reply_messages, runtime_user_message, select_runtime_room_characters
+from app.api.conversations import ContextMaintenanceRequired, _serialize_generation_sse_event, normalize_incoming_message
+from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session, assign_generated_turn_group, persist_generated_reply_messages, runtime_user_message, select_runtime_room_characters
+from app.services.post_commit_execution import build_generated_turn_post_commit_tasks
 from app.engine.character_runtime import generation_control_reserve_tokens
 from app.schemas.conversations import MessageCreate
 from app.schemas.dialogue import CharacterReply
@@ -249,7 +251,7 @@ def test_post_message_returns_recoverable_context_maintenance_error_and_preserve
         )
 
     monkeypatch.setattr(
-        "app.api.conversations.generate_replies_from_message",
+        "app.services.generation_execution.generate_replies_from_message",
         fail_before_provider,
     )
 
@@ -327,7 +329,7 @@ def test_automatic_hard_pressure_no_progress_never_calls_chat_provider(
         used_fallback=False,
     )
     monkeypatch.setattr(
-        "app.api.conversations.resolve_safe_model_context_capacity",
+        "app.services.generation_preparation.resolve_safe_model_context_capacity",
         lambda *_args, **_kwargs: tiny_capacity,
     )
     provider_calls = 0
@@ -346,7 +348,7 @@ def test_automatic_hard_pressure_no_progress_never_calls_chat_provider(
         no_progress,
     )
     monkeypatch.setattr(
-        "app.api.conversations.CharacterRuntime.generate_replies",
+        "app.services.generation_execution.CharacterRuntime.generate_replies",
         unexpected_provider_call,
     )
 
@@ -407,7 +409,7 @@ def test_async_generation_job_preserves_context_maintenance_code(
         )
 
     monkeypatch.setattr(
-        "app.api.conversations.generate_replies_from_message",
+        "app.services.generation_execution.generate_replies_from_message",
         fail_with_maintenance,
     )
     response = client.post(
@@ -1178,7 +1180,7 @@ def test_message_generation_job_creates_incoming_message_and_tracks_completion(c
         reply_payload = MessageCreate(speaker_type="character", speaker_id=aria["id"], content="잡으로 생성 완료")
         return [conversation_service.add_message(kwargs["session"], kwargs["conversation_id"], reply_payload)]
 
-    monkeypatch.setattr("app.api.conversations.generate_replies_from_message", fake_generate_replies_from_message)
+    monkeypatch.setattr("app.services.generation_execution.generate_replies_from_message", fake_generate_replies_from_message)
 
     response = client.post(f"/conversations/{room['id']}/messages/jobs", json={
         "speaker_type": "user",

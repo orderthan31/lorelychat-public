@@ -1,6 +1,7 @@
+import { refreshAfterMutation } from './refreshAfterMutation';
 import { useMutation, useQueryClient, type QueryKey, type UseMutationResult } from '@tanstack/react-query';
 import { settingsApi } from '../api/resources';
-import { queryKeys } from './useBootstrapResources';
+import { queryKeys } from '../api/queryKeys';
 
 type SettingsMutation<TVariables = unknown> = UseMutationResult<unknown, Error, TVariables, unknown>;
 type SavePayload = { id?: string | null; payload: unknown };
@@ -17,12 +18,12 @@ export type SettingsMutationsState = {
 
 export function useSettingsMutations(): SettingsMutationsState {
   const queryClient = useQueryClient();
-  const invalidate = (queryKey: QueryKey) => queryClient.invalidateQueries({ queryKey });
+  const invalidate = (queryKey: QueryKey) => refreshAfterMutation(queryClient, queryKey);
 
   return {
     updateRuntimeDefault: useMutation({
       mutationFn: settingsApi.updateRuntimeDefault,
-      onSuccess: () => invalidate(queryKeys.runtimeDefault),
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.runtimeDefault }),
     }),
     savePreset: useMutation({
       mutationFn: settingsApi.savePreset,
@@ -35,19 +36,19 @@ export function useSettingsMutations(): SettingsMutationsState {
 
     saveChatCommand: useMutation({
       mutationFn: settingsApi.saveChatCommand,
-      onSuccess: () => invalidate(['chat-commands']),
+      onSuccess: () => invalidate(queryKeys.chatCommandRoot),
     }),
     deleteChatCommand: useMutation({
       mutationFn: settingsApi.deleteChatCommand,
-      onSuccess: () => invalidate(['chat-commands']),
+      onSuccess: () => invalidate(queryKeys.chatCommandRoot),
     }),
     saveWorldSetting: useMutation({
       mutationFn: settingsApi.saveWorldSetting,
-      onSuccess: () => invalidate(['world-settings']),
+      onSuccess: () => invalidate(queryKeys.worldSettingsRoot),
     }),
     deleteWorldSetting: useMutation({
       mutationFn: settingsApi.deleteWorldSetting,
-      onSuccess: () => invalidate(['world-settings']),
+      onSuccess: () => invalidate(queryKeys.worldSettingsRoot),
     }),
   };
 }

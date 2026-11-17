@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -12,7 +15,8 @@ const plugin = { name: 'vertex-fixture', configureServer(server) {
     res.end(await server.transformIndexHtml('/vertex-fixture', '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/tests/vertex-provider.fixture.tsx"></script></body></html>'));
   });
 } };
-const server = await createServer({ configFile: false, envFile: false, plugins: [plugin, react(), tailwindcss()], server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, logLevel: 'error' });
+const cacheDir = mkdtempSync(join(tmpdir(), 'integration-repair-vite-'));
+const server = await createServer({ cacheDir, configFile: false, envFile: false, plugins: [plugin, react(), tailwindcss()], server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, logLevel: 'error' });
 let browser;
 try {
   await server.listen(); browser = await chromium.launch({ headless: true });
@@ -161,7 +165,7 @@ try {
     assert.deepEqual(writes.at(-1).body, { clear_api_key: true });
     await expect(card.locator('[data-provider-refresh-account]')).toBeDisabled();
     await card.getByRole('button', { name: t('설정 확인 (호출 없음)'), exact: true }).click();
-    await expect(page.locator('header').first()).toContainText(t('프로젝트, 위치 및 인증 정보를 확인하세요.'));
+    await expect(page.locator('[data-page=model-settings]').getByRole('status').filter({ hasText: t('프로젝트, 위치 및 인증 정보를 확인하세요.') })).toContainText(t('프로젝트, 위치 및 인증 정보를 확인하세요.'));
     await card.locator('label').filter({ has: page.getByText(t('인증 방식'), { exact: true }) }).locator('select').selectOption('adc');
     await expect(card.locator('input[type=file]')).toHaveCount(0);
     await card.getByRole('button', { name: t('Vertex 설정 저장'), exact: true }).click();
@@ -169,7 +173,7 @@ try {
     assert.equal(writes.at(-1).body.vertex_auth_mode, 'adc');
     assert.equal('api_key' in writes.at(-1).body, false);
     await card.getByRole('button', { name: t('설정 확인 (호출 없음)'), exact: true }).click();
-    await expect(page.locator('header').first()).toContainText(t('설정 확인 완료. 실제 인증 및 모델 호출은 검증하지 않았습니다.'));
+    await expect(page.locator('[data-page=model-settings]').getByRole('status').filter({ hasText: t('설정 확인 완료. 실제 인증 및 모델 호출은 검증하지 않았습니다.') })).toContainText(t('설정 확인 완료. 실제 인증 및 모델 호출은 검증하지 않았습니다.'));
     const create = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: t('Provider 계정 추가') }) });
     await create.locator('summary').click();
     await create.locator('label').filter({ has: page.getByText(t('Provider'), { exact: true }) }).locator('select').selectOption('vertex_ai');
@@ -236,4 +240,4 @@ try {
     console.log(`PASS ${locale}: mobile form, private upload/replacement/clear, omitted secret, ADC create, configuration-only check, account-local catalog success/error/retry, capability filters and manual model path; ${writes.length} synthetic writes`);
     await page.close();
   }
-} finally { await browser?.close(); await server.close(); }
+} finally { await browser?.close(); await server.close(); rmSync(cacheDir, { recursive: true, force: true }); }

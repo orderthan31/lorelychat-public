@@ -1,3 +1,4 @@
+from app.services import generation_execution
 """Synthetic endpoint and provider-boundary coverage for character-only rooms."""
 import asyncio
 import json
@@ -91,7 +92,7 @@ def test_preview_and_real_job_prompt_world_policy(client, session, monkeypatch, 
         calls.append(messages)
         return LLMResponse(content='<m c="C1">I remember our promise and will meet you there.</m>')
     monkeypatch.setattr(LLMClient, 'chat', chat)
-    asyncio.run(api._run_message_generation_job_in_session(session, queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session, queued['job']['id']))
     status = client.get(f"/conversations/{room_id}/generation-jobs/{queued['job']['id']}").json()
     assert status['status'] == 'completed', status
     assert calls
@@ -193,7 +194,7 @@ def test_worldless_real_command_fallback_keeps_ownership(client, session, monkey
     monkeypatch.setattr(LLMClient, 'chat', chat)
     monkeypatch.setattr(api, '_start_message_generation_worker', lambda *a: None)
     queued = client.post(f'/conversations/{room_id}/messages/jobs', json={'speaker_type': 'user', 'speaker_id': 'u', 'content': 'SOURCE_SENTINEL'}).json()
-    asyncio.run(api._run_message_generation_job_in_session(session, queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session, queued['job']['id']))
     status = client.get(f"/conversations/{room_id}/generation-jobs/{queued['job']['id']}").json()
     assert status['status'] == 'completed', status
     assert any(purpose == 'chat_command_postprocess' for purpose, _ in calls)

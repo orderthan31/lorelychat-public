@@ -208,7 +208,8 @@ async function verifyConversation(page, state, panel, local, width) {
     await expect(panel.getByLabel(local['agent.message'])).toHaveValue('Retained conversation draft');
     assert.ok(Math.abs(await transcript.evaluate(node => node.scrollTop) - 100) < 4, 'modal transition retains upward reading');
   }
-  await panel.getByText(local['agent.chatAdvanced'], { exact: true }).click();
+  const advanced = panel.locator('.agent-advanced');
+  if (!await advanced.evaluate(node => node.open)) await panel.getByText(local['agent.chatAdvanced'], { exact: true }).click();
   await transcript.evaluate(node => { node.scrollTop = node.scrollHeight; node.dispatchEvent(new Event('scroll')); });
   state.sessions[0].messages.push({ id: 'new-at-bottom', role: 'assistant', content: 'Follow this new answer at the bottom.' });
   await panel.locator('.agent-advanced').getByRole('button', { name: local['agent.refresh'], exact: true }).click();
@@ -424,6 +425,12 @@ async function verifyRecoveryNavigation(width, height, locale) {
   console.log(`PASS recovery navigation ${locale} ${width}: visible notice from blank/other history, exact named session, long-history target focus not bottom, same-session focus, old journal, 404/503 retry, stale selection fence, preserved composer/journal, zero writes`);
   assertions++; await page.close();
 }
+async function saveAgentSettings(page, label) {
+  const save = page.getByRole('button', { name: label, exact: true });
+  await expect(save).toHaveCount(1);
+  assert.equal(await save.evaluate(button => !!button.form?.closest('[data-page="agent-settings"]')), true, 'save action belongs to the Agent settings form');
+  await save.click();
+}
 try {
   for (const profile of [[390,844,'ko'], [820,1180,'en']]) await verifyRecoveryNavigation(...profile);
   await verifyPendingRecovery();
@@ -458,7 +465,7 @@ try {
     await expect(settings.getByLabel(t('agent.imageModel'))).toHaveValue('');
     await settings.getByLabel(t('agent.imageModel')).selectOption('gpt-image-1.5');
     await settings.getByRole('switch', { name: t('agent.mcpEnable') }).focus(); await page.keyboard.press('Space');
-    await settings.getByRole('button', { name: t('저장'), exact: true }).click();
+    await saveAgentSettings(page, t('저장'));
     await expect(settings.getByText(t('agent.saved'))).toBeVisible();
     assert.equal(state.settings.llm_model_option_key, 'agent-llm');
     assert.equal(state.settings.image_model_id, 'gpt-image-1.5');
@@ -601,7 +608,9 @@ try {
     await expect(panel.getByText(t('agent.uncertain'))).toBeVisible();
     const postCount = state.writes.length;
     await panel.getByRole('button', { name: t('agent.refresh'), exact: true }).first().click();
-    await expect(panel.getByRole('button', { name: t('agent.newSession') })).toBeDisabled();
+    await expect(panel.getByRole('button', { name: t('agent.newSession') })).toBeEnabled();
+    const pendingJournal = await page.evaluate(() => JSON.parse(sessionStorage.getItem('lore-agent-request-recovery-v1')));
+    assert.ok(pendingJournal.some(item => item.request_id === state.writes.at(-1).body.request_id), 'unknown receipt retains its exact request journal');
     assert.equal(state.writes.length, postCount, 'unknown recovery sends GET only');
     await expect(panel.locator('.agent-messages')).toContainText('A readable answer');
     const messageColors = await panel.locator('.agent-messages article').first().evaluate(node => ({ fg: getComputedStyle(node).color, bg: getComputedStyle(node).backgroundColor }));
@@ -613,7 +622,7 @@ try {
     await panel.getByRole('button', { name: t('닫기'), exact: true }).click();
     await navigate('/settings/lore-agent');
     await settings.getByRole('switch', { name: t('agent.enable') }).focus(); await page.keyboard.press('Space');
-    await settings.getByRole('button', { name: t('저장'), exact: true }).click();
+    await saveAgentSettings(page, t('저장'));
     await expect(page.locator('.agent-launcher')).toHaveCount(0);
     assert.equal(state.settings.llm_model_option_key, 'agent-llm', 'master toggle preserves independent selection');
     await expect.poll(() => page.evaluate(() => window.agentBlobLifecycle.made.filter(url => !window.agentBlobLifecycle.revoked.includes(url)).length)).toBe(0);
@@ -627,7 +636,7 @@ try {
     const local = JSON.parse(readFileSync(`src/i18n/messages.${locale}.json`, 'utf8'));
     const settings = page.locator('[data-page=agent-settings]');
     await expect(settings.getByRole('switch', { name: local['agent.enable'] })).toBeEnabled();
-    await settings.getByRole('button', { name: local['저장'] || '저장', exact: true }).click();
+    await saveAgentSettings(page, local['저장'] || '저장');
     await expect(settings.getByText(local['agent.saved'])).toBeVisible();
     assert.equal(state.settings.enabled, false);
     assert.equal(state.settings.llm_model_option_key, null);
@@ -651,12 +660,12 @@ try {
     await expect(settings.getByLabel(local['agent.llm'], { exact: true })).toHaveValue('');
     assert.deepEqual(await settings.getByLabel(local['agent.llm'], { exact: true }).locator('option').evaluateAll(nodes => nodes.map(n => n.value)), ['', 'vertex-model']);
     await settings.getByLabel(local['agent.llm'], { exact: true }).selectOption('vertex-model');
-    await settings.getByRole('button', { name: local['저장'] || '저장', exact: true }).click();
+    await saveAgentSettings(page, local['저장'] || '저장');
     await expect(settings.getByText(local['agent.saved'])).toBeVisible();
     await page.reload();
     await expect(settings.getByLabel(local['agent.llmAccount'], { exact: true })).toHaveValue('v');
     await expect(settings.getByLabel(local['agent.llm'], { exact: true })).toHaveValue('vertex-model');
-    await settings.getByRole('button', { name: local['저장'] || '저장', exact: true }).click();
+    await saveAgentSettings(page, local['저장'] || '저장');
     await expect(settings.getByText(local['agent.saved'])).toBeVisible();
     assert.equal(state.settings.llm_model_option_key, 'vertex-model');
     assert.equal(state.settings.image_model_id, 'gpt-image-1.5');

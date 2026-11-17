@@ -6,9 +6,9 @@ const transpile = (source) => ts.transpileModule(source, { compilerOptions: { mo
 const load = (source) => import(`data:text/javascript;base64,${Buffer.from(transpile(source)).toString('base64')}`);
 const { RoomWork, RoomWorkCancelledError, GenerationOwners } = await load(readFileSync(new URL('../src/utils/roomWork.ts', import.meta.url), 'utf8'));
 const lifecycle = await load(readFileSync(new URL('../src/api/generationJobEvents.ts', import.meta.url), 'utf8').replace("import { API_BASE } from '../constants/domain';", "const API_BASE = '/api';"));
-// Execute the actual App functions, not a second implementation or regex assertions.
-const source = ts.createSourceFile('App.tsx', readFileSync(new URL('../src/app/App.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const app = source.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === 'App');
+// Execute the actual session functions, not a second implementation or regex assertions.
+const source = ts.createSourceFile('useConversationSession.ts', readFileSync(new URL('../src/views/ConversationDetail/hooks/useConversationSession.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const app = source.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === 'useConversationSession');
 const names = ['fetchConversation', 'loadOlderMessages', 'revealServerMessages', 'pollGenerationJob', 'waitForGenerationJob', 'loadGeneratedJobMessages', 'resumeGeneration', 'submitConversationPayload'];
 const functions = app.body.statements.filter((node) => ts.isFunctionDeclaration(node) && names.includes(node.name?.text)).map((node) => node.getText(source)).join('\n');
 assert.equal(app.body.statements.filter((node) => ts.isFunctionDeclaration(node) && names.includes(node.name?.text)).length, names.length);

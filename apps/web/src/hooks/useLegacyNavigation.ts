@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
-import { appRouter, toRouterPath } from '../router/appRouter';
+import { useCallback } from 'react';
+import { useRouter, useRouterState } from '@tanstack/react-router';
+import { toRouterPath } from '../router/appRouter';
 import { parseRoute, type LegacyRoute } from '../router/legacyRouter';
 import { useUiStore } from '../stores/uiStore';
 
@@ -9,21 +10,12 @@ export type LegacyNavigationState = {
 };
 
 export function useLegacyNavigation(): LegacyNavigationState {
-  const [route, setRoute] = useState<LegacyRoute>(parseRoute());
+  const router = useRouter();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
   const closeDrawers = useUiStore((state) => state.closeDrawers);
-
   const navigate = useCallback((path: string) => {
-    const nextPath = toRouterPath(path);
-    void appRouter.navigate({ to: nextPath }).catch(() => window.history.pushState({}, '', nextPath));
-    setRoute(parseRoute(nextPath));
+    void router.navigate({ to: toRouterPath(path) });
     closeDrawers();
-  }, [closeDrawers]);
-
-  useEffect(() => {
-    const pop = () => setRoute(parseRoute());
-    window.addEventListener('popstate', pop);
-    return () => window.removeEventListener('popstate', pop);
-  }, []);
-
-  return { route, navigate };
+  }, [router, closeDrawers]);
+  return { route: parseRoute(pathname), navigate };
 }

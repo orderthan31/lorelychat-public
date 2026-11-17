@@ -2,7 +2,8 @@
 from dataclasses import replace
 from types import SimpleNamespace
 import pytest
-from app.api.conversations import AutomaticGenerationContextEvaluation, ContextMaintenanceRequired, _ensure_automatic_generation_context
+from app.services.generation_execution import AutomaticGenerationContextEvaluation, _ensure_automatic_generation_context
+from app.api.conversations import ContextMaintenanceRequired
 from app.db.models import Character, Message, SceneState
 from app.engine.prompt_harness import compile_prompt_harness
 from app.services.context_management_service import ContextCapacity, build_automatic_context_plan
@@ -47,7 +48,7 @@ def test_api_irreducible_authored_card_does_not_trigger_three_compressions(clien
         session.add(Message(id=f'review-history-{i}', conversation_id=room['id'], speaker_type='user',
             speaker_id='user_001', content='Old public fact.', created_at=start + timedelta(seconds=i)))
     session.commit()
-    monkeypatch.setattr('app.api.conversations.resolve_safe_model_context_capacity', lambda *a, **k: capacity())
+    monkeypatch.setattr('app.services.generation_preparation.resolve_safe_model_context_capacity', lambda *a, **k: capacity())
     compression_batches = []
     async def successful_compression(db, conversation_id, recent_messages, **kwargs):
         scene = db.get(SceneState, conversation_id) or SceneState(conversation_id=conversation_id)
@@ -76,7 +77,7 @@ def test_protected_overflow_must_not_reach_provider_in_supported_modes(client, s
     session.commit()
     room = client.post('/conversations', json={'mode':'user_character', 'participants':[
         {'type':'user','id':'user_001'}, {'type':'character','id':char.id}]}).json()
-    monkeypatch.setattr('app.api.conversations.resolve_safe_model_context_capacity', lambda *a, **k: capacity())
+    monkeypatch.setattr('app.services.generation_preparation.resolve_safe_model_context_capacity', lambda *a, **k: capacity())
     captured = []
     async def blocked_transport(**kwargs):
         captured.append(kwargs['messages'])
@@ -95,7 +96,7 @@ def test_protected_overflow_must_not_reach_provider_in_supported_modes(client, s
 def test_actual_job_capacity_failure_has_no_partial_reply_and_typed_diagnostics(client, session, monkeypatch, mode):
     import asyncio
     from sqlmodel import select
-    from app.api.conversations import _run_message_generation_job_in_session
+    from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session
     from app.db.models import MessageGenerationJob, GenerationJobEvent
     monkeypatch.setenv('CONTEXT_MANAGEMENT_MODE', mode)
     get_settings.cache_clear()
@@ -103,7 +104,7 @@ def test_actual_job_capacity_failure_has_no_partial_reply_and_typed_diagnostics(
     room = client.post('/conversations', json={'mode':'user_character', 'participants':[
         {'type':'user','id':'user_001'}, {'type':'character','id':character['id']}]}).json()
     monkeypatch.setattr('app.api.conversations._start_message_generation_worker', lambda job_id: None)
-    monkeypatch.setattr('app.api.conversations.resolve_safe_model_context_capacity', lambda *a, **k: capacity())
+    monkeypatch.setattr('app.services.generation_preparation.resolve_safe_model_context_capacity', lambda *a, **k: capacity())
     calls = []
     async def transport(**kwargs):
         calls.append(kwargs)
@@ -267,7 +268,7 @@ def test_api_arc_can_shrink_and_failed_catchup_keeps_summary_and_source(
     old_summary = scene.summary
     generous = replace(capacity(), working_input_tokens=10000, available_input_tokens=12000,
         context_window_tokens=16384)
-    monkeypatch.setattr('app.api.conversations.resolve_safe_model_context_capacity', lambda *a, **k: generous)
+    monkeypatch.setattr('app.services.generation_preparation.resolve_safe_model_context_capacity', lambda *a, **k: generous)
     calls = []
     async def compress(db, conversation_id, recent_messages, **kwargs):
         current = db.get(SceneState, conversation_id)

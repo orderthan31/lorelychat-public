@@ -1,3 +1,4 @@
+from app.services import generation_preparation
 """Parent integration regressions; synthetic fixture DB only."""
 import pytest
 from pydantic import ValidationError
@@ -92,7 +93,7 @@ def test_compression_preview_capacity_uses_only_reachable_fallback(session, monk
     # from the real account/secret resolver.
     monkeypatch.setattr(preview.runtime_settings_service, 'llm_overrides_for_setting',
                         lambda *a, **kw: {'provider': 'mock', 'model': 'synthetic-primary'})
-    monkeypatch.setattr(preview.model_provider_service, 'option_by_key',
+    monkeypatch.setattr(generation_preparation.model_provider_service, 'option_by_key',
                         lambda _session, key: primary if key == 'primary' else fallback)
     monkeypatch.setattr(preview.runtime_settings_service, 'fallback_llm_overrides_for_setting',
                         lambda *a, **kw: {'model': 'synthetic-fallback'} if available else None)
@@ -105,7 +106,7 @@ def test_compression_preview_capacity_uses_only_reachable_fallback(session, monk
         captured.append((primary_option, fallback_option))
         raise CapacityReached
 
-    monkeypatch.setattr(preview, 'resolve_safe_model_context_capacity', capture)
+    monkeypatch.setattr(generation_preparation, 'resolve_safe_model_context_capacity', capture)
     with pytest.raises(CapacityReached):
         preview.build_compression_preview(session, 'preview-fallback-room')
     assert captured == [(primary, fallback if available else None)]

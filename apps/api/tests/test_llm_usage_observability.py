@@ -1,3 +1,4 @@
+from app.db.llm_telemetry import SQLTelemetryWriter
 import hashlib
 import httpx
 
@@ -33,7 +34,7 @@ def assert_observed_route(metadata, client, *, inside_task):
 
 
 def test_record_usage_persists_finish_reason_and_response_attempt_metadata(session, monkeypatch):
-    monkeypatch.setattr(llm_client_module, "engine", session.get_bind())
+    monkeypatch.setattr(llm_client_module, "default_telemetry_writer", lambda: SQLTelemetryWriter(session.get_bind()))
     client = LLMClient(
         settings=Settings(
             llm_mock=False,
@@ -85,7 +86,7 @@ def test_record_usage_persists_finish_reason_and_response_attempt_metadata(sessi
 
 @pytest.mark.asyncio
 async def test_empty_compression_response_logs_and_persists_safe_diagnostics(session, monkeypatch, caplog):
-    monkeypatch.setattr(llm_client_module, "engine", session.get_bind())
+    monkeypatch.setattr(llm_client_module, "default_telemetry_writer", lambda: SQLTelemetryWriter(session.get_bind()))
     client = LLMClient(
         Settings(llm_mock=False, gemini_api_key="test-only-secret"),
         profile="compression", purpose="conversation_compression",
@@ -121,7 +122,7 @@ async def test_empty_compression_response_logs_and_persists_safe_diagnostics(ses
 
 @pytest.mark.asyncio
 async def test_terminal_transport_failure_persists_sanitized_attempt_metadata(session, monkeypatch):
-    monkeypatch.setattr(llm_client_module, "engine", session.get_bind())
+    monkeypatch.setattr(llm_client_module, "default_telemetry_writer", lambda: SQLTelemetryWriter(session.get_bind()))
     client = LLMClient(
         settings=Settings(llm_mock=False),
         overrides={
@@ -186,7 +187,7 @@ async def test_terminal_transport_failure_persists_sanitized_attempt_metadata(se
 
 @pytest.mark.asyncio
 async def test_character_runtime_persists_canonical_parser_shadow_metrics(session, monkeypatch):
-    monkeypatch.setattr(llm_client_module, "engine", session.get_bind())
+    monkeypatch.setattr(llm_client_module, "default_telemetry_writer", lambda: SQLTelemetryWriter(session.get_bind()))
     client = LLMClient(
         settings=Settings(llm_mock=False),
         overrides={

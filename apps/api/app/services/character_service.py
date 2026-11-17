@@ -1,6 +1,7 @@
 from uuid import uuid4
 from sqlmodel import Session, select
 from sqlalchemy import func
+from app.db.catalog_queries import catalog_page
 from app.db.models import Character, ConversationParticipant, Message, utc_now
 from app.schemas.characters import CharacterCreate, CharacterUpdate, DEFAULT_FORBIDDEN_RULES, DEFAULT_TRAIT_SCORES
 
@@ -22,6 +23,12 @@ def create_character(session: Session, payload: CharacterCreate) -> Character:
     session.commit()
     session.refresh(character)
     return character
+
+
+def list_characters_page(session, *, page: int, page_size: int, q: str | None = None):
+    result = catalog_page(session, Character, fields=[Character.name, Character.description, Character.persona], order=[Character.name, Character.id], page=page, page_size=page_size, q=q, predicates=())
+    result["items"] = [ensure_trait_scores(item) for item in result["items"]]
+    return result
 
 
 def list_characters(session: Session) -> list[Character]:

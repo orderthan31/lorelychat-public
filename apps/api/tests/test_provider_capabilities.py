@@ -1,3 +1,4 @@
+from app.db.llm_telemetry import SQLTelemetryWriter
 """Wire-level capability/accounting regressions. No provider network calls."""
 import json
 
@@ -135,7 +136,7 @@ async def test_unknown_cache_is_not_zero(monkeypatch, details, expected):
 
 @pytest.mark.asyncio
 async def test_usage_metadata_survives_validation_and_sanitizes_warnings(session, monkeypatch):
-    monkeypatch.setattr(module, "engine", session.get_bind())
+    monkeypatch.setattr(module, "default_telemetry_writer", lambda: SQLTelemetryWriter(session.get_bind()))
     transport(monkeypatch, COMPATIBLE_BODY, headers={"warning": '299 provider "PRIVATE BODY synthetic-key"'})
     llm = client("grok-4.7", "https://api.x.ai/v1", stage="command_postprocess")
     response = await llm.chat([], conversation_id="capability-success")
@@ -154,7 +155,7 @@ async def test_usage_metadata_survives_validation_and_sanitizes_warnings(session
 
 @pytest.mark.asyncio
 async def test_failed_transport_keeps_context_but_not_fabricated_usage(session, monkeypatch):
-    monkeypatch.setattr(module, "engine", session.get_bind())
+    monkeypatch.setattr(module, "default_telemetry_writer", lambda: SQLTelemetryWriter(session.get_bind()))
     requests = transport(monkeypatch, {"error": "PRIVATE BODY synthetic-key"}, status=400,
                          headers={"warning": "PRIVATE BODY synthetic-key"})
     llm = client("gpt-5", stage="repair")
@@ -232,7 +233,7 @@ async def test_untrusted_version_and_warning_body_are_not_diagnostics(monkeypatc
 
 @pytest.mark.asyncio
 async def test_circuit_failure_does_not_invent_network_attempt(session, monkeypatch):
-    monkeypatch.setattr(module, "engine", session.get_bind())
+    monkeypatch.setattr(module, "default_telemetry_writer", lambda: SQLTelemetryWriter(session.get_bind()))
     requests = transport(monkeypatch, {"error": "busy"}, status=503)
     llm = client("circuit-test", circuit_breaker_enabled=True, circuit_failure_threshold=1)
     llm.reset_circuit_breakers()

@@ -10,7 +10,8 @@ from app.core.config import get_settings
 from app.db.models import Character, ChatCommand, Conversation, Message, MessageGenerationJob, PostCommitTask
 from app.engine.llm_client import LLMClient, LLMResponse
 from app.engine import free_body_protocol as fb
-from app.api.conversations import _run_message_generation_job_in_session, persist_generated_reply_messages, build_generated_turn_post_commit_tasks
+from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session, persist_generated_reply_messages
+from app.services.post_commit_execution import build_generated_turn_post_commit_tasks
 from app.schemas.conversations import MessageCreate
 from app.services import conversation_service, chat_command_service, tts_service
 

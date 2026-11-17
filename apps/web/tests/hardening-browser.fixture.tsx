@@ -1,3 +1,5 @@
+import { RouterProvider } from '@tanstack/react-router';
+import { createAppRouter } from '../src/router/appRouter';
 /// <reference types="vite/client" />
 import React, {useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
@@ -20,4 +22,4 @@ Object.assign(window,{contract:{conversationApi,http,api}});
 function UnavailableSettings(){const [setting,setSetting]=useState<any>({fallback_model_key:'requested-chat',compression_fallback_model_key:'requested-compression',chat_fallback_status:'unavailable',compression_fallback_status:'unavailable'});Object.assign(window,{hardeningSettings:()=>setting});return <RuntimeSettingsPanel setting={setting} onChange={setSetting}/>;}
 if(params.has('bubbles'))createRoot(document.getElementById('root')!).render(<I18nProvider><Bubbles/></I18nProvider>);
 else if(params.has('unavailable-settings'))createRoot(document.getElementById('root')!).render(<I18nProvider><UnavailableSettings/></I18nProvider>);
-else createRoot(document.getElementById('root')!).render(<AppProviders><App/></AppProviders>);
+else createRoot(document.getElementById('root')!).render(<AppProviders><RouterProvider router={createAppRouter(App)}/></AppProviders>);

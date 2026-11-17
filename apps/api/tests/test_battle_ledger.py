@@ -1,3 +1,4 @@
+from app.services import generation_execution
 from app.api import conversations as conversations_api
 from app.db.models import BattleMatchRecord, BattleStanding, Character, Conversation, ConversationParticipant
 from app.services import battle_ledger_service, conversation_service, genre_domain_service
@@ -259,7 +260,7 @@ def test_message_api_battle_control_start_progress_end_updates_official_ledger(c
     async def fake_generate_replies_from_message(**kwargs):
         return [kwargs["incoming_message"]]
 
-    monkeypatch.setattr(conversations_api, "generate_replies_from_message", fake_generate_replies_from_message)
+    monkeypatch.setattr(generation_execution, "generate_replies_from_message", fake_generate_replies_from_message)
     monkeypatch.setattr(battle_ledger_service.external_memory_service, "sync_battle_memory_card_to_external", lambda *args, **kwargs: None)
 
     start_response = client.post("/conversations/conv_battle_control/messages", json={
@@ -340,7 +341,7 @@ def test_battle_control_rejects_invalid_active_pair(client, session, monkeypatch
     async def fake_generate_replies_from_message(**kwargs):
         return [kwargs["incoming_message"]]
 
-    monkeypatch.setattr(conversations_api, "generate_replies_from_message", fake_generate_replies_from_message)
+    monkeypatch.setattr(generation_execution, "generate_replies_from_message", fake_generate_replies_from_message)
     response = client.post("/conversations/conv_battle_invalid_pair/messages", json={
         "speaker_type": "user",
         "speaker_id": "user_001",
@@ -364,14 +365,14 @@ async def test_battle_control_survives_async_job_rehydration(client, session, mo
 
     async def fake_generate_replies_from_message(**kwargs):
         captured["payload"] = kwargs["payload"]
-        captured["runtime_context"] = conversations_api.build_battle_control_runtime_context(
+        captured["runtime_context"] = generation_execution.build_battle_control_runtime_context(
             kwargs["session"],
             kwargs["payload"],
             conversation_id=kwargs["conversation_id"],
         )
         return []
 
-    monkeypatch.setattr(conversations_api, "generate_replies_from_message", fake_generate_replies_from_message)
+    monkeypatch.setattr(generation_execution, "generate_replies_from_message", fake_generate_replies_from_message)
     response = client.post("/conversations/conv_battle_async_control/messages/jobs", json={
         "speaker_type": "user",
         "speaker_id": "user_001",
@@ -388,7 +389,7 @@ async def test_battle_control_survives_async_job_rehydration(client, session, mo
     assert response.status_code == 200
     body = response.json()
     assert body["incoming_message"]["metadata"]["battle_control"]["action"] == "start"
-    await conversations_api._run_message_generation_job_in_session(session, body["job"]["id"])
+    await generation_execution.run_message_generation_job_in_session(session, body["job"]["id"])
 
     assert captured["payload"].battle_control.action == "start"
     assert captured["runtime_context"]["action"] == "start"

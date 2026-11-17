@@ -14,7 +14,9 @@ from app.api.images import router as images_router
 from app.api.lore_agent import router as lore_agent_router
 from app.api.characters import router as characters_router
 from app.api.chat_commands import router as chat_commands_router
-from app.api.conversations import _run_message_generation_job_sync, _run_post_commit_task_sync, _run_mock_generation_queue, router as conversations_router
+from app.api.conversations import router as conversations_router
+from app.services.generation_execution import run_message_generation_job_sync, run_mock_generation_queue
+from app.services.post_commit_execution import run_post_commit_task_sync
 from app.api.data_cleanup import router as data_cleanup_router
 
 from app.api.model_providers import router as model_providers_router
@@ -48,7 +50,7 @@ async def _supervise_mock_generation(app: FastAPI, target_engine):
         try:
             # The mock runner filters durable execution_mode=mock rows; imported
             # live-intended queues are neither recovered nor claimed here.
-            await _run_mock_generation_queue(target_engine)
+            await run_mock_generation_queue(target_engine)
             app.state.mock_executor_healthy = True
         except asyncio.CancelledError:
             raise
@@ -98,8 +100,8 @@ async def lifespan(app: FastAPI):
                 conversation_service.requeue_expired_post_commit_tasks(session)
         dispatcher_started = not settings.llm_mock
         if dispatcher_started:
-            generation_dispatcher.start(_run_message_generation_job_sync)
-            post_commit_dispatcher.start(_run_post_commit_task_sync)
+            generation_dispatcher.start(run_message_generation_job_sync)
+            post_commit_dispatcher.start(run_post_commit_task_sync)
         if settings.llm_mock and getattr(app.state, "mock_execution", True):
             app.state.mock_executor_healthy = False
             mock_task = asyncio.create_task(_supervise_mock_generation(app, target_engine))

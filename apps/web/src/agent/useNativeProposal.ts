@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { characterApi, settingsApi } from '../api/resources';
 import { DEFAULT_FORBIDDEN_RULES, DEFAULT_TRAIT_SCORES, EMPTY_CHARACTER } from '../constants/domain';
-import { emptyWorld } from '../views/WorldSettings';
+import { createEmptyWorld } from '../utils/worldSettings';
 import type { RoomWork } from '../utils/roomWork';
 import { agentApi } from './api';
 import { agentActions, NATIVE_PROPOSAL_FIELDS, proposalValueEqual, useAgentStore } from './store';
@@ -65,7 +65,7 @@ export function useNativeProposal(route: { page: string; id?: string }, navigate
       } else {
         const worlds = draft.target_id ? await settingsApi.worldSettings() as Form[] : [];
         authoredBaseline = (draft.target_id ? worlds.find(world => world.id === draft.target_id) : {}) || {};
-        baseline = { ...emptyWorld, ...authoredBaseline };
+        baseline = { ...createEmptyWorld(), ...authoredBaseline };
       }
       const initial = prefillProposal(draft, baseline);
       if (owns()) setReview({ token: request.token, draft, initial, baseline, authoredBaseline, form: initial });

@@ -34,7 +34,7 @@ def test_external_disabled_default_has_no_provider_work(monkeypatch):
 @pytest.mark.parametrize("entrypoint", ["manual", "durable"])
 def test_real_tts_entrypoints_reject_an_inflight_edit(tmp_path, monkeypatch, entrypoint):
     from app.api.tts import synthesize_message_tts
-    from app.api.conversations import _execute_claimed_post_commit_task
+    from app.services.post_commit_execution import execute_claimed_post_commit_task as _execute_claimed_post_commit_task
     engine = create_engine("sqlite:///" + str(tmp_path / "integration.db"))
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
@@ -67,7 +67,7 @@ def test_real_tts_entrypoints_reject_an_inflight_edit(tmp_path, monkeypatch, ent
 @pytest.mark.parametrize("poison_asset", [False, True])
 def test_compact_actual_job_preserves_paid_primary_when_auxiliary_exceeds_capacity(client, session, monkeypatch, poison_asset):
     import json
-    from app.api.conversations import _run_message_generation_job_in_session
+    from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session
     from app.core.config import get_settings
     from app.db.models import ChatCommand
     from app.engine.llm_client import LLMClient, LLMResponse

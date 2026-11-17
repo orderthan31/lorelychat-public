@@ -23,44 +23,7 @@ import { genreModeLabel } from '../../utils/genre';
 import { useI18n } from '../../i18n/I18nProvider';
 import { formatNamedAction, type UiMessageKey } from '../../i18n/core';
 
-export type WorldSettingItem = {
-  id?: string;
-  title: string;
-  thumbnail_url?: string | null;
-  description?: string | null;
-  genre_mode?: string | null;
-  location?: string | null;
-  mood?: string | null;
-  world_seed?: string | null;
-  opening_scene?: string | null;
-  opening_line?: string | null;
-  tone_preset?: string | null;
-  relationship_archetype?: string | null;
-  compression_focus?: string | null;
-  tags?: string[];
-  enabled?: boolean;
-};
-
-export const emptyWorld: WorldSettingItem = {
-  title: '',
-  thumbnail_url: '',
-  description: '',
-  genre_mode: DEFAULT_GENRE_MODE,
-  location: '',
-  mood: '',
-  world_seed: '',
-  opening_scene: '',
-  opening_line: '',
-  tone_preset: '',
-  relationship_archetype: '',
-  compression_focus: '',
-  tags: [],
-  enabled: true,
-};
-
-export function normalizeWorld(world?: WorldSettingItem): WorldSettingItem {
-  return { ...emptyWorld, ...(world || {}), genre_mode: world?.genre_mode || DEFAULT_GENRE_MODE };
-}
+import { normalizeWorld, type WorldSettingItem } from '../../utils/worldSettings';
 
 export type WorldSettingsListViewProps = {
   worldSettings?: WorldSettingItem[];

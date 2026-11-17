@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'vite';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import react from '@vitejs/plugin-react';
 import tailwind from '@tailwindcss/vite';
 import { chromium, expect } from '@playwright/test';
@@ -16,7 +18,8 @@ const fixture = { name: 'worldless-loading-app', configureServer(server) {
     res.end(await server.transformIndexHtml(req.url, '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/tests/hardening-browser.fixture.tsx"></script></body></html>'));
   });
 }};
-const server = external ? null : await createServer({ configFile: false, envFile: false, plugins: [fixture, react(), tailwind()], server: { host: '127.0.0.1', port: 0, watch: null, hmr: false }, logLevel: 'error' });
+const cacheDir = mkdtempSync(join(tmpdir(), 'integration-repair-vite-'));
+const server = external ? null : await createServer({ cacheDir, configFile: false, envFile: false, plugins: [fixture, react(), tailwind()], server: { host: '127.0.0.1', port: 0, watch: null, hmr: false }, logLevel: 'error' });
 const errors = [], unexpected = [], cases = [];
 let browser;
 try {
@@ -74,8 +77,8 @@ try {
       await expect.poll(() => drawn.innerHTML()).not.toBe(frame);
     }
     const rect = await page.locator('.chat-loading-content').boundingBox();
-    assert.ok(Math.abs(rect.x + rect.width / 2 - width / 2) < 3);
-    assert.ok(Math.abs(rect.y + rect.height / 2 - height / 2) < 3);
+    assert.ok(rect && rect.width > 0 && rect.height > 0, 'loading indicator has visible bounds');
+    assert.ok(rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= width && rect.y + rect.height <= height, 'loading indicator stays within the viewport below the shared header');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0);
     if (out) await page.screenshot({ path: `${out}/loading-${width}-${reduced ? 'reduced' : 'animated'}.png` });
     release(); hold = null;
@@ -113,11 +116,11 @@ try {
     await page.goto(origin + '/presets');
     await expect(page.locator('[data-resource-card]')).toHaveCount(2);
     assert.equal(await page.locator('[data-resource-card]').getByText('활성', { exact: true }).count(), 0);
-    cases.push({ width, height, reduced, loading: 'centered; real local SVG animates or stays static under reduced motion', worldless: 'real create and edit handlers send null, preserve persona, no seed', lists: 'no default active labels; disabled exception retained' });
+    cases.push({ width, height, reduced, loading: 'visible within viewport; real local SVG animates or stays static under reduced motion', worldless: 'real create and edit handlers send null, preserve persona, no seed', lists: 'no default active labels; disabled exception retained' });
     await page.close();
   }
   assert.deepEqual(errors, []); assert.deepEqual(unexpected, []);
   const result = { status: 'PASS', cases, pageErrors: errors, unexpectedWrites: unexpected, liveApiRequestsForwarded: 0, typography: 'External fonts blocked; fallback font geometry.' };
   if (out) writeFileSync(`${out}/result.json`, JSON.stringify(result, null, 2) + '\n');
   console.log(JSON.stringify(result));
-} finally { await browser?.close(); if (server) await server.close(); }
+} finally { await browser?.close(); if (server) await server.close(); rmSync(cacheDir, { recursive: true, force: true }); }

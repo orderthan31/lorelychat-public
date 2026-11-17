@@ -1,3 +1,4 @@
+from app.services import generation_execution, generation_preparation, post_commit_execution
 """Actual isolated API/job/preview tests for comparison paths."""
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -76,7 +77,7 @@ def test_full_history_real_job_preview_and_saved_arc(client,session,monkeypatch,
     if serialization=='native':
         assert not any(s['key']=='recent_messages' for s in preview['sections'])
         assert all('outside system' in s['title'] for s in preview['sections'] if s['key'].startswith('native_history'))
-    asyncio.run(api._run_message_generation_job_in_session(session,job_id))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session,job_id))
     session.expire_all()
     job=session.get(MessageGenerationJob,job_id)
     saved=session.get(SceneState,room['id'])
@@ -103,7 +104,7 @@ def test_full_history_real_job_preview_and_saved_arc(client,session,monkeypatch,
         assert got[-1]['thought']=='Private voice survives.'
         snap=session.exec(select(LLMPromptSnapshot).where(LLMPromptSnapshot.source_message_id==data['incoming_message']['id'])).one()
         assert snap.messages_json==main[0]
-        asyncio.run(api._run_message_generation_job_in_session(session,job_id))
+        asyncio.run(generation_execution.run_message_generation_job_in_session(session,job_id))
         assert len(main)==1 and compress==[]
 
 
@@ -121,8 +122,7 @@ def test_native_preview_pressure_and_dispatch_threshold_agree(client,session,mon
     preview=client.get(f"/conversations/{room['id']}/context-preview").json()
     threshold=preview['projected_input_tokens']
     narrow=replace(resolve_safe_model_context_capacity(None),working_input_tokens=threshold-1)
-    monkeypatch.setattr(api,'resolve_safe_model_context_capacity',lambda *a,**k:narrow)
-    monkeypatch.setattr(context_preview_service,'resolve_safe_model_context_capacity',lambda *a,**k:narrow)
+    monkeypatch.setattr(generation_preparation,'resolve_safe_model_context_capacity',lambda *a,**k:narrow)
     guarded=[]
     original=conversation_service.automatic_context_plan
     def capture(*args,**kwargs):
@@ -140,7 +140,7 @@ def test_native_preview_pressure_and_dispatch_threshold_agree(client,session,mon
     assert tiny['projected_input_tokens']==threshold
     assert any('context_budget_exceeded' in w for w in tiny['warnings'])
     client.get(f"/conversations/{room['id']}/compression-preview")
-    asyncio.run(api._run_message_generation_job_in_session(session,queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session,queued['job']['id']))
     session.expire_all()
     assert session.get(MessageGenerationJob,queued['job']['id']).status=='failed'
     assert 'main' not in calls
@@ -164,7 +164,7 @@ def test_automatic_compression_tasks_respect_frozen_full_policy_but_manual_keeps
         status='processing',lease_owner='comparison-worker',payload_={'conversation_id':room['id'],
         'generated_character_count':1,'character_ids':[char['id']], 'chat_context_policy':'full_history'})
     session.add(task);session.commit()
-    asyncio.run(api._execute_claimed_post_commit_task(session,task,lease_owner='comparison-worker'))
+    asyncio.run(post_commit_execution.execute_claimed_post_commit_task(session,task,lease_owner='comparison-worker'))
     session.expire_all()
     assert session.get(PostCommitTask,task.id).status=='completed' and calls==[]
     options(monkeypatch,'native','full_history')
@@ -206,7 +206,7 @@ def test_native_real_api_combined_job_atomicity_replay(client,session,monkeypatc
     queued=client.post(f"/conversations/{room['id']}/messages/jobs",json={
         'speaker_type':'user','speaker_id':'user_001','content':'COMPARISON SOURCE'}).json()
     job_id=queued['job']['id']
-    asyncio.run(api._run_message_generation_job_in_session(session,job_id))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session,job_id))
     status=client.get(f"/conversations/{room['id']}/generation-jobs/{job_id}").json()
     data=client.get(f"/conversations/{room['id']}/messages").json()
     primary_calls=[messages for purpose,messages in calls if purpose=='chat_generation']
@@ -237,7 +237,7 @@ def test_native_real_api_combined_job_atomicity_replay(client,session,monkeypatc
         assert outcome['status']==('combined_success' if case=='success' else 'fallback')
         assert snapshot.metadata_['parse_status']=='success'
         before=len(calls)
-        asyncio.run(api._run_message_generation_job_in_session(session,job_id))
+        asyncio.run(generation_execution.run_message_generation_job_in_session(session,job_id))
         assert len(calls)==before
     saved=session.get(SceneState,room['id'])
     assert saved.summary=='DERIVED ARC MUST STAY STORED' and saved.compression_revision==7
@@ -264,7 +264,7 @@ def test_full_history_complete_prefix_beyond_legacy_tail_excludes_later_input(cl
         captured.append(messages)
         return LLMResponse(content='<m c="C1">Answer selected source.</m>',finish_reason='STOP')
     monkeypatch.setattr('app.engine.llm_client.LLMClient.chat',chat)
-    asyncio.run(api._run_message_generation_job_in_session(session,queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session,queued['job']['id']))
     session.expire_all()
     snap=session.exec(select(LLMPromptSnapshot).where(LLMPromptSnapshot.source_message_id==queued['incoming_message']['id'])).one()
     assert snap.metadata_['history_message_ids']==[m.id for m in rows+extra]
@@ -290,7 +290,7 @@ def test_native_real_pressure_keeps_interleaved_multibubble_job_indivisible(clie
     queued=client.post(f"/conversations/{room['id']}/messages/jobs",json={'speaker_type':'user','speaker_id':'u','content':'SOURCE'}).json()
     preview=client.get(f"/conversations/{room['id']}/context-preview").json()
     cap=replace(resolve_safe_model_context_capacity(None),working_input_tokens=preview['projected_input_tokens']-1)
-    monkeypatch.setattr(api,'resolve_safe_model_context_capacity',lambda *a,**k:cap)
+    monkeypatch.setattr(generation_preparation,'resolve_safe_model_context_capacity',lambda *a,**k:cap)
     plans=[];original=conversation_service.automatic_context_plan
     def plan(*a,**k):
         value=original(*a,**k);plans.append(value);return value
@@ -298,7 +298,7 @@ def test_native_real_pressure_keeps_interleaved_multibubble_job_indivisible(clie
     async def noop(*a,**k):
         return session.get(SceneState,room['id'])
     monkeypatch.setattr(conversation_service,'update_scene_orchestration_summary',noop)
-    asyncio.run(api._run_message_generation_job_in_session(session,queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session,queued['job']['id']))
     assert plans and plans[0].pressure.total_group_count==2
     assert plans[0].fold_message_ids==tuple(m.id for m in rows)
 
@@ -314,12 +314,12 @@ def test_full_native_exact_capacity_accepts_same_preview_request(client,session,
     preview=client.get(f"/conversations/{room['id']}/context-preview").json()
     threshold=preview['projected_input_tokens']
     cap=replace(resolve_safe_model_context_capacity(None),working_input_tokens=threshold)
-    monkeypatch.setattr(api,'resolve_safe_model_context_capacity',lambda *a,**k:cap)
+    monkeypatch.setattr(generation_preparation,'resolve_safe_model_context_capacity',lambda *a,**k:cap)
     captured=[]
     async def chat(self,messages,**kwargs):
         captured.append(messages);return LLMResponse(content='<m c="C1">Exactly fits.</m>',finish_reason='STOP')
     monkeypatch.setattr('app.engine.llm_client.LLMClient.chat',chat)
-    asyncio.run(api._run_message_generation_job_in_session(session,queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session,queued['job']['id']))
     status=client.get(f"/conversations/{room['id']}/generation-jobs/{queued['job']['id']}").json()
     assert status['status']=='completed' and len(captured)==1
     session.expire_all()
@@ -354,7 +354,7 @@ def test_actual_full_preview_and_job_clamp_to_reachable_fallback_without_changin
         calls.append(1);raise AssertionError('narrow fallback capacity must reject before all providers')
     monkeypatch.setattr(LLMClient,'chat',forbidden)
     monkeypatch.setattr(conversation_service,'update_scene_orchestration_summary',forbidden)
-    asyncio.run(api._run_message_generation_job_in_session(session,queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session,queued['job']['id']))
     status=client.get(f"/conversations/{room['id']}/generation-jobs/{queued['job']['id']}").json()
     assert status['status']=='failed' and status['error_code']=='context_maintenance_required'
     assert calls==[] and setting.compression_strategy=='quality'

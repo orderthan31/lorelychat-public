@@ -71,7 +71,7 @@ PANEL = {"messages": [{"content": "", "blocks": [{"type": "note", "title": "Stat
 
 @pytest.mark.parametrize("outcome", ["success", "repair", "exhausted", "rollback"])
 def test_actual_auxiliary_await_ends_reads_before_initial_and_repair(client, session, monkeypatch, outcome):
-    from app.api.conversations import _run_message_generation_job_in_session
+    from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session
     room, job = _job(client, session, monkeypatch, context_sources=["world", "scene", "characters", "turn_messages"])
     auxiliary = []
     primary = []
@@ -154,7 +154,7 @@ def _unicode_payload(field, scalar):
 @pytest.mark.parametrize("field", ["content", "title", "text", "author", "cell", "nested"])
 @pytest.mark.parametrize("scalar", ["\ud800", "\udfff"])
 def test_standalone_and_rewrite_reject_unicode_before_actual_persistence(client, session, monkeypatch, target, field, scalar, raw_scalar):
-    from app.api.conversations import _run_message_generation_job_in_session
+    from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session
     room, job = _job(client, session, monkeypatch, target=target, context_sources=[])
     calls = []
     async def fake_chat(self, messages, response_format=None, **kwargs):
@@ -183,7 +183,7 @@ def test_standalone_and_rewrite_reject_unicode_before_actual_persistence(client,
 
 @pytest.mark.parametrize("target", ["last_bubble", "all_bubbles"])
 def test_valid_long_rewrite_and_private_thought_persist_losslessly(client, session, monkeypatch, target):
-    from app.api.conversations import _run_message_generation_job_in_session
+    from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session
     room, job = _job(client, session, monkeypatch, target=target, context_sources=[])
     prose = " ".join(f"At waypoint {i}, a distinct trail sign describes the valley route {i*i}." for i in range(75)) + " 🗺️ END"
     thought = " ".join(f"Private observation {i}: the mark on stone {i*i} requires a different route." for i in range(40))

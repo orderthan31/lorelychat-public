@@ -16,7 +16,6 @@ function handler(name, dependencies) {
   const env = { ...dependencies, ownUI: () => dependencies, route: { page: dependencies.chatCommandDraft?.id ? 'chatCommandDetail' : 'chatCommandNew' }, routeId: dependencies.chatCommandDraft?.id, routeWork: { capture: () => ({ current: true }) } };
   return new Function(...Object.keys(env), `${compile(found)}; return ${name};`)(...Object.values(env));
 }
-assert.match(source, /\[chatCommandDraft, setChatCommandDraft\] = useState<any>\(normalizeChatCommandDraft\(\)\)/);
 for (const selection of [undefined, [], ['note', 'table'], ['future_block', 'cards']]) {
   const draft = { name: '!synthetic', postprocess_prompt: 'Synthetic instruction', ...(selection === undefined ? {} : { postprocess_block_types: selection }) };
   assert.deepEqual(normalizeChatCommandDraft(draft).postprocess_block_types, selection ?? []);
@@ -62,11 +61,14 @@ function harness() {
   let cleanup, previous, draft, status = '';
   const pending = [];
   const t = key => key;
-  const hook = new Function('useEffect', 'useI18n', 'settingsApi', 'normalizeChatCommandDraft', `${compile(hookText)}; return useRouteResourceSync;`)(
+  const hook = new Function('useEffect', 'useI18n', 'settingsApi', 'normalizeChatCommandDraft', 'useQueryClient', 'queryKeys', `${compile(hookText)}; return useRouteResourceSync;`)(
     (effect, deps) => {
       if (previous && deps.every((value, index) => Object.is(value, previous[index]))) return;
       cleanup?.(); previous = deps; cleanup = effect();
-    }, () => ({ t }), { chatCommands: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) }, normalizeChatCommandDraft);
+    }, () => ({ t }), { chatCommands: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) }, normalizeChatCommandDraft,
+    // Inject the request boundary, not a second implementation of the hook.
+    // Cache deduplication is covered by the server-state owner tests.
+    () => ({ fetchQuery: ({ queryFn }) => queryFn() }), { chatCommands: ['chat-commands'] });
   return {
     pending, get draft() { return draft; }, get status() { return status; },
     edit(value) { draft = value; },

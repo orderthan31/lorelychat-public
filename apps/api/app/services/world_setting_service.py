@@ -3,9 +3,10 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlmodel import Session, select
 
+from app.db.catalog_queries import catalog_page
 from app.db.models import WorldSetting
 from app.schemas.world_settings import WorldSettingCreate, WorldSettingUpdate
-from app.services.conversation_service import normalize_genre_mode
+from app.services.genre_domain_service import normalize_genre_mode
 
 
 def _clean_text(value: str | None) -> str | None:
@@ -13,18 +14,33 @@ def _clean_text(value: str | None) -> str | None:
     return text or None
 
 
-def _apply_payload(world: WorldSetting, data: dict) -> WorldSetting:
+def normalize_authored_world_fields(data: dict) -> dict:
+    """Normalize validated authored fields without ORM, clock or transaction effects."""
+    from copy import deepcopy
+
+    normalized = {}
     for key, value in data.items():
         if key == 'genre_mode' and value is not None:
-            setattr(world, key, normalize_genre_mode(value))
+            normalized[key] = normalize_genre_mode(value)
         elif key == 'tags' and value is not None:
-            setattr(world, key, [str(item).strip() for item in value if str(item).strip()])
+            normalized[key] = [str(item).strip() for item in value if str(item).strip()]
         elif isinstance(value, str) or value is None:
-            setattr(world, key, _clean_text(value))
+            normalized[key] = _clean_text(value)
         else:
-            setattr(world, key, value)
+            normalized[key] = deepcopy(value)
+    return normalized
+
+
+def _apply_payload(world: WorldSetting, data: dict) -> WorldSetting:
+    for key, value in normalize_authored_world_fields(data).items():
+        setattr(world, key, value)
     world.updated_at = datetime.now(timezone.utc)
     return world
+
+
+def list_world_settings_page(session, *, page: int, page_size: int, q: str | None = None, include_disabled: bool = False):
+    result = catalog_page(session, WorldSetting, fields=[WorldSetting.title, WorldSetting.description, WorldSetting.world_seed, WorldSetting.opening_scene, WorldSetting.compression_focus], order=[WorldSetting.updated_at.desc(), WorldSetting.created_at.desc(), WorldSetting.id], page=page, page_size=page_size, q=q, predicates=() if include_disabled else (WorldSetting.enabled == True,))
+    return result
 
 
 def list_world_settings(session: Session, *, include_disabled: bool = False) -> list[WorldSetting]:

@@ -271,7 +271,7 @@ async def test_nontruncated_invalid_json_keeps_panel_only_fallback(mode, suffix)
 @pytest.mark.parametrize('protocol', ['tagged_text', 'free_body_json'])
 @pytest.mark.parametrize('fenced_control', [False, True])
 def test_complete_invalid_length_job_rejects_without_persistence(client, session, monkeypatch, mode, protocol, fenced_control):
-    from app.api.conversations import _run_message_generation_job_in_session
+    from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session
     from app.db.models import Conversation, PostCommitTask
     from app.engine.llm_client import LLMClient
     from sqlmodel import select

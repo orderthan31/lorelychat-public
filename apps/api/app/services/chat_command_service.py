@@ -12,6 +12,7 @@ from uuid import uuid4
 from sqlalchemy import and_, asc, desc, or_
 from sqlmodel import Session, select
 
+from app.db.catalog_queries import catalog_page
 from app.db.models import ChatCommand, Character, CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, Message, SceneState, WorldSetting
 from app.engine import prompts
 from app.engine.text_scanner import require_unicode_scalars
@@ -165,6 +166,11 @@ class ParsedChatCommand:
     command: ChatCommand
     args: str
     raw_content: str
+
+
+def list_chat_commands_page(session, *, page: int, page_size: int, q: str | None = None, include_disabled: bool = False):
+    result = catalog_page(session, ChatCommand, fields=[ChatCommand.name, ChatCommand.display_name, ChatCommand.description, ChatCommand.generation_prompt, ChatCommand.postprocess_prompt, ChatCommand.prompt], order=[ChatCommand.priority.desc(), ChatCommand.name], page=page, page_size=page_size, q=q, predicates=() if include_disabled else (ChatCommand.enabled == True,))
+    return result
 
 
 def list_chat_commands(session: Session, *, include_disabled: bool = False) -> list[ChatCommand]:

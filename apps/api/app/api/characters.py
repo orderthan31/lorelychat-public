@@ -1,7 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
-from app.db.models import Character
-from app.ops.catalog_queries import catalog_page
 from app.db.session import get_session
 from app.schemas.characters import CharacterCreate, CharacterRead, CharacterUpdate, CharacterUsageRead
 from app.schemas.pagination import CharacterPageRead
@@ -27,8 +25,8 @@ def list_characters(
     session: Session = Depends(get_session),
 ):
     if paginated:
-        result = catalog_page(session, Character, fields=[Character.name, Character.description, Character.persona], order=[Character.name, Character.id], page=page, page_size=page_size, q=q, predicates=())
-        result["items"] = [CharacterRead.model_validate(character_service.ensure_trait_scores(item).model_dump()) for item in result["items"]]
+        result = character_service.list_characters_page(session, page=page, page_size=page_size, q=q)
+        result["items"] = [CharacterRead.model_validate(item.model_dump()) for item in result["items"]]
         return CharacterPageRead(**result)
     return character_service.list_characters(session)
 

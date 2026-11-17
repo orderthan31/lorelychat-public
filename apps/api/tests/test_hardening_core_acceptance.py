@@ -1,3 +1,4 @@
+from app.services import post_commit_execution
 import asyncio
 from datetime import datetime, timezone
 
@@ -119,7 +120,7 @@ def test_mock_executor_suppresses_external_tts_and_future_paid_tasks(client, ses
     cid,_=room(client)
     saved=session.get(Conversation,cid);saved.tts_enabled=True;session.add(saved);session.commit()
     calls=[]
-    monkeypatch.setattr(api.tts_service,'ensure_message_tts',lambda *a,**kw:calls.append(1))
+    monkeypatch.setattr(post_commit_execution.tts_service,'ensure_message_tts',lambda *a,**kw:calls.append(1))
     response=client.post(f'/conversations/{cid}/messages/jobs',json={'speaker_type':'user','speaker_id':'u','content':'No paid side effects in mock onboarding.'})
     assert response.status_code==200
     assert calls==[]

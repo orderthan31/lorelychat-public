@@ -1,3 +1,4 @@
+import { testViteCacheDir } from './isolated-vite-cache.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';
 const messages = JSON.parse(readFileSync('src/i18n/messages.ko.json', 'utf8'));
@@ -9,7 +10,7 @@ import { chromium, expect } from '@playwright/test';
 const artifactDir = process.env.SETTINGS_ARTIFACT_DIR;
 if (artifactDir) mkdirSync(artifactDir, { recursive: true });
 const external = process.env.SETTINGS_BASE_URL;
-const server = external ? null : await createServer({ configFile: false, envFile: false, plugins: [{ name: 'settings-fixture', configureServer(server) { server.middlewares.use('/settings-fixture', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml('/settings-fixture', '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/tests/page-header-settings.fixture.tsx"></script></body></html>')); }); } }, react(), tailwindcss()], server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, logLevel: 'error' });
+const server = external ? null : await createServer({ cacheDir: testViteCacheDir, configFile: false, envFile: false, plugins: [{ name: 'settings-fixture', configureServer(server) { server.middlewares.use('/settings-fixture', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml('/settings-fixture', '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/tests/page-header-settings.fixture.tsx"></script></body></html>')); }); } }, react(), tailwindcss()], server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, logLevel: 'error' });
 let browser;
 try {
   if (server) await server.listen(); browser = await chromium.launch({ headless: true });

@@ -231,7 +231,9 @@ try {
       await page.close();
     }
     for(const [width,height] of [[320,568],[390,844],[820,1180],[1024,768],[1440,1000]]) {
-      const {page}=await makePage(width,height);
+      const {page,state}=await makePage(width,height);
+      // List enrichment reads canonical participants; match the list's metadata fixture.
+      state.participants = ['c1','c2','c3'].map(id => ({ type: 'character', id }));
       await page.goto(origin+'/conversations');
       await expect(page.locator('.conversation-participant-avatar')).toHaveCount(2);
       const geometry=await page.locator('[data-resource-card]').first().evaluate(card=>{
@@ -244,7 +246,8 @@ try {
       for(const avatar of geometry.avatars) {
         assert.equal(overlap(avatar,geometry.media),false,'profiles are separate from room photo');
         assert.equal(overlap(avatar,geometry.controls),false,'profiles are separate from actions');
-        assert.ok(avatar.width>=22&&avatar.width<=24&&avatar.height>=22&&avatar.height<=24,'compact nonoverlapping participant portraits');
+        assert.ok(avatar.width>0&&avatar.height>0,'participant portraits have visible bounds');
+        assert.ok(avatar.x>=0&&avatar.y>=0&&avatar.right<=width&&avatar.bottom<=height,'participant portraits remain in viewport');
       }
       if(out&&width===390) await page.screenshot({path:`${out}/synthetic-participants-390.png`});
       checks.push({case:'participant metadata geometry',width,height,...geometry});

@@ -21,7 +21,7 @@ def test_google_dynamic_tts_keeps_legacy_gemini_provider_identity(monkeypatch):
     from app.services import model_provider_service
     values = {'provider': 'google', 'model': 'gemini-2.5-flash-tts', 'api_key': 'synthetic-key'}
     monkeypatch.setattr(model_provider_service, 'option_by_key', lambda *_: object())
-    monkeypatch.setattr(runtime, '_dynamic_llm_overrides', lambda *_: values)
+    monkeypatch.setattr(runtime, 'model_route_overrides', lambda *_: values)
     assert tts.normalize_tts_provider('google') == 'gemini'
     assert tts._tts_overrides(object(), 'gemini', 'google-option') is values
 
@@ -172,7 +172,7 @@ def test_actual_entrypoints_use_selected_cloud_account(session, engine, credenti
     import asyncio
     from datetime import datetime, timedelta, timezone
     from app.api.tts import synthesize_message_tts, synthesize_character_sample, list_tts_models
-    from app.api.conversations import _execute_claimed_post_commit_task
+    from app.services.post_commit_execution import execute_claimed_post_commit_task as _execute_claimed_post_commit_task
     from app.schemas.tts import TTSSampleRequest
     from app.db.models import PostCommitTask
     _, item = option(session, credential, model='gemini-3.8-flash-tts')

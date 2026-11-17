@@ -4,9 +4,10 @@ import ts from 'typescript';
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
 const transpile = source => ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
 const load = source => import(`data:text/javascript;base64,${Buffer.from(transpile(source)).toString('base64')}`);
+const { queryKeys } = await load(read('../src/api/queryKeys.ts'));
 const { RoomWork, GenerationOwners } = await load(read('../src/utils/roomWork.ts'));
-const ast = ts.createSourceFile('App.tsx', read('../src/app/App.tsx'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const app = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'App');
+const ast = ts.createSourceFile('App.tsx', read('../src/views/ConversationDetail/hooks/useConversationSession.ts'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const app = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'useConversationSession');
 const names = ['fetchConversation', 'inviteCharacterToConversation', 'retryConversationRefresh'];
 const declarations = app.body.statements.filter(n => ts.isFunctionDeclaration(n) && names.includes(n.name?.text)).map(n => n.getText(ast)).join('\n');
 const instantiate = new Function('env', `with(env){${transpile(declarations)};return {${names.join(',')}}}`);
@@ -53,7 +54,7 @@ await test('invite is single-flight and refresh failure is not mutation failure 
 });
 // Execute the real hook with synthetic effects/setters; no server or DOM required.
 const hookText=transpile(read('../src/hooks/useRouteResourceSync.ts')).replace(/^import .*;\n/gm,'').replace('export function useRouteResourceSync','function useRouteResourceSync');
-function hookFixture(){let cleanup;const env={useEffect:fn=>{cleanup?.();cleanup=fn();},useI18n:()=>({t:v=>v}),EMPTY_CHARACTER:{},EMPTY_PRESET:{},DEFAULT_TRAIT_SCORES:{},DEFAULT_FORBIDDEN_RULES:[],normalizeChatCommandDraft:v=>v||{},characterApi:{},settingsApi:{}};const hook=new Function('env',`with(env){${hookText};return useRouteResourceSync;}`)(env);const state={status:'',draft:{}};const options={characters:[],presets:[],setDraft:v=>{state.draft=v;},setPresetDraft:v=>{state.draft=v;},setChatCommandDraft:v=>{state.draft=v;},setCharacterAssets:()=>{},loadCharacterAssets:()=>{},setStatus:v=>{state.status=typeof v==='function'?v(state.status):v;},fetchConversation:async()=>{},loadConversationEditDraft:async()=>{}};return {env,state,run:(page,id,extra={})=>hook({...options,route:{page,id},...extra})};}
+function hookFixture(){let cleanup;const env={queryKeys,useQueryClient:()=>({fetchQuery:({queryFn})=>queryFn()}),useEffect:fn=>{cleanup?.();cleanup=fn();},useI18n:()=>({t:v=>v}),EMPTY_CHARACTER:{},EMPTY_PRESET:{},DEFAULT_TRAIT_SCORES:{},DEFAULT_FORBIDDEN_RULES:[],normalizeChatCommandDraft:v=>v||{},characterApi:{},settingsApi:{}};const hook=new Function('env',`with(env){${hookText};return useRouteResourceSync;}`)(env);const state={status:'',draft:{}};const options={characters:[],presets:[],setDraft:v=>{state.draft=v;},setPresetDraft:v=>{state.draft=v;},setChatCommandDraft:v=>{state.draft=v;},setCharacterAssets:()=>{},loadCharacterAssets:()=>{},setStatus:v=>{state.status=typeof v==='function'?v(state.status):v;},fetchConversation:async()=>{},loadConversationEditDraft:async()=>{}};return {env,state,run:(page,id,extra={})=>hook({...options,route:{page,id},...extra})};}
 await test('remote success clears its own loading but not an intervening error; local route fast path removes stale loading',async()=>{
   const h=hookFixture();h.env.characterApi.get=async id=>({id});h.run('characterDetail','A');await flush();assert.equal(h.state.status,'');
   const pending=deferred();h.env.characterApi.get=()=>pending.promise;h.run('characterDetail','B');h.state.status='upload failed';pending.resolve({id:'B'});await flush();assert.equal(h.state.status,'upload failed');

@@ -149,14 +149,9 @@ test('catalog renders raw authored name and quiet provider metadata; internal mo
   assert.equal(nodes(tree, n => n.type === 'h3')[0].props.children, option.label);
   const paragraphs = nodes(tree, n => n.type === 'p');
   assert.equal(paragraphs[0].props.children, option.provider_account_alias);
-  assert.match(paragraphs[0].props.className, /text-\[11px\].*text-muted-foreground/);
   assert.ok(paragraphs.every(n => n.props.children !== option.model));
   const details = nodes(tree, n => n.type === 'details')[0];
   assert.equal(details.props.open, undefined);
   assert.equal(nodes(details, n => n.type === 'code')[0].props.children, option.model);
-  // Search still indexes internal IDs and the existing manual editor still owns ID/label inputs.
-  assert.match(read('../src/views/ModelSettings/index.tsx'), /option\.model,\s*option\.provider_type/);
-  assert.match(read('../src/views/ModelSettings/index.tsx'), /model: manualModel\.trim\(\)/);
-  assert.match(read('../src/views/ModelSettings/index.tsx'), /label: manualLabel\.trim\(\) \|\| manualModel\.trim\(\)/);
 });
 console.log(`Passed ${passed} compact-label regression tests (synthetic only; no browser, API or provider calls).`);

@@ -17,11 +17,9 @@ from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel
-from sqlmodel import Session
 
 from app.core.config import Settings, get_settings
-from app.db.models import LLMUsageEvent
-from app.db.session import engine
+from app.db.llm_telemetry import TelemetryWriter, default_telemetry_writer
 from app.engine.provider_capabilities import capabilities, safe_count, safe_model_version, thinking_off_parameters
 from app.engine.llm_error_types import (
     LLMTerminalError, LLMPolicyBlockedError, LLMAuthenticationError,
@@ -209,11 +207,12 @@ def _mock_visible_user_text(value: str) -> str:
 
 
 class LLMClient:
-    def __init__(self, settings: Settings | None = None, *, profile: str = "chat", purpose: str | None = None, overrides: dict | None = None):
+    def __init__(self, settings: Settings | None = None, *, profile: str = "chat", purpose: str | None = None, overrides: dict | None = None, telemetry_writer: TelemetryWriter | None = None):
         self.settings = settings or get_settings()
         self.profile = profile
         self.purpose = purpose or ("compression" if profile == "compression" else "chat_generation")
         self.overrides = dict(overrides or {})
+        self.telemetry_writer = telemetry_writer
         self._reasoning_cache = {}
         self._output_budget_cache = {}
 
@@ -1007,37 +1006,36 @@ class LLMClient:
             return
         event_id = f"usage_{uuid4().hex[:12]}"
         try:
-            with Session(engine) as session:
-                session.add(LLMUsageEvent(
-                    id=event_id,
-                    provider=response.provider or self.provider(),
-                    model=response.model or self.model(),
-                    purpose=self.purpose,
-                    conversation_id=conversation_id,
-                    prompt_tokens=response.prompt_tokens,
-                    completion_tokens=response.completion_tokens,
-                    total_tokens=response.total_tokens,
-                    estimated=response.estimated,
-                    metadata_={
-                        "status": "transport_success",
-                        **self.usage_context(),
-                        "requested_model": response.requested_model or response.model or self.model(),
-                        "reported_model_version": response.reported_model_version,
-                        "token_details": {"cached_tokens": response.cached_tokens, "reasoning_tokens": response.reasoning_tokens},
-                        **({"transport": response.transport_diagnostics} if response.transport_diagnostics is not None else {}),
-                        "finish_reason": response.finish_reason,
-                        "response_length": len(response.content or ""),
-                        "response_sha256": hashlib.sha256((response.content or "").encode("utf-8")).hexdigest(),
-                        "transport_attempts": response.generation_attempts,
-                        "generation_attempts": response.generation_attempts,
-                        "parse_code": None,
-                        "validation_code": None,
-                        **({"output_budget": response.budget_diagnostics} if response.budget_diagnostics is not None else {}),
-                        **task_attempt_metadata(),
-                        **({"gemini_empty_response": response.provider_diagnostics} if response.provider_diagnostics and self.profile == "compression" else {}),
-                    },
-                ))
-                session.commit()
+            writer = self.telemetry_writer if self.telemetry_writer is not None else default_telemetry_writer()
+            writer.insert(
+                id=event_id,
+                provider=response.provider or self.provider(),
+                model=response.model or self.model(),
+                purpose=self.purpose,
+                conversation_id=conversation_id,
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                total_tokens=response.total_tokens,
+                estimated=response.estimated,
+                metadata_={
+                    "status": "transport_success",
+                    **self.usage_context(),
+                    "requested_model": response.requested_model or response.model or self.model(),
+                    "reported_model_version": response.reported_model_version,
+                    "token_details": {"cached_tokens": response.cached_tokens, "reasoning_tokens": response.reasoning_tokens},
+                    **({"transport": response.transport_diagnostics} if response.transport_diagnostics is not None else {}),
+                    "finish_reason": response.finish_reason,
+                    "response_length": len(response.content or ""),
+                    "response_sha256": hashlib.sha256((response.content or "").encode("utf-8")).hexdigest(),
+                    "transport_attempts": response.generation_attempts,
+                    "generation_attempts": response.generation_attempts,
+                    "parse_code": None,
+                    "validation_code": None,
+                    **({"output_budget": response.budget_diagnostics} if response.budget_diagnostics is not None else {}),
+                    **task_attempt_metadata(),
+                    **({"gemini_empty_response": response.provider_diagnostics} if response.provider_diagnostics and self.profile == "compression" else {}),
+                },
+            )
             response.usage_event_id = event_id
         except Exception:
             # Attempt accounting must never break chat generation.
@@ -1058,36 +1056,35 @@ class LLMClient:
         conversation_id: str | None = None,
     ) -> None:
         try:
-            with Session(engine) as session:
-                session.add(LLMUsageEvent(
-                    id=f"usage_{uuid4().hex[:12]}",
-                    provider=self.provider(),
-                    model=self.model(),
-                    purpose=self.purpose,
-                    conversation_id=conversation_id,
-                    prompt_tokens=None,
-                    completion_tokens=None,
-                    total_tokens=None,
-                    estimated=False,
-                    metadata_={
-                        "status": "transport_failed",
-                        **self.usage_context(),
-                        "requested_model": self.model(),
-                        "reported_model_version": None,
-                        "token_details": {"cached_tokens": None, "reasoning_tokens": None},
-                        "transport": self.failure_transport_diagnostics(warning_count=exc.provider_warning_count),
-                        "output_budget": {"requested_max_output_tokens": self.max_output_tokens()},
-                        **task_attempt_metadata(),
-                        "transport_attempts": exc.transport_attempts,
-                        "http_status": exc.http_status,
-                        "error_type": exc.error_type,
-                        "response_length": 0,
-                        "response_sha256": None,
-                        "parse_code": None,
-                        "validation_code": None,
-                    },
-                ))
-                session.commit()
+            writer = self.telemetry_writer if self.telemetry_writer is not None else default_telemetry_writer()
+            writer.insert(
+                id=f"usage_{uuid4().hex[:12]}",
+                provider=self.provider(),
+                model=self.model(),
+                purpose=self.purpose,
+                conversation_id=conversation_id,
+                prompt_tokens=None,
+                completion_tokens=None,
+                total_tokens=None,
+                estimated=False,
+                metadata_={
+                    "status": "transport_failed",
+                    **self.usage_context(),
+                    "requested_model": self.model(),
+                    "reported_model_version": None,
+                    "token_details": {"cached_tokens": None, "reasoning_tokens": None},
+                    "transport": self.failure_transport_diagnostics(warning_count=exc.provider_warning_count),
+                    "output_budget": {"requested_max_output_tokens": self.max_output_tokens()},
+                    **task_attempt_metadata(),
+                    "transport_attempts": exc.transport_attempts,
+                    "http_status": exc.http_status,
+                    "error_type": exc.error_type,
+                    "response_length": 0,
+                    "response_sha256": None,
+                    "parse_code": None,
+                    "validation_code": None,
+                },
+            )
         except Exception:
             _telemetry_write_failed()
             return
@@ -1105,20 +1102,13 @@ class LLMClient:
         if not event_id:
             return
         try:
-            with Session(engine) as session:
-                event = session.get(LLMUsageEvent, event_id)
-                if event is None:
-                    return
-                metadata = dict(event.metadata_ or {})
-                metadata.update({
-                    "status": status,
-                    "parse_code": parse_code,
-                    "validation_code": validation_code,
-                })
-                metadata.update(metadata_updates or {})
-                event.metadata_ = metadata
-                session.add(event)
-                session.commit()
+            writer = self.telemetry_writer if self.telemetry_writer is not None else default_telemetry_writer()
+            writer.update_outcome(event_id, {
+                "status": status,
+                "parse_code": parse_code,
+                "validation_code": validation_code,
+                **(metadata_updates or {}),
+            })
         except Exception:
             _telemetry_write_failed()
             return

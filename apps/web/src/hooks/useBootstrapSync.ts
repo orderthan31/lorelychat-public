@@ -9,17 +9,9 @@ type RuntimeSetting = { scope?: string; [key: string]: unknown };
 export type BootstrapSyncOptions = {
   bootstrap: BootstrapResourcesState;
   setBackendOnline: Setter<boolean>;
-  setCharacters: Setter<NamedEntity[]>;
-  setCharacterUsageRanking: Setter<NamedEntity[]>;
   setCharacterAId: Setter<string>;
   setCharacterBId: Setter<string>;
   setMultiCharacterIds: Setter<string[]>;
-  setConversations: Setter<unknown[]>;
-  setPresets: Setter<unknown[]>;
-  setChatCommands: Setter<unknown[]>;
-  setWorldSettings: Setter<unknown[]>;
-  setTtsVoices: Setter<unknown[]>;
-  setTtsModels: Setter<unknown[]>;
   setRuntimeDefaultSetting: Setter<RuntimeSetting>;
   setConversationRuntimeSetting: Setter<RuntimeSetting>;
   setStatus: Setter<string>;
@@ -28,17 +20,9 @@ export type BootstrapSyncOptions = {
 export function useBootstrapSync({
   bootstrap,
   setBackendOnline,
-  setCharacters,
-  setCharacterUsageRanking,
   setCharacterAId,
   setCharacterBId,
   setMultiCharacterIds,
-  setConversations,
-  setPresets,
-  setChatCommands,
-  setWorldSettings,
-  setTtsVoices,
-  setTtsModels,
   setRuntimeDefaultSetting,
   setConversationRuntimeSetting,
   setStatus,
@@ -48,7 +32,6 @@ export function useBootstrapSync({
   useEffect(() => {
     const list = bootstrap.characters.data as NamedEntity[] | undefined;
     if (!list) return;
-    setCharacters(list);
     setCharacterAId((current) => current || list[0]?.id || '');
     setCharacterBId((current) => current || list[1]?.id || '');
     setMultiCharacterIds((current) => {
@@ -56,19 +39,7 @@ export function useBootstrapSync({
       const next = current.length >= 2 ? [...current] : ['', ''];
       return next.map((id, index) => id || defaults[index] || '');
     });
-  }, [bootstrap.characters.data, setCharacters, setCharacterAId, setCharacterBId, setMultiCharacterIds]);
-
-  useEffect(() => {
-    const list = bootstrap.characterUsageRanking.data as NamedEntity[] | undefined;
-    if (list) setCharacterUsageRanking(list);
-  }, [bootstrap.characterUsageRanking.data, setCharacterUsageRanking]);
-
-  useEffect(() => { if (bootstrap.conversations.data) setConversations(bootstrap.conversations.data); }, [bootstrap.conversations.data, setConversations]);
-  useEffect(() => { if (bootstrap.presets.data) setPresets(bootstrap.presets.data as unknown[]); }, [bootstrap.presets.data, setPresets]);
-  useEffect(() => { if (bootstrap.chatCommands.data) setChatCommands(bootstrap.chatCommands.data as unknown[]); }, [bootstrap.chatCommands.data, setChatCommands]);
-  useEffect(() => { if (bootstrap.worldSettings.data) setWorldSettings(bootstrap.worldSettings.data as unknown[]); }, [bootstrap.worldSettings.data, setWorldSettings]);
-  useEffect(() => { if (bootstrap.ttsVoices.data) setTtsVoices(bootstrap.ttsVoices.data as unknown[]); }, [bootstrap.ttsVoices.data, setTtsVoices]);
-  useEffect(() => { if (bootstrap.ttsModels.data) setTtsModels(bootstrap.ttsModels.data as unknown[]); }, [bootstrap.ttsModels.data, setTtsModels]);
+  }, [bootstrap.characters.data, setCharacterAId, setCharacterBId, setMultiCharacterIds]);
 
   useEffect(() => {
     const setting = bootstrap.runtimeDefault.data as RuntimeSetting | undefined | null;

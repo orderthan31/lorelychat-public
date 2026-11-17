@@ -1,18 +1,9 @@
 import { useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { characterApi, conversationApi, healthApi, settingsApi } from '../api/resources';
 
-export const queryKeys = {
-  health: ['health'],
-  characters: ['characters'],
-  characterUsageRanking: ['characters', 'usage-ranking'],
-  conversations: ['conversations'],
-  presets: ['presets', 'include_disabled'],
-  chatCommands: ['chat-commands', 'include_disabled'],
-  worldSettings: ['world-settings', 'include_disabled'],
-  ttsVoices: ['tts', 'voices'],
-  ttsModels: ['tts', 'models'],
-  runtimeDefault: ['runtime-settings', 'default'],
-} as const;
+import { queryKeys } from '../api/queryKeys';
+// Compatibility export for existing list Views; the API module owns keys.
+export { queryKeys } from '../api/queryKeys';
 
 type BootstrapQuery<T = unknown> = UseQueryResult<T | null, Error>;
 
@@ -58,7 +49,6 @@ export function useBootstrapResources(): BootstrapResourcesState {
     runtimeDefault,
     refetchBootstrap: () => Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.characters }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.characterUsageRanking }),
       queryClient.invalidateQueries({ queryKey: queryKeys.conversations }),
       queryClient.invalidateQueries({ queryKey: queryKeys.presets }),
       queryClient.invalidateQueries({ queryKey: queryKeys.chatCommands }),

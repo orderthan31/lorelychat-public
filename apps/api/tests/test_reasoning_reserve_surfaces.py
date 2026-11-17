@@ -1,3 +1,4 @@
+from app.services import generation_preparation, post_commit_execution
 """Preview/postcommit reserve the same selected and fallback reasoning routes."""
 import pytest
 
@@ -33,7 +34,7 @@ async def test_reasoning_route_reserve_reaches_every_capacity_surface(client, se
     seen = []
 
     class BudgetClient:
-        def __init__(self, *, profile, overrides):
+        def __init__(self, *, profile, overrides, purpose=None):
             assert profile == "chat"
             assert overrides["reasoning_effort"] == "high"
             assert overrides["min_output_tokens"] == runtime.preset_token_target("medium")
@@ -47,12 +48,12 @@ async def test_reasoning_route_reserve_reaches_every_capacity_surface(client, se
         assert kwargs["completion_reserve_tokens"] == 22222
         raise CapturedCapacity
 
-    owner = api if surface == "postcommit" else preview
+    owner = generation_preparation
     monkeypatch.setattr(owner, "LLMClient", BudgetClient)
     monkeypatch.setattr(owner, "resolve_safe_model_context_capacity", capacity)
     with pytest.raises(CapturedCapacity):
         if surface == "postcommit":
-            await api._run_scene_compression_in_session(
+            await post_commit_execution.run_scene_compression_in_session(
                 session, room_id, generated_character_count=1,
                 character_ids=[character["id"]], comparison_options=ComparisonOptions(context_policy="compact"),
             )

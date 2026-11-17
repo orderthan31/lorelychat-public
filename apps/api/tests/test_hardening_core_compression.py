@@ -7,7 +7,7 @@ import pytest
 from sqlmodel import SQLModel, Session
 from app.db.models import Conversation, Message, SceneState
 from app.db.session import make_engine
-from app.services import conversation_service as svc
+from app.services import conversation_compression_service as svc
 from app.services.context_management_service import ContextMaintenanceRequired, resolve_model_context_capacity
 from app.engine.prompt_harness import approx_tokens
 from app.engine.harness_comparison import rendered_input_tokens

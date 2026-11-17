@@ -1,5 +1,6 @@
 """Synthetic acceptance of opt-in task routing, atomicity and GET hydration."""
 from __future__ import annotations
+from app.services import post_commit_execution
 
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -26,7 +27,7 @@ def setup_turn(session):
 
 
 def build(session, room, source, replies):
-    return api.build_generated_turn_post_commit_tasks(
+    return post_commit_execution.build_generated_turn_post_commit_tasks(
         session=session, conversation=room, scene_state=None, incoming_message=source,
         generated_messages=replies, enqueue_compression=False, character_ids=["decision-char"],
         generation_job_id="decision-job",
@@ -35,8 +36,8 @@ def build(session, room, source, replies):
 
 def allow_decision_builder(monkeypatch, key: str | None = "decision-option"):
     settings = api.get_settings().model_copy(update={"llm_mock": False})
-    monkeypatch.setattr(api, "get_settings", lambda: settings)
-    monkeypatch.setattr(api.asset_decision_service, "decision_model_key_for_turn", lambda *_: key)
+    monkeypatch.setattr(post_commit_execution, "get_settings", lambda: settings)
+    monkeypatch.setattr(post_commit_execution.asset_decision_service, "decision_model_key_for_turn", lambda *_: key)
 
 
 def test_off_builder_preserves_legacy_seed_and_reservations(session, monkeypatch):
@@ -46,7 +47,7 @@ def test_off_builder_preserves_legacy_seed_and_reservations(session, monkeypatch
     def legacy(_session, **kwargs):
         calls.append((kwargs["selection_seed"], set(kwargs["excluded_asset_ids"])))
         return asset if len(calls) == 1 else None
-    monkeypatch.setattr(api.asset_service, "select_asset_for_message", legacy)
+    monkeypatch.setattr(post_commit_execution.asset_service, "select_asset_for_message", legacy)
     tasks = build(session, room, source, replies)
     assert calls == [(replies[0].id, set()), (replies[1].id, {asset.id})]
     assert [(task["task_type"], task["payload"]["asset_id"]) for task in tasks] == [("asset", asset.id)]
@@ -55,7 +56,7 @@ def test_off_builder_preserves_legacy_seed_and_reservations(session, monkeypatch
 def test_on_builder_enqueues_one_identifier_only_task_without_provider_or_legacy_call(session, monkeypatch):
     room, source, _, replies = setup_turn(session)
     allow_decision_builder(monkeypatch)
-    monkeypatch.setattr(api.asset_service, "select_asset_for_message", lambda *_a, **_k: pytest.fail("legacy called while valid decision enabled"))
+    monkeypatch.setattr(post_commit_execution.asset_service, "select_asset_for_message", lambda *_a, **_k: pytest.fail("legacy called while valid decision enabled"))
     tasks = build(session, room, source, replies)
     assert tasks == [{"unique_key": "job:decision-job:asset_decision", "task_type": "asset_decision", "payload": {
         "conversation_id": room.id, "message_ids": [m.id for m in replies], "decision_model_option_key": "decision-option", "turn_id": "decision-job",
@@ -69,7 +70,7 @@ def test_mock_builder_does_not_even_resolve_decision_route(session, monkeypatch,
     room, source, _, replies = setup_turn(session)
     if isolated:
         allow_decision_builder(monkeypatch)
-    monkeypatch.setattr(api.asset_decision_service, "decision_model_key_for_turn", lambda *_: pytest.fail("mock must not resolve paid route"))
+    monkeypatch.setattr(post_commit_execution.asset_decision_service, "decision_model_key_for_turn", lambda *_: pytest.fail("mock must not resolve paid route"))
     token = isolated_mock_execution.set(isolated)
     try:
         assert all(task["task_type"] == "asset" for task in build(session, room, source, replies))
@@ -104,9 +105,9 @@ def test_committed_primary_and_pending_get_then_worker_assets_readback(client, s
         calls.append(kwargs)
         _session.rollback()  # same clean I/O boundary as the production selector
         return [(mids[-1], aid)]
-    monkeypatch.setattr(api.asset_decision_service, "select_turn_assets", select_turn)
+    monkeypatch.setattr(post_commit_execution.asset_decision_service, "select_turn_assets", select_turn)
     claimed = conversation_service.claim_post_commit_task_by_unique_key(session, task.unique_key, lease_owner="assets")
-    asyncio.run(api._execute_claimed_post_commit_task(session, claimed, lease_owner="assets"))
+    asyncio.run(post_commit_execution.execute_claimed_post_commit_task(session, claimed, lease_owner="assets"))
     final = client.get(f"/conversations/{cid}/messages", params=[("message_ids", mid) for mid in mids]).json()
     assert len(calls) == 1
     assert not any(row["asset_decision_pending"] for row in final)
@@ -131,9 +132,9 @@ def test_lost_decision_task_attempt_rolls_back_staged_asset_link(session, monkey
         _session.exec(update(PostCommitTask).where(PostCommitTask.id == tid).values(lease_owner="new-worker", attempt_count=2))
         _session.commit()
         return [(mid, aid)]
-    monkeypatch.setattr(api.asset_decision_service, "select_turn_assets", superseded)
+    monkeypatch.setattr(post_commit_execution.asset_decision_service, "select_turn_assets", superseded)
     with pytest.raises(RuntimeError, match="lease was lost"):
-        asyncio.run(api._execute_claimed_post_commit_task(session, claimed, lease_owner="assets"))
+        asyncio.run(post_commit_execution.execute_claimed_post_commit_task(session, claimed, lease_owner="assets"))
     session.expire_all()
     assert session.exec(select(MessageAsset)).all() == []
     assert session.get(MessageGenerationJob, "decision-job").status == "completed"
@@ -163,9 +164,9 @@ def test_decision_task_is_supported_by_inline_postcommit_hydration(session, monk
         calls.append(kwargs)
         _session.rollback()
         return [(mid, aid)]
-    monkeypatch.setattr(api.asset_decision_service, "select_turn_assets", selected)
+    monkeypatch.setattr(post_commit_execution.asset_decision_service, "select_turn_assets", selected)
     specs = [{"unique_key": task.unique_key, "task_type": "asset_decision"}]
-    asyncio.run(api._process_inline_post_commit_tasks(session.get_bind(), specs))
+    asyncio.run(post_commit_execution.process_inline_post_commit_tasks(session.get_bind(), specs))
     session.expire_all()
     assert len(calls) == 1
     assert session.get(PostCommitTask, task.id).status == "completed"

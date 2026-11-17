@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useI18n } from '../i18n/I18nProvider';
 import type { UiMessageKey } from '../i18n/core';
 import { agentApi } from './api';
-import { AgentError } from './components';
+import { AgentError } from './AgentError';
 import { agentActions, useAgentStore } from './store';
 import type { AgentDraft, ImageChoice, ImageContext, ImageTargetKind } from './types';
 

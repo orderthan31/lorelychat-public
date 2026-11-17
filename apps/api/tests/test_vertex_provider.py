@@ -78,16 +78,16 @@ def test_additive_migration_preserves_legacy_rows(tmp_path):
 
 def test_runtime_overrides_adc_and_no_primary_changes(session, monkeypatch):
     from app.db.models import RuntimeSetting
-    from app.services.runtime_settings_service import _dynamic_llm_overrides
+    from app.services.runtime_settings_service import model_route_overrides
     from sqlmodel import select
     before = list(session.exec(select(RuntimeSetting)).all())
     account = service.create_account(session, adc_payload())
     option = service.create_manual_option(session, ModelOptionManualCreate(provider_account_id=account.id,model='gemini-2.5-flash'))
-    values = _dynamic_llm_overrides(session, option.key, 'chat')
+    values = model_route_overrides(session, option.key, 'chat')
     assert values['provider']=='vertex_ai' and values['vertex_project']=='test-project'
     assert values['vertex_auth_mode']=='adc' and 'api_key' not in values
     assert list(session.exec(select(RuntimeSetting)).all()) == before
-    assert _dynamic_llm_overrides(session, option.key, 'compression')['provider']=='vertex_ai'
+    assert model_route_overrides(session, option.key, 'compression')['provider']=='vertex_ai'
     assert service.active_options_for_runtime(session, 'tts')==[]
     assert service.active_options_for_runtime(session, 'decision')==[]
     monkeypatch.setattr(service, 'fetch_provider_models', lambda account: [])

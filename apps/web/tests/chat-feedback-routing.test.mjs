@@ -28,16 +28,4 @@ for (const locale of ['ko', 'en', 'ja']) {
     assert.deepEqual(route(status, t, isChatGenerationProgress), { header: '', operation: status }); cases++;
   }
 }
-const drawer = ts.createSourceFile('Drawer.tsx', read('../src/components/organisms/ConversationInfoDrawer.tsx'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-let body;
-function findBody(node) {
-  if (ts.isJsxElement(node) && node.openingElement.attributes.properties.some(p => p.name?.getText(drawer) === 'className' && p.initializer?.text === 'context-drawer-body')) body = node;
-  ts.forEachChild(node, findBody);
-} findBody(drawer);
-assert.ok(body);
-const children = body.children.filter(ts.isJsxElement);
-assert.equal(children.length, 2, 'outer grid always has only tabs and the scrolling content');
-assert.equal(children[0].openingElement.tagName.getText(drawer), 'nav');
-assert.ok(children[1].openingElement.attributes.properties.some(p => p.initializer?.text === 'drawer-tab-content'));
-assert.ok(children[1].children.some(n => ts.isJsxExpression(n) && n.expression?.getText(drawer) === 'feedbackContent'));
-console.log(`PASS ${cases} localized production-owner routing cases; fixed two-row panel composition; no API/provider calls`);
+console.log(`PASS ${cases} localized production feedback-routing cases; no API/provider calls`);

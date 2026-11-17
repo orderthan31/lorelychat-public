@@ -1,3 +1,4 @@
+import { parseAssetTags } from '../../utils/assetTags';
 import { WebpImage } from '../atoms/WebpImage';
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { useMediaMatch } from '../../hooks/useMediaMatch';
@@ -57,7 +58,6 @@ type CharacterAssetEditDraft = {
 };
 
 const tagsToText = (tags?: string[]) => (tags || []).join(', ');
-const textToTags = (text: string) => [...new Set(text.split(/[\n,]/).map((tag) => tag.trim().toLowerCase().replace(/\s+/g, '_')).filter(Boolean))];
 
 export type CharacterAssetsPanelProps = {
   character?: { id?: string; name?: string } | null;
@@ -123,12 +123,12 @@ export function CharacterAssetsPanel({ character, assets = [], loading = false, 
     onPatch?.(selected.id, {
       label: editDraft.label.trim(),
       description: editDraft.description.trim(),
-      tags: textToTags(editDraft.tags),
-      mood_tags: textToTags(editDraft.mood_tags),
-      scene_tags: textToTags(editDraft.scene_tags),
-      outfit_tags: textToTags(editDraft.outfit_tags),
-      pose_tags: textToTags(editDraft.pose_tags),
-      expression_tags: textToTags(editDraft.expression_tags),
+      tags: parseAssetTags(editDraft.tags),
+      mood_tags: parseAssetTags(editDraft.mood_tags),
+      scene_tags: parseAssetTags(editDraft.scene_tags),
+      outfit_tags: parseAssetTags(editDraft.outfit_tags),
+      pose_tags: parseAssetTags(editDraft.pose_tags),
+      expression_tags: parseAssetTags(editDraft.expression_tags),
       priority: Number(editDraft.priority || 50),
     });
   };

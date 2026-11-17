@@ -1,3 +1,4 @@
+from app.services import generation_execution, post_commit_execution
 """Shared-boundary integration, synthetic persistence only."""
 import asyncio
 from datetime import datetime, timezone
@@ -188,8 +189,8 @@ def test_optional_asset_failure_keeps_primary_and_other_tasks_atomic(client,sess
     incoming=Message(id='source',conversation_id=cid,speaker_type='user',speaker_id='u',content='Synthetic source')
     reply=Message(id='validated-primary',conversation_id=cid,speaker_type='character',speaker_id=char,content='Validated paid prose')
     def fail(*args,**kwargs):raise RuntimeError('private sentinel must not be logged')
-    monkeypatch.setattr(api.asset_service,'select_asset_for_message',fail)
-    tasks=api.build_generated_turn_post_commit_tasks(session=session,conversation=conv,scene_state=None,
+    monkeypatch.setattr(post_commit_execution.asset_service,'select_asset_for_message',fail)
+    tasks=post_commit_execution.build_generated_turn_post_commit_tasks(session=session,conversation=conv,scene_state=None,
         incoming_message=incoming,generated_messages=[reply],enqueue_compression=True,character_ids=[char],generation_job_id=job.id)
     assert {task['task_type'] for task in tasks}=={'tts','compression'}
     assert 'private sentinel' not in caplog.text
@@ -204,9 +205,9 @@ def test_asset_db_fault_is_not_swallowed(client,session,monkeypatch):
     from app.api import conversations as api
     cid,char=room(client)
     def fail(*args,**kwargs):raise OperationalError('synthetic query',{},Exception('synthetic DB fault'))
-    monkeypatch.setattr(api.asset_service,'select_asset_for_message',fail)
+    monkeypatch.setattr(post_commit_execution.asset_service,'select_asset_for_message',fail)
     with pytest.raises(OperationalError):
-        api.build_generated_turn_post_commit_tasks(session=session,conversation=session.get(Conversation,cid),scene_state=None,
+        post_commit_execution.build_generated_turn_post_commit_tasks(session=session,conversation=session.get(Conversation,cid),scene_state=None,
             incoming_message=Message(id='source',conversation_id=cid,speaker_type='user',content='S'),
             generated_messages=[Message(id='reply',conversation_id=cid,speaker_type='character',speaker_id=char,content='R')],
             enqueue_compression=True,character_ids=[char],generation_job_id='job')
@@ -217,14 +218,14 @@ def test_nonmock_claim_never_claims_marked_mock_and_runner_never_sends(session,m
     session.add(MessageGenerationJob(id='mock-pending',conversation_id='room',incoming_message_id='source',execution_options={'execution_mode':'mock'}))
     session.commit()
     settings=api.get_settings().model_copy(update={'llm_mock':False})
-    monkeypatch.setattr(api,'get_settings',lambda:settings)
+    monkeypatch.setattr(generation_execution,'get_settings',lambda:settings)
 
     claimed=conversations.claim_next_message_generation_job(session,lease_owner='real')
     assert claimed is None
     calls=[]
     async def paid(*args,**kwargs):calls.append(1)
-    monkeypatch.setattr(api,'generate_replies_from_message',paid)
-    asyncio.run(api._run_message_generation_job_in_session(session,'mock-pending'))
+    monkeypatch.setattr(generation_execution,'generate_replies_from_message',paid)
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session,'mock-pending'))
     assert calls==[]
     session.expire_all()
     row=session.get(MessageGenerationJob,'mock-pending')

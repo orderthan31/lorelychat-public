@@ -75,13 +75,13 @@ class AgentService:
 
     def resolve_llm_route(self,principal):
         from types import SimpleNamespace
-        from app.services.runtime_settings_service import _dynamic_llm_overrides
+        from app.services.runtime_settings_service import model_route_overrides
         from app.engine.litellm_transport import resolve_route
         self.require_enabled(principal)
         with self.engine.connect() as c: key=self._settings(c)['llm_model_option_key']
         if not key: raise AgentError('Configure an independent Lore Agent LLM',422)
         with Session(self.engine) as session:
-            values=_dynamic_llm_overrides(session,key,'chat')
+            values=model_route_overrides(session,key,'chat')
         if not values: raise AgentError('Selected Agent LLM is unavailable',422)
         return resolve_route(SimpleNamespace(overrides=values,provider=lambda:values['provider_type'],model=lambda:values['model']))
 
@@ -96,7 +96,7 @@ class AgentService:
             raise AgentError('Image selection changed; stage and approve a new plan',409)
         with Session(self.engine) as session:
             account=model_provider_service.account_by_id(session,provider_account_id)
-            if not model_provider_service._configured(account) or model_id not in {m['id'] for m in list_image_models_for_account(account)}:
+            if not model_provider_service.account_is_configured(account) or model_id not in {m['id'] for m in list_image_models_for_account(account)}:
                 raise AgentError('Selected image account/model is unavailable',422)
             values={**build_image_overrides(account,provider_secret_service),'model':model_id}
         return resolve_image_route_overrides(values)
@@ -243,10 +243,8 @@ class AgentService:
         if kind=='character' and creating:
             data['forbidden_rules']=data.get('forbidden_rules') or DEFAULT_FORBIDDEN_RULES.copy()
         if kind=='world':
-            from app.services.world_setting_service import _apply_payload
-            transient=WorldSetting(id='preview',title='preview')
-            _apply_payload(transient,data)
-            data={k:getattr(transient,k) for k in data}
+            from app.services.world_setting_service import normalize_authored_world_fields
+            data=normalize_authored_world_fields(data)
         return bounded(data)
 
     def _hash_draft(self, d):

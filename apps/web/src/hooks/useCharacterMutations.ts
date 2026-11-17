@@ -1,6 +1,7 @@
+import { refreshAfterMutation } from './refreshAfterMutation';
 import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 import { characterApi } from '../api/resources';
-import { queryKeys } from './useBootstrapResources';
+import { queryKeys } from '../api/queryKeys';
 
 type CharacterMutation<TVariables = unknown> = UseMutationResult<unknown, Error, TVariables, unknown>;
 type SaveCharacterPayload = { id?: string | null; payload: unknown };
@@ -23,15 +24,16 @@ export type CharacterMutationsState = {
 export function useCharacterMutations(): CharacterMutationsState {
   const queryClient = useQueryClient();
   const invalidateCharacters = () => queryClient.invalidateQueries({ queryKey: queryKeys.characters });
+  const refreshCharacterListAfterWrite = () => refreshAfterMutation(queryClient, queryKeys.characters);
 
   return {
     saveCharacter: useMutation({
       mutationFn: characterApi.save,
-      onSuccess: invalidateCharacters,
+      onSuccess: refreshCharacterListAfterWrite,
     }),
     deleteCharacter: useMutation({
       mutationFn: characterApi.remove,
-      onSuccess: invalidateCharacters,
+      onSuccess: refreshCharacterListAfterWrite,
     }),
     playTtsSample: useMutation({ mutationFn: ({ id, payload }: CharacterPayload) => characterApi.ttsSample(id, payload) }),
     uploadAvatar: useMutation({ mutationFn: characterApi.uploadAvatar }),

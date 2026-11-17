@@ -1,3 +1,5 @@
+from app.services import generation_execution, generation_preparation
+from app.db.llm_telemetry import SQLTelemetryWriter
 """Comparison policy crosses real job/preview and auxiliary dispatch boundaries."""
 import asyncio
 import json
@@ -80,7 +82,7 @@ def read_completed(client, session, room, queued, calls):
     generated = [m for m in data if m['id'] in status['generated_message_ids']]
     source = next(m for m in data if m['id'] == queued['incoming_message']['id'])
     before = len(calls)
-    asyncio.run(api._run_message_generation_job_in_session(session, job_id))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session, job_id))
     assert len(calls) == before
     session.expire_all()
     return source, generated
@@ -125,7 +127,7 @@ def test_frozen_full_context_real_job_preview_replay(client, session, monkeypatc
             raw = encode('tagged_text')
         return LLMResponse(content=raw, finish_reason='STOP')
     monkeypatch.setattr('app.engine.llm_client.LLMClient.chat', chat)
-    asyncio.run(api._run_message_generation_job_in_session(session, queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session, queued['job']['id']))
     source, generated = read_completed(client, session, room, queued, calls)
     assert len(calls) == (1 if case == 'combined' else 3 if case == 'exhausted' else 2)
     assert generated[0]['content'] == 'First.\nLast.'
@@ -190,7 +192,7 @@ def test_auxiliary_capacity_preserves_completed_main_before_provider(client, ses
         return LLMResponse(content='invalid' if self.purpose == 'chat_command_postprocess' else
                            '<m c="C1">Valid main.<t>Private stays.</t></m>', finish_reason='STOP')
     monkeypatch.setattr('app.engine.llm_client.LLMClient.chat', chat)
-    asyncio.run(api._run_message_generation_job_in_session(session, queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session, queued['job']['id']))
     source, generated = read_completed(client, session, room, queued, calls)
     assert [p for p, _ in calls] == ['chat_generation'] + (['chat_command_postprocess'] if retry else [])
     assert len(generated) == 1 and generated[0]['content'] == 'Valid main.'
@@ -243,8 +245,9 @@ def test_actual_auxiliary_wire_and_usage_admission(client, session, monkeypatch,
         instance = real_client(get_settings().model_copy(update={'llm_mock': False}), **kwargs, overrides=overrides)
         outputs.append(instance.max_output_tokens())
         return instance
-    monkeypatch.setattr(api, 'LLMClient', factory)
-    monkeypatch.setattr(llm_client, 'engine', session.get_bind())
+    monkeypatch.setattr(generation_preparation, 'LLMClient', factory)
+    monkeypatch.setattr(generation_execution, 'LLMClient', factory)
+    monkeypatch.setattr(llm_client, "default_telemetry_writer", lambda: SQLTelemetryWriter(session.get_bind()))
     payloads = []
     def handler(request):
         payload = json.loads(request.content)
@@ -258,7 +261,7 @@ def test_actual_auxiliary_wire_and_usage_admission(client, session, monkeypatch,
             'usage': {'prompt_tokens': 111, 'completion_tokens': 22, 'total_tokens': 133}})
     real_http = httpx.AsyncClient
     monkeypatch.setattr(httpx, 'AsyncClient', lambda *a, **k: real_http(*a, **k, transport=httpx.MockTransport(handler)))
-    asyncio.run(api._run_message_generation_job_in_session(session, queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session, queued['job']['id']))
     source, generated = read_completed(client, session, room, queued, payloads)
     assert len(payloads) == (1 if oversized else 2)
     assert generated[0]['content'] == 'Valid main.' and generated[0]['thought'] == 'Private stays.'

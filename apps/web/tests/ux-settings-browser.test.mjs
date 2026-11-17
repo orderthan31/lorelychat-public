@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync } from 'node:fs';
 const messages = JSON.parse(readFileSync('src/i18n/messages.ko.json', 'utf8'));
 const t = key => messages[key] || key;
 import { createServer } from 'vite';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { chromium, expect } from '@playwright/test';
 const artifactDir = process.env.SETTINGS_ARTIFACT_DIR;
 if (artifactDir) mkdirSync(artifactDir, { recursive: true });
 const external = process.env.SETTINGS_BASE_URL;
-const server = external ? null : await createServer({ configFile: false, envFile: false, plugins: [{ name: 'settings-fixture', configureServer(server) { server.middlewares.use('/settings-fixture', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml('/settings-fixture', '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/tests/ux-settings.fixture.tsx"></script></body></html>')); }); } }, react(), tailwindcss()], server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, logLevel: 'error' });
+const cacheDir = mkdtempSync(join(tmpdir(), 'integration-repair-vite-'));
+const server = external ? null : await createServer({ cacheDir, configFile: false, envFile: false, plugins: [{ name: 'settings-fixture', configureServer(server) { server.middlewares.use('/settings-fixture', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml('/settings-fixture', '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/tests/ux-settings.fixture.tsx"></script></body></html>')); }); } }, react(), tailwindcss()], server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, logLevel: 'error' });
 let browser;
 try {
   if (server) await server.listen(); browser = await chromium.launch({ headless: true });
@@ -75,7 +78,7 @@ try {
     await manual.getByLabel(t('모델 ID'), { exact: true }).fill('synthetic-manual');
     await manual.getByLabel(t('표시명'), { exact: true }).fill('Created synthetic model');
     await manual.getByRole('button', { name: t('수동 추가'), exact: true }).click();
-    await expect(page.locator('[data-page=model-settings] header [role=status]')).toContainText('Synthetic manual failure');
+    await expect(page.locator('[data-page=model-settings]').getByRole('status').filter({ hasText: 'Synthetic manual failure' })).toContainText('Synthetic manual failure');
     await expect(manual.getByLabel(t('모델 ID'), { exact: true })).toHaveValue('synthetic-manual');
     await manual.getByRole('button', { name: t('수동 추가'), exact: true }).click();
     await expect(page.locator('[data-model-row]').filter({ hasText: 'Created synthetic model' })).toHaveCount(1);
@@ -106,4 +109,4 @@ try {
     console.log(`PASS settings actions/readback/value preservation ${width}x${height}; synthetic writes=${writes.length}; no page errors`);
     await page.close();
   }
-} finally { await browser?.close(); await server?.close(); }
+} finally { await browser?.close(); await server?.close(); rmSync(cacheDir, { recursive: true, force: true }); }

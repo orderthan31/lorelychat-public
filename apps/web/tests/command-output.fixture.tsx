@@ -1,10 +1,12 @@
 /// <reference types="vite/client" />
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ChatCommandsView } from '../src/views/ChatCommands';
 import { useRouteResourceSync } from '../src/hooks/useRouteResourceSync';
 import { chatCommandSavePayload, normalizeChatCommandDraft } from '../src/types/chatCommands';
 import { settingsApi } from '../src/api/resources';
+import { queryKeys } from '../src/api/queryKeys';
 import { I18nProvider, useI18n } from '../src/i18n/I18nProvider';
 import '../src/styles.css';
 
@@ -21,7 +23,12 @@ function Fixture() {
   useRouteResourceSync({ route, characters: [], presets: [], chatCommands: commands,
     setDraft: noop, setCharacterAssets: noop, loadCharacterAssets: noop, setPresetDraft: noop,
     setChatCommandDraft: setDraft, fetchConversation: async () => {}, loadConversationEditDraft: async () => {}, setStatus });
-  (window as any).openCommand = (id: string) => setRoute({ page: 'chatCommandDetail', id });
+  (window as any).openCommand = (id: string) => {
+    // These cold-visit cases deliberately control separate outstanding GETs.
+    // Remove only this fixture's list cache, not production Query behavior.
+    if (!commands.some(command => command.id === id)) client.removeQueries({ queryKey: queryKeys.chatCommands, exact: true });
+    setRoute({ page: 'chatCommandDetail', id });
+  };
   (window as any).newCommand = () => setRoute({ page: 'chatCommandNew' });
   (window as any).currentDraft = draft;
   return <ChatCommandsView route={route} navigate={noop} chatCommands={commands} chatCommandDraft={draft} setChatCommandDraft={setDraft} loadChatCommands={noop}
@@ -39,4 +46,5 @@ function Fixture() {
       setRoute({ page: 'chatCommandNew' });
     }} />;
 }
-createRoot(document.getElementById('root')!).render(<I18nProvider><Fixture /></I18nProvider>);
+const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+createRoot(document.getElementById('root')!).render(<QueryClientProvider client={client}><I18nProvider><Fixture /></I18nProvider></QueryClientProvider>);

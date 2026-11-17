@@ -1,0 +1,15 @@
+export const queryKeys = {
+  characterAssets: (id: string) => ['character-assets', id] as const,
+  health: ['health'],
+  characters: ['characters'],
+  characterUsageRanking: ['characters', 'usage-ranking'],
+  conversations: ['conversations'],
+  presets: ['presets', 'include_disabled'],
+  chatCommandRoot: ['chat-commands'],
+  worldSettingsRoot: ['world-settings'],
+  chatCommands: ['chat-commands', 'include_disabled'],
+  worldSettings: ['world-settings', 'include_disabled'],
+  ttsVoices: ['tts', 'voices'],
+  ttsModels: ['tts', 'models'],
+  runtimeDefault: ['runtime-settings', 'default'],
+} as const;

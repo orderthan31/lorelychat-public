@@ -1,3 +1,4 @@
+from app.db.llm_telemetry import SQLTelemetryWriter
 import json
 from copy import deepcopy
 from typing import Any
@@ -21,7 +22,7 @@ VALID = json.dumps({"replies": [{"character_id": "char_1", "speaker_name": "Aria
 
 
 def provider_client(session, monkeypatch, outputs, *, purpose="chat_generation", retries=2):
-    monkeypatch.setattr(transport, "engine", session.get_bind())
+    monkeypatch.setattr(transport, "default_telemetry_writer", lambda: SQLTelemetryWriter(session.get_bind()))
     client = LLMClient(Settings(llm_mock=False), purpose=purpose, overrides={
         "provider": "gemini", "model": "unchanged-model", "api_key": "PRIVATE-KEY",
         "min_output_tokens": 768, "retry_attempts": retries, "circuit_breaker_enabled": False,

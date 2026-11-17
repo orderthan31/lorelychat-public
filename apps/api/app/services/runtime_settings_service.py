@@ -431,7 +431,12 @@ def _provider_for_llm_client(provider_type: str) -> str:
     return provider_type
 
 
-def _dynamic_llm_overrides(session: Session, model_key: str | None, capability: str) -> dict | None:
+def model_route_overrides(session: Session, model_key: str | None, capability: str) -> dict | None:
+    """Resolve an explicitly selected active model; never substitute runtime defaults.
+
+    Missing selections return None; inactive/incompatible selections raise ValueError.
+    The returned transport configuration can contain credentials and is not public JSON.
+    """
     option = model_provider_service.option_by_key(session, model_key)
     if not option:
         return None
@@ -469,11 +474,16 @@ def _dynamic_llm_overrides(session: Session, model_key: str | None, capability: 
     return overrides
 
 
+def _dynamic_llm_overrides(session: Session, model_key: str | None, capability: str) -> dict | None:
+    # Compatibility for existing TTS consumers; new callers use the public policy.
+    return model_route_overrides(session, model_key, capability)
+
+
 def tts_overrides_for_setting(setting: RuntimeSetting, session: Session) -> dict | None:
     key = getattr(setting, 'default_tts_model_option_key', None)
     if not key:
         return None
-    overrides = _dynamic_llm_overrides(session, key, 'tts')
+    overrides = model_route_overrides(session, key, 'tts')
     if overrides is None:
         raise ValueError('Selected TTS model option was not found')
     return overrides
@@ -481,7 +491,7 @@ def tts_overrides_for_setting(setting: RuntimeSetting, session: Session) -> dict
 
 def llm_overrides_for_setting(setting: RuntimeSetting, settings: Settings | None = None, session: Session | None = None) -> dict:
     if session:
-        dynamic_overrides = _dynamic_llm_overrides(session, setting.model_key, "chat")
+        dynamic_overrides = model_route_overrides(session, setting.model_key, "chat")
         if dynamic_overrides:
             return {**dynamic_overrides, "reasoning_effort": effective_thinking_level(setting, session)}
     if (settings or get_settings()).llm_mock:
@@ -499,7 +509,7 @@ def fallback_llm_overrides_for_setting(setting: RuntimeSetting, session: Session
         session, model_provider_service.option_by_key(session, model_key), "chat"
     ):
         return None
-    overrides = _dynamic_llm_overrides(session, model_key, "chat")
+    overrides = model_route_overrides(session, model_key, "chat")
     if overrides is not None:
         return {**overrides, "reasoning_effort": effective_thinking_level(setting, session)}
     return None
@@ -519,13 +529,13 @@ def compression_fallback_llm_overrides_for_setting(
     option = model_provider_service.option_by_key(session, model_key)
     if not _option_available(session, option, "compression"):
         return None
-    return _dynamic_llm_overrides(session, model_key, "compression")
+    return model_route_overrides(session, model_key, "compression")
 
 
 def compression_llm_overrides_for_setting(setting: RuntimeSetting, settings: Settings | None = None, session: Session | None = None) -> dict:
     model_key = getattr(setting, "compression_model_key", None)
     if session:
-        dynamic_overrides = _dynamic_llm_overrides(session, model_key, "compression")
+        dynamic_overrides = model_route_overrides(session, model_key, "compression")
         if dynamic_overrides:
             return dynamic_overrides
     if (settings or get_settings()).llm_mock:

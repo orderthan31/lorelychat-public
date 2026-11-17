@@ -1,10 +1,33 @@
 # Frontend behavior checks
 
 Run `npm ci`, then `npx playwright install chromium` once on a fresh test host.
-`npm test` runs the lifecycle, virtualization, contract and isolated browser
-regressions. Run `npm run typecheck` and `npm run build` separately.
+Build the current source with `npm run build` before `npm test`: the production
+Agent browser gates serve `dist`, while the remaining fixtures serve source.
+`npm test` explicitly registers every `*.test.mjs` file, including the settings
+navigation and both page-header browser gates. Run `npm run typecheck` separately.
+Never install into a node_modules symlink shared with a serving checkout.
+The router/settings/header/hardening Vite fixtures use isolated temporary caches;
+for other fixtures, run with an independently installed dependency tree.
 
-Focused browser runners include:
+Focused behavior runners include:
+- `node tests/router-browser.test.mjs`: actual TanStack RouterProvider and production
+  navigation hook; direct routes, encoded identifiers, settings aliases,
+  back/forward, unknown/retired fallback, drawer close and stable root state.
+- `node tests/settings-navigation-browser.test.mjs`: actual settings clicks,
+  reload/back, keyboard toggles and no implicit settings/provider writes.
+- `node tests/page-header-settings-browser.test.mjs`: provider/model creation,
+  error recovery, draft focus and null/default preservation on save.
+- `node tests/page-header-actions-browser.test.mjs`: native form validation,
+  one primary submit, busy/disabled state, draft retention and participant Add.
+- `node tests/agent-image-leaves.test.mjs`: production image/error leaves,
+  translation, deferred blob loading, errors, object-URL cleanup and stale results.
+- `node tests/feature-controllers.test.mjs`: server-state/cache and extracted
+  feature-controller behavior.
+- `node tests/frontend-contract.test.mjs`: runtime-setting normalization plus
+  narrow privacy/raw-HTML/retired-transport negative guards. Source-file layout,
+  exact JSX/CSS, dependency versions and retired UI examples are not contracts.
+  The former design-system and editor source-shape suites are removed; their
+  real interaction/accessibility coverage remains in the browser suites below.
 - `npm run test:freebody`: semantic rendering, editing and clipboard formatting.
 - `node tests/message-selection.test.mjs`: selection toolbar, chronological and
   offscreen copy, touch/mouse gestures, draft restoration and translated layouts.

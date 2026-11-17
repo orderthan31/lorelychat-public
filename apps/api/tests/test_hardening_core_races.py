@@ -1,3 +1,4 @@
+from app.services import post_commit_execution
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -192,10 +193,10 @@ def test_stale_compression_outbox_owner_cannot_apply_arc(tmp_path, monkeypatch):
             return {'scene':{'summary':'Forbidden stale owner Arc'}}
         async def compress(session,conversation_id,**kw):
             return await svc.update_scene_orchestration_summary(session,conversation_id,svc.list_messages(session,conversation_id),llm_client=object(),character_ids=['c'])
-        monkeypatch.setattr(svc,'summarize_conversation_state_with_llm',summarize)
-        monkeypatch.setattr(api,'_run_scene_compression_in_session',compress)
+        monkeypatch.setattr('app.services.conversation_compression_service.summarize_conversation_state_with_llm', summarize)
+        monkeypatch.setattr(post_commit_execution,'run_scene_compression_in_session',compress)
         with pytest.raises(RuntimeError,match='lease was lost'):
-            asyncio.run(api._execute_claimed_post_commit_task(s,task,lease_owner='old'))
+            asyncio.run(post_commit_execution.execute_claimed_post_commit_task(s,task,lease_owner='old'))
         s.expire_all()
         assert s.get(SceneState,'room').summary=='Prior Arc'
         assert s.get(PostCommitTask,'compression_task').lease_owner=='new'

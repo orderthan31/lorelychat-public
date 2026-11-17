@@ -180,8 +180,8 @@ await test('endpoint batches stay bounded and fairly refresh all loaded targets'
   assert.equal(new Set(f.calls.flat()).size, 125);
   f.cancel();
 });
-await test('App effects use the targeted endpoint and current loaded messages without status/busy writes', async () => {
-  const app = readFileSync(new URL('../src/app/App.tsx', import.meta.url), 'utf8');
+await test('Session effects use the targeted endpoint and current loaded messages without status/busy writes', async () => {
+  const app = readFileSync(new URL('../src/views/ConversationDetail/hooks/useConversationSession.ts', import.meta.url), 'utf8');
   const start = app.indexOf('  useLayoutEffect(() => {\n    if (!selectedConversationId) return;');
   const end = app.indexOf('  const { messageSelectionMode', start);
   assert.ok(start > 0 && end > start);

@@ -1,7 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
-from app.db.models import ChatCommand
-from app.ops.catalog_queries import catalog_page
 
 from app.db.session import get_session
 from app.schemas.chat_commands import ChatCommandCreate, ChatCommandRead, ChatCommandUpdate
@@ -22,7 +20,7 @@ def list_chat_commands(
 ):
     chat_command_service.seed_default_chat_commands(session)
     if paginated:
-        result = catalog_page(session, ChatCommand, fields=[ChatCommand.name, ChatCommand.display_name, ChatCommand.description, ChatCommand.generation_prompt, ChatCommand.postprocess_prompt, ChatCommand.prompt], order=[ChatCommand.priority.desc(), ChatCommand.name], page=page, page_size=page_size, q=q, predicates=() if include_disabled else (ChatCommand.enabled == True,))
+        result = chat_command_service.list_chat_commands_page(session, page=page, page_size=page_size, q=q, include_disabled=include_disabled)
         result["items"] = [ChatCommandRead.model_validate(item.model_dump()) for item in result["items"]]
         return ChatCommandPageRead(**result)
     return chat_command_service.list_chat_commands(session, include_disabled=include_disabled)

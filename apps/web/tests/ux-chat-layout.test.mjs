@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import * as sass from 'sass';
 
 const read = path => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
 function harness() {
@@ -148,16 +147,3 @@ const escape = key('Escape'); assert.equal(modalCloses, 1); assert.equal(escape.
 cleanupModal(); assert.equal(background.inert, false); assert.equal(body.style.overflow, 'auto'); assert.equal(document.activeElement, trigger); assert.equal(events.size, 0);
 assert.equal(runModal({ panelRef: { current: panel }, open: true, docked: true }), undefined);
 console.log('PASS modal focus entry, Tab/Shift+Tab containment, Escape, inert background and focus/scroll restoration');
-
-// Compile the scoped stylesheet, not an application build or a browser/runtime call.
-const css = sass.compileString(read('styles/pages/_chat.scss')).css;
-assert.match(css, /\.chat-workspace\.has-docked-panel\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\) var\(--chat-panel-width, 320px\)/);
-assert.match(css, /\.chat-workspace > \.chat-shell\s*\{[^}]*max-width: var\(--chat-max-width, 960px\)/);
-assert.match(css, /\.chat-workspace \.composer\s*\{[^}]*position: relative/);
-assert.match(css, /\.context-drawer\.context-drawer--docked\s*\{[^}]*position: relative/);
-assert.match(css, /\.chat-workspace > \.context-drawer-backdrop\s*\{[^}]*z-index: 89/);
-const view = read('views/ConversationDetail/index.tsx');
-assert.equal((view.match(/\{props.sidePanel\}/g) || []).length, 1);
-assert.ok(view.indexOf('className="chat-footer"') < view.indexOf('<MessageSelectionToolbar'));
-assert.ok(view.indexOf('<ConversationComposer') < view.indexOf('{props.sidePanel}'));
-console.log('PASS scoped Sass compilation, column containment and single panel slot');

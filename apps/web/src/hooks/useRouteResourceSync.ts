@@ -1,3 +1,5 @@
+import { useQueryClient } from '@tanstack/react-query';
+import { queryKeys } from '../api/queryKeys';
 import { useEffect, type Dispatch, type SetStateAction } from 'react';
 import { characterApi, settingsApi } from '../api/resources';
 import { normalizeChatCommandDraft, type ChatCommandItem } from '../types/chatCommands';
@@ -53,6 +55,7 @@ export function useRouteResourceSync({
   setStatus,
 }: RouteResourceSyncOptions): void {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const routeId = 'id' in route ? route.id : undefined;
 
   useEffect(() => {
@@ -108,7 +111,7 @@ export function useRouteResourceSync({
     if (route.page === 'chatCommandDetail' && routeId) {
       const local = chatCommands.find((command) => command.id === routeId);
       if (local) { setChatCommandDraft?.(normalizeChatCommandDraft(local as ChatCommandItem)); clearLoading(); }
-      else { setStatus(t('불러오는 중…')); settingsApi.chatCommands().then((commands) => {
+      else { setStatus(t('불러오는 중…')); queryClient.fetchQuery({ queryKey: queryKeys.chatCommands, queryFn: settingsApi.chatCommands, staleTime: 10000 }).then((commands) => {
         if (!commandRequestActive) return;
         const found = ((commands || []) as Entity[]).find((command) => command.id === routeId);
         if (found) { setChatCommandDraft?.(normalizeChatCommandDraft(found as ChatCommandItem)); clearLoading(); }

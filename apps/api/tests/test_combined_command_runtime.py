@@ -200,7 +200,7 @@ def test_sqlite_additive_migration_preserves_existing_rows():
 @pytest.mark.parametrize('protocol', ['tagged_text', 'free_body_json'])
 @pytest.mark.parametrize('bad', [False, True, 'truncated'])
 def test_actual_job_combined_or_targeted_fallback_atomic_readback(client, session, monkeypatch, mode, protocol, bad):
-    from app.api.conversations import _run_message_generation_job_in_session
+    from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session
     mode(protocol)
     monkeypatch.setattr('app.api.conversations._start_message_generation_worker', lambda *a: None)
     actor = client.post('/characters', json={'name': 'Aria', 'persona': 'Synthetic adult.'}).json()
@@ -282,7 +282,7 @@ def test_alias_isolation_literals_and_order(mode, protocol):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('protocol', ['tagged_text', 'free_body_json'])
 async def test_multi_command_fallback_only_missing_and_atomic_rollback(session, mode, protocol):
-    from app.api.conversations import persist_generated_reply_messages
+    from app.services.generation_execution import persist_generated_reply_messages
     from app.schemas.conversations import MessageCreate
     mode(protocol)
     commands = [command('first', 'first_bubble'), command('last')]

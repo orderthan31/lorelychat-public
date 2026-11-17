@@ -1,3 +1,4 @@
+from app.services import post_commit_execution
 """Every generated turn is eligible; abstention is not a cooldown."""
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,7 @@ from app.services import asset_decision_service as decisions, conversation_servi
 
 def test_none_result_allows_consecutive_generated_turn_checks(session, monkeypatch):
     setting = api.get_settings().model_copy(update={'llm_mock': False})
-    monkeypatch.setattr(api, 'get_settings', lambda: setting)
+    monkeypatch.setattr(post_commit_execution, 'get_settings', lambda: setting)
     monkeypatch.setattr(decisions, 'decision_model_key_for_turn', lambda *_: 'decision')
     session.add_all([Character(id='c', name='Synthetic', persona='Synthetic'), Conversation(id='room', mode='user_character')])
     session.commit()
@@ -26,14 +27,14 @@ def test_none_result_allows_consecutive_generated_turn_checks(session, monkeypat
         job = MessageGenerationJob(id=f'job_{index}', conversation_id='room', incoming_message_id=source.id, status='running', lease_owner='worker')
         session.add_all([source, job]); session.commit()
         replies = [Message(id=f'reply_{index}_{bubble}', conversation_id='room', speaker_type='character', speaker_id='c', content='Routine reply', created_at=base+timedelta(seconds=index*10+bubble+1)) for bubble in range(3)]
-        specs = api.build_generated_turn_post_commit_tasks(session=session, conversation=session.get(Conversation,'room'), scene_state=None, incoming_message=source, generated_messages=replies, enqueue_compression=False, character_ids=['c'], generation_job_id=job.id)
+        specs = post_commit_execution.build_generated_turn_post_commit_tasks(session=session, conversation=session.get(Conversation,'room'), scene_state=None, incoming_message=source, generated_messages=replies, enqueue_compression=False, character_ids=['c'], generation_job_id=job.id)
         if specs:
             checked.append(index)
             assert specs[0]['payload']['message_ids'] == [m.id for m in replies]
         conversation_service.finalize_message_generation_turn(session, job, replies, post_commit_tasks=specs)
         for spec in specs:
             claimed = conversation_service.claim_post_commit_task_by_unique_key(session, spec['unique_key'], lease_owner='asset-worker')
-            asyncio.run(api._execute_claimed_post_commit_task(session, claimed, lease_owner='asset-worker'))
+            asyncio.run(post_commit_execution.execute_claimed_post_commit_task(session, claimed, lease_owner='asset-worker'))
     assert checked == list(range(7))
     assert len(calls) == 7
     assert session.exec(select(MessageAsset)).all() == []

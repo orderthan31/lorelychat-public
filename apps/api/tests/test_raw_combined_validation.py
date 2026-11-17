@@ -182,7 +182,7 @@ async def test_original_prose_and_literal_code_are_not_xml_or_normalized(mode, p
     ('free_body_json', 'fallback-failed'), ('tagged_text', 'fallback-failed'),
 ])
 def test_raw_admission_job_readback(client, session, monkeypatch, mode, protocol, case):
-    from app.api.conversations import _run_message_generation_job_in_session
+    from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session
     mode(protocol)
     monkeypatch.setattr('app.api.conversations._start_message_generation_worker', lambda *a: None)
     actor = client.post('/characters', json={'name': 'Aria', 'persona': 'Synthetic adult.'}).json()

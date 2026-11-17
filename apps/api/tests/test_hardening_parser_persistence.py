@@ -6,7 +6,7 @@ from sqlmodel import select
 from app.core.config import get_settings
 from app.db.models import Message, LLMPromptSnapshot
 from app.engine.llm_client import LLMClient, LLMResponse
-from app.api.conversations import _run_message_generation_job_in_session
+from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session
 from app.engine import free_body_protocol as fb
 
 @pytest.mark.parametrize('protocol', ['legacy_json','free_body_json','tagged_text'])

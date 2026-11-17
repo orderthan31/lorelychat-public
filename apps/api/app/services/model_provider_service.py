@@ -483,7 +483,8 @@ def keyless_local_allowed(account: ModelProviderAccount) -> bool:
             is_local_endpoint(account.base_url or ''))
 
 
-def _configured(account: ModelProviderAccount, *, has_api_key: bool | None = None) -> bool:
+def account_is_configured(account: ModelProviderAccount, *, has_api_key: bool | None = None) -> bool:
+    """Check enabled configuration readiness locally, without a provider probe."""
     if not account.enabled:
         return False
     if has_api_key is None:
@@ -555,7 +556,7 @@ def create_account(session: Session, payload: ProviderAccountCreate) -> ModelPro
         account.api_key_hint = None
     created_secret_ref = account.api_key_secret_ref
     try:
-        account.configured = _configured(account)
+        account.configured = account_is_configured(account)
         session.add(account)
         session.commit()
     except Exception:
@@ -630,8 +631,8 @@ def update_account(session: Session, account_id: str, payload: ProviderAccountUp
         account.api_key_hint = None
     account.updated_at = _now()
     try:
-        account.configured = (_configured(account) if account.provider_type == 'vertex_ai'
-                              else False if payload.clear_api_key else _configured(account))
+        account.configured = (account_is_configured(account) if account.provider_type == 'vertex_ai'
+                              else False if payload.clear_api_key else account_is_configured(account))
         session.add(account)
         session.commit()
     except Exception:
@@ -646,7 +647,7 @@ def update_account(session: Session, account_id: str, payload: ProviderAccountUp
 
 def test_account(session: Session, account_id: str) -> ProviderAccountTestRead:
     account = _account_by_id(session, account_id)
-    account.configured = _configured(account)
+    account.configured = account_is_configured(account)
     ok = account.configured
     if account.provider_type == 'vertex_ai':
         message = ('Vertex 설정 형식만 확인했습니다. 실제 인증·권한·모델 이용 가능 여부는 확인하지 않았으며 추론을 호출하지 않았습니다.'
@@ -672,7 +673,7 @@ def test_account(session: Session, account_id: str) -> ProviderAccountTestRead:
 
 def sync_models(session: Session, account_id: str) -> list[ModelOptionRead]:
     account = _account_by_id(session, account_id)
-    if not _configured(account):
+    if not account_is_configured(account):
         raise ValueError("Provider API key or required connection information is missing")
     fetched_by_model = {
         fetched.model.strip(): fetched
@@ -740,7 +741,7 @@ def sync_models(session: Session, account_id: str) -> list[ModelOptionRead]:
         option.capability_source = "unknown"
         option.updated_at = refreshed_at
         session.add(option)
-    account.configured = _configured(account)
+    account.configured = account_is_configured(account)
     account.updated_at = refreshed_at
     session.add(account)
     session.commit()
@@ -836,7 +837,7 @@ def update_option(session: Session, option_id: str, payload: ModelOptionUpdate) 
 def test_option(session: Session, option_id: str) -> ModelOptionTestRead:
     option = _option_by_id(session, option_id)
     account = _account_by_id(session, option.provider_account_id)
-    ok = _configured(account) and option.enabled
+    ok = account_is_configured(account) and option.enabled
     status = "success" if ok else "failed"
     message = "모델 옵션이 활성화되어 있고 provider 연결 정보가 있습니다." if ok else "모델 옵션이 비활성화되어 있거나 provider 연결 정보가 부족합니다."
     option.last_test_status = status
@@ -855,7 +856,7 @@ def active_options_for_runtime(session: Session, capability: str) -> list[ModelO
     for option in all_options:
         account = _account_by_id(session, option.provider_account_id)
         if account.id not in configured_accounts:
-            configured_accounts[account.id] = _configured(account)
+            configured_accounts[account.id] = account_is_configured(account)
         if not configured_accounts[account.id] or not option.enabled:
             continue
         if capability == "chat" and option.supports_chat:
@@ -877,7 +878,7 @@ def option_by_key(session: Session, key: str | None) -> ModelOption | None:
 
 def option_is_active_for_capability(session: Session, option: ModelOption, capability: str) -> bool:
     account = _account_by_id(session, option.provider_account_id)
-    if not _configured(account) or not option.enabled:
+    if not account_is_configured(account) or not option.enabled:
         return False
     if capability == "chat":
         return option.supports_chat
@@ -897,7 +898,7 @@ def serialize_account(account: ModelProviderAccount, *, active_model_count: int 
         provider_type=account.provider_type,
         alias=account.alias,
         enabled=account.enabled,
-        configured=_configured(account, has_api_key=has_api_key),
+        configured=account_is_configured(account, has_api_key=has_api_key),
         base_url=account.base_url,
         api_key_status="set" if has_api_key else "missing",
         api_key_hint=account.api_key_hint if has_api_key and account.provider_type != 'vertex_ai' else None,

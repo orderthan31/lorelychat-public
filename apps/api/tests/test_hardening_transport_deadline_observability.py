@@ -1,3 +1,4 @@
+from app.db.llm_telemetry import SQLTelemetryWriter
 """Shared deadline, cancellation, circuit ownership and attempt ledger proofs."""
 import asyncio
 import time
@@ -102,7 +103,7 @@ async def test_explicit_http_policy_code_terminal(wire,status):
 
 @pytest.mark.parametrize('payload',[{'choices':[]},None,'duplicate','nonjson'])
 async def test_malformed_paid_attempt_ledger_readback(wire,monkeypatch,engine,payload):
-    monkeypatch.setattr(llm,'engine',engine)
+    monkeypatch.setattr(llm, "default_telemetry_writer", lambda: SQLTelemetryWriter(engine))
     monkeypatch.setattr(llm.LLMClient,'_record_transport_failure',_REAL_FAILURE)
     body=b'{"choices":[],"choices":[]}' if payload=='duplicate' else b'not json'
     wire[1].append(httpx.Response(200,json=payload) if payload is None or isinstance(payload,dict) else httpx.Response(200,content=body))
@@ -120,7 +121,7 @@ async def test_malformed_paid_attempt_ledger_readback(wire,monkeypatch,engine,pa
         assert meta['attempt_trace'][0]['dispatched']==1
 
 async def test_retry_success_ledger_and_requested_effective_route(wire,monkeypatch,engine):
-    monkeypatch.setattr(llm,'engine',engine)
+    monkeypatch.setattr(llm, "default_telemetry_writer", lambda: SQLTelemetryWriter(engine))
     monkeypatch.setattr(llm.LLMClient,'_record_usage',_REAL_USAGE)
     monkeypatch.setattr(llm.LLMClient,'_record_transport_failure',_REAL_FAILURE)
     wire[1].extend([httpx.Response(503,json={'error':{'message':'private'}},headers={'retry-after':'0'}),httpx.Response(503,json={'error':{}}),httpx.Response(200,json=native('xai'))])
@@ -142,7 +143,7 @@ async def test_retry_success_ledger_and_requested_effective_route(wire,monkeypat
 
 async def test_telemetry_failure_counter_not_raw_diagnostic(wire,monkeypatch,caplog):
     def broken(*a,**k):raise RuntimeError('PRIVATE_TELEMETRY_SENTINEL')
-    monkeypatch.setattr(llm,'Session',broken)
+    monkeypatch.setattr(llm,'default_telemetry_writer',broken)
     monkeypatch.setattr(llm.LLMClient,'_record_usage',_REAL_USAGE)
     before=llm.telemetry_write_failure_count()
     wire[1].append(httpx.Response(200,json=native('openai')))

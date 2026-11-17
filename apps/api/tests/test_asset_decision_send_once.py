@@ -1,3 +1,4 @@
+from app.services import post_commit_execution
 """Durable admission survives an ambiguous send and expired worker lease."""
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -11,8 +12,8 @@ from test_asset_decision_post_commit import finalize
 
 
 def enable(monkeypatch):
-    monkeypatch.setattr(api.asset_decision_service, '_mock', lambda: False)
-    monkeypatch.setattr(api.asset_decision_service, '_route', lambda *_: transport.DecisionRoute(
+    monkeypatch.setattr(post_commit_execution.asset_decision_service, '_mock', lambda: False)
+    monkeypatch.setattr(post_commit_execution.asset_decision_service, '_route', lambda *_: transport.DecisionRoute(
         provider_type='openai', model='requested-model', api_key='PRIVATE_KEY'))
 
 
@@ -30,7 +31,7 @@ def test_real_selector_applies_multiple_links_atomically(session, monkeypatch):
     monkeypatch.setattr(transport, 'decide_assets', decide)
     claimed = conversation_service.claim_post_commit_task_by_unique_key(session, task.unique_key, lease_owner='worker')
     tid = task.id
-    asyncio.run(api._execute_claimed_post_commit_task(session, claimed, lease_owner='worker'))
+    asyncio.run(post_commit_execution.execute_claimed_post_commit_task(session, claimed, lease_owner='worker'))
     session.expire_all()
     assert {(a.message_id, a.asset_id) for a in session.exec(select(MessageAsset)).all()} == {(mids[0], aid), (mids[1], 'second')}
     completed = session.get(PostCommitTask, tid)
@@ -56,7 +57,7 @@ def test_expired_lease_after_send_marker_never_resends(session, monkeypatch):
     monkeypatch.setattr(transport, 'decide_assets', interrupted)
     claimed = conversation_service.claim_post_commit_task_by_unique_key(session, unique, lease_owner='old')
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(api._execute_claimed_post_commit_task(session, claimed, lease_owner='old'))
+        asyncio.run(post_commit_execution.execute_claimed_post_commit_task(session, claimed, lease_owner='old'))
     session.rollback()
     session.expire_all()
     task = session.get(PostCommitTask, tid)
@@ -66,7 +67,7 @@ def test_expired_lease_after_send_marker_never_resends(session, monkeypatch):
     assert conversation_service.requeue_expired_post_commit_tasks(session) == 1
     claimed = conversation_service.claim_post_commit_task_by_unique_key(session, unique, lease_owner='recovered')
     assert claimed is not None and claimed.attempt_count == 2
-    asyncio.run(api._execute_claimed_post_commit_task(session, claimed, lease_owner='recovered'))
+    asyncio.run(post_commit_execution.execute_claimed_post_commit_task(session, claimed, lease_owner='recovered'))
     session.expire_all()
     task = session.get(PostCommitTask, tid)
     assert task.status == 'completed'
@@ -83,8 +84,8 @@ def test_markerless_recovered_legacy_attempt_abstains(session, monkeypatch):
     session.commit()
     assert conversation_service.requeue_expired_post_commit_tasks(session) == 1
     claimed = conversation_service.claim_post_commit_task_by_unique_key(session, unique, lease_owner='new')
-    monkeypatch.setattr(api.asset_decision_service, 'select_turn_assets', lambda *a, **k: pytest.fail('ambiguous replay must not plan/send'))
-    asyncio.run(api._execute_claimed_post_commit_task(session, claimed, lease_owner='new'))
+    monkeypatch.setattr(post_commit_execution.asset_decision_service, 'select_turn_assets', lambda *a, **k: pytest.fail('ambiguous replay must not plan/send'))
+    asyncio.run(post_commit_execution.execute_claimed_post_commit_task(session, claimed, lease_owner='new'))
     session.expire_all()
     task = session.exec(select(PostCommitTask).where(PostCommitTask.unique_key == unique)).one()
     assert task.status == 'completed'
@@ -92,7 +93,7 @@ def test_markerless_recovered_legacy_attempt_abstains(session, monkeypatch):
 
 
 def test_diagnostics_drop_private_and_malformed_values():
-    diag = api.asset_decision_service.bounded_diagnostics({
+    diag = post_commit_execution.asset_decision_service.bounded_diagnostics({
         'error': 'PRIVATE_ERROR', 'prompt': 'PRIVATE_PROMPT', 'url': 'https://private.invalid',
         'requested_model': '/root/private/file', 'requested_provider': ['PRIVATE_PROVIDER'],
         'outcome': {'private': 'PRIVATE_OUTCOME'}, 'preparation_status': [], 'request_bytes': True,

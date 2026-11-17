@@ -102,8 +102,19 @@ export const characterApi = {
   setDefaultAsset: (assetId: Id) => api(`/character-assets/${assetId}/set-default-avatar`, { method: 'POST' }),
 };
 
+/** Canonical conversation list consumed by every observer of the list key.
+ * Keep bounded Home participant previews in the same cached server snapshot. */
+export async function loadConversationList() {
+  const list = [...((await api<Array<{ id: string; updated_at?: string; created_at?: string; [key: string]: unknown }>>('/conversations')) || [])]
+    .sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
+  const enriched = await Promise.all(list.slice(0, 12).map(async room => ({
+    ...room, participants: await api(`/conversations/${room.id}/participants`).catch(() => []),
+  })));
+  return [...enriched, ...list.slice(12)];
+}
+
 export const conversationApi = {
-  list: async () => [...((await api<unknown[]>('/conversations')) || [])].sort((a: any, b: any) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''))),
+  list: loadConversationList,
   get: (id: Id) => api(`/conversations/${id}`),
   create: (payload: Payload) => api('/conversations', { method: 'POST', body: JSON.stringify(payload) }),
   uploadThumbnail: (formData: FormData) => api('/uploads/conversation-thumbnails', { method: 'POST', body: formData }),

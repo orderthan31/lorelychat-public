@@ -42,17 +42,9 @@ def prepare_compression_source(state: CompressionPipelineState) -> CompressionPi
     character_ids = list(state.get("character_ids") or [])
     memories = list(state.get("memories") or [])
     recent_messages = list(state.get("recent_messages") or [])
-    scene_state = state.get("scene_state")
+    # The caller owns domain prompt construction. This engine only executes
+    # supplied callbacks and carries their optional diagnostic harness.
     compression_harness = state.get("compression_harness")
-    if compression_harness is None and scene_state is not None:
-        from app.services import conversation_service
-
-        compression_harness = conversation_service.build_compression_prompt_harness(
-            scene_state=scene_state,
-            recent_messages=recent_messages,
-            character_ids=character_ids,
-            memories=memories,
-        )
     return {
         **state,
         "character_ids": character_ids,

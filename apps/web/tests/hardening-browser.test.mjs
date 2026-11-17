@@ -1,3 +1,4 @@
+import { testViteCacheDir } from './isolated-vite-cache.mjs';
 import assert from 'node:assert/strict';
 import {mkdirSync,mkdtempSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -7,7 +8,7 @@ import react from '@vitejs/plugin-react';
 import {chromium,expect} from '@playwright/test';
 const out=process.env.LORECHAT_WEB_TEST_ARTIFACT_DIR || mkdtempSync(join(tmpdir(),'lorechat-hardening-web-'));mkdirSync(out,{recursive:true});console.log('ARTIFACT_DIR',out);
 const plugin={name:'synthetic-hardening',configureServer(server){server.middlewares.use(async(req,res,next)=>{if(!/^\/(hardening-test|conversations\/[^?]+|characters\/[^?]+|presets\/[^?]+|statistics)(\?|$)/.test(req.url))return next();res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml(req.url,'<html><body><div id="root"></div><script type="module" src="/tests/hardening-browser.fixture.tsx"></script></body></html>'));});}};
-const server=await createServer({configFile:false,envFile:false,plugins:[plugin,react()],server:{host:'127.0.0.1',port:0},logLevel:'error'});
+const server=await createServer({ cacheDir: testViteCacheDir,configFile:false,envFile:false,plugins:[plugin,react()],server:{host:'127.0.0.1',port:0},logLevel:'error'});
 let browser;const results=[],errors=[],blocked=[],requests=[];
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 try{

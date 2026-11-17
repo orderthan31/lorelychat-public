@@ -1,3 +1,4 @@
+from app.services import post_commit_execution
 """Separate SQLite connections prove validation-to-attachment write fencing."""
 import asyncio
 from types import SimpleNamespace
@@ -63,7 +64,7 @@ def test_competing_commit_before_application_fence_invalidates_result(tmp_path, 
         return await original(reader, **kwargs)
     monkeypatch.setattr(service, 'select_turn_assets', interleaved)
     with Session(engine) as reader:
-        asyncio.run(api._execute_claimed_post_commit_task(reader, reader.get(PostCommitTask, 'task'), lease_owner='worker'))
+        asyncio.run(post_commit_execution.execute_claimed_post_commit_task(reader, reader.get(PostCommitTask, 'task'), lease_owner='worker'))
         reader.expire_all()
         links = [(x.message_id, x.asset_id) for x in reader.exec(select(MessageAsset)).all()]
         assert ('m1', 'a1') not in links
@@ -91,7 +92,7 @@ def test_after_authoritative_validation_competing_writer_cannot_overtake_attachm
         return proposed
     monkeypatch.setattr(service, 'select_turn_assets', interleaved)
     with Session(engine) as reader:
-        asyncio.run(api._execute_claimed_post_commit_task(reader, reader.get(PostCommitTask, 'task'), lease_owner='worker'))
+        asyncio.run(post_commit_execution.execute_claimed_post_commit_task(reader, reader.get(PostCommitTask, 'task'), lease_owner='worker'))
         reader.expire_all()
         assert [(x.message_id, x.asset_id) for x in reader.exec(select(MessageAsset)).all()] == [('m1', 'a1')]
         assert reader.get(PostCommitTask, 'task').status == 'completed'

@@ -1,10 +1,8 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { AgentMark } from './AgentMark';
 import { useI18n } from '../i18n/I18nProvider';
-import type { UiMessageKey } from '../i18n/core';
 import { AGENT_DOCK_QUERY, agentActions, useAgentStore } from './store';
-import { agentApi } from './api';
 import { AgentPanel } from './panel';
 import './agent.css';
 
@@ -12,10 +10,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   useEffect(() => { void agentActions.loadSettings(); }, []);
   return <>{children}</>;
 }
-export function AgentError({ value }: { value: string }) {
-  const { t } = useI18n();
-  return value ? <p className="agent-error" role="alert">{value.startsWith('agent.') ? t(value as UiMessageKey) : value}</p> : null;
-}
+export { AgentError } from './AgentError';
 let launcherElement: HTMLButtonElement | null = null;
 function openAgentFrom(element: HTMLButtonElement, open: boolean) {
   launcherElement = element;
@@ -72,15 +67,4 @@ export function AgentSurface() {
     <header className="agent-panel-header"><h2><AgentMark size={28} />{t('agent.title')}</h2><button type="button" aria-label={t('닫기')} onClick={close}><X size={20} /></button></header>
     {enabled && <AgentPanel />}
   </aside>;
-}
-export function AgentImage({ id }: { id: string }) {
-  const { t } = useI18n();
-  const [url, setUrl] = useState(''); const [error, setError] = useState('');
-  useEffect(() => {
-    let active = true; let objectUrl = '';
-    setUrl(''); setError('');
-    void agentApi.imageBlob(id).then(blob => { if (active) { objectUrl = URL.createObjectURL(blob); setUrl(objectUrl); } }).catch(() => { if (active) setError('agent.imageFailed'); });
-    return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [id]);
-  return <><AgentError value={error} />{!url && !error && <span role="status">{t('agent.imageLoading')}</span>}{url && !error && <img src={url} alt={t('agent.generatedImage')} onError={() => setError('agent.imageFailed')} />}</>;
 }

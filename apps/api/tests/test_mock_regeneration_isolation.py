@@ -1,3 +1,4 @@
+from app.services import generation_execution, generation_preparation, post_commit_execution
 """API-path regressions for durable regeneration execution-mode isolation."""
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -48,8 +49,8 @@ async def no_run(*args, **kwargs):
 def accept_pending(client, session, monkeypatch, cid, source, *, mock=True):
     with monkeypatch.context() as patch:
         patch.setattr(app.state, "mock_execution", mock)
-        patch.setattr(api, "_run_mock_generation_queue", no_run)
-        patch.setattr(api, "_run_message_generation_job_in_session", no_run)
+        patch.setattr(generation_execution, "run_mock_generation_queue", no_run)
+        patch.setattr(generation_execution, "run_message_generation_job_in_session", no_run)
         patch.setattr(api, "_start_message_generation_worker", lambda *_: None)
         response = regenerate(client, cid, source)
     assert response.status_code == 409, response.text
@@ -72,17 +73,17 @@ def test_actual_regeneration_suppresses_tts_and_compression_and_replays_receipt(
     async def forbidden(*args, **kwargs):
         calls.append("paid")
         raise AssertionError("paid execution reached")
-    monkeypatch.setattr(api.tts_service, "ensure_message_tts", forbidden)
-    monkeypatch.setattr(api, "_run_scene_compression_in_session", forbidden)
+    monkeypatch.setattr(post_commit_execution.tts_service, "ensure_message_tts", forbidden)
+    monkeypatch.setattr(post_commit_execution, "run_scene_compression_in_session", forbidden)
     for method in ("_chat_litellm", "_chat_openai_compatible", "_chat_gemini"):
-        monkeypatch.setattr(api.LLMClient, method, forbidden)
+        monkeypatch.setattr(generation_preparation.LLMClient, method, forbidden)
     observations = []
-    build = api.build_generated_turn_post_commit_tasks
+    build = post_commit_execution.build_generated_turn_post_commit_tasks
     def observed_builder(**kwargs):
         tasks = build(**kwargs)
         observations.append((isolated_mock_execution.get(), kwargs["enqueue_compression"], kwargs["conversation"].tts_enabled, tasks))
         return tasks
-    monkeypatch.setattr(api, "build_generated_turn_post_commit_tasks", observed_builder)
+    monkeypatch.setattr(post_commit_execution, "build_generated_turn_post_commit_tasks", observed_builder)
     first = regenerate(client, cid, source)
     assert first.status_code == 200, first.text
     assert first.json()
@@ -128,7 +129,7 @@ def test_mock_expired_lease_recovers_without_real_execution(client, session, mon
     session.commit()
     conversation_service.requeue_expired_message_generation_jobs(session)
     assert conversation_service.claim_next_message_generation_job(session, lease_owner="real-restart", job_id=job_id) is None
-    asyncio.run(api._run_mock_generation_queue(session.get_bind()))
+    asyncio.run(generation_execution.run_mock_generation_queue(session.get_bind()))
     session.expire_all()
     recovered = session.get(MessageGenerationJob, job_id)
     assert recovered.status == "completed" and recovered.attempt_count == 2
@@ -145,8 +146,8 @@ def test_pending_mock_is_held_when_settings_are_live(client, session, monkeypatc
     monkeypatch.setattr(api, "_start_message_generation_worker", lambda *a: calls.append("wake"))
     async def forbidden(*a, **k):
         calls.append("run")
-    monkeypatch.setattr(api, "_run_message_generation_job_in_session", forbidden)
-    monkeypatch.setattr(api, "_run_mock_generation_queue", forbidden)
+    monkeypatch.setattr(generation_execution, "run_message_generation_job_in_session", forbidden)
+    monkeypatch.setattr(generation_execution, "run_mock_generation_queue", forbidden)
     response = regenerate(client, cid, source)
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "mock_generation_held"
@@ -168,8 +169,8 @@ def test_existing_live_intended_pending_regeneration_is_not_relabelled_or_run(cl
     monkeypatch.setattr(api, "_start_message_generation_worker", lambda *a: calls.append("wake"))
     async def forbidden(*a, **k):
         calls.append("run")
-    monkeypatch.setattr(api, "_run_message_generation_job_in_session", forbidden)
-    monkeypatch.setattr(api, "_run_mock_generation_queue", forbidden)
+    monkeypatch.setattr(generation_execution, "run_message_generation_job_in_session", forbidden)
+    monkeypatch.setattr(generation_execution, "run_mock_generation_queue", forbidden)
     response = regenerate(client, cid, source)
     assert response.status_code == 409, response.text
     assert "live-intended" in response.json()["detail"]
@@ -186,8 +187,8 @@ def test_running_mock_is_pending_not_dispatched_again(client, session, monkeypat
     calls = []
     async def forbidden(*a, **k):
         calls.append("run")
-    monkeypatch.setattr(api, "_run_mock_generation_queue", forbidden)
-    monkeypatch.setattr(api, "_run_message_generation_job_in_session", forbidden)
+    monkeypatch.setattr(generation_execution, "run_mock_generation_queue", forbidden)
+    monkeypatch.setattr(generation_execution, "run_message_generation_job_in_session", forbidden)
     response = regenerate(client, cid, source)
     assert response.status_code == 409 and response.json()["detail"]["code"] == "durable_generation_pending"
     assert calls == []
@@ -208,8 +209,8 @@ def test_nonisolated_acceptance_preserves_normal_dispatch(client, session, monke
         calls.append(("normal", job_id))
     async def mock(*a):
         pytest.fail("normal execution routed through isolated mock")
-    monkeypatch.setattr(api, "_run_message_generation_job_in_session", normal)
-    monkeypatch.setattr(api, "_run_mock_generation_queue", mock)
+    monkeypatch.setattr(generation_execution, "run_message_generation_job_in_session", normal)
+    monkeypatch.setattr(generation_execution, "run_mock_generation_queue", mock)
     response = regenerate(client, cid, source)
     assert response.status_code == 409, response.text
     job = receipt_job(session, cid, source)[1]
@@ -245,11 +246,11 @@ def test_persisted_mock_mode_survives_app_flag_and_completed_live_settings_repla
     assert job.execution_options["execution_mode"] == "mock"
     monkeypatch.setattr(app.state, "mock_execution", False)
     binds = []
-    runner = api._run_mock_generation_queue
+    runner = generation_execution.run_mock_generation_queue
     async def observed(bind):
         binds.append(bind)
         await runner(bind)
-    monkeypatch.setattr(api, "_run_mock_generation_queue", observed)
+    monkeypatch.setattr(generation_execution, "run_mock_generation_queue", observed)
     completed = regenerate(client, cid, source)
     assert completed.status_code == 200, completed.text
     assert binds == [session.get_bind()]
@@ -345,11 +346,11 @@ def test_explicit_mock_retry_runs_with_no_paid_auxiliary_enqueue(client, session
     job_id, version, old_options = job.id, job.state_version, dict(job.execution_options)
     monkeypatch.setattr(app.state, "mock_execution", app_flag)
     calls = []
-    real_runner = api._run_mock_generation_queue
+    real_runner = generation_execution.run_mock_generation_queue
     async def observed_runner(bind):
         calls.append(bind is session.get_bind())
         await real_runner(bind)
-    monkeypatch.setattr(api, "_run_mock_generation_queue", observed_runner)
+    monkeypatch.setattr(generation_execution, "run_mock_generation_queue", observed_runner)
     monkeypatch.setattr(conversation_service, "should_update_scene_orchestration_summary", lambda *args, **kwargs: True)
     response = client.post(f"/conversations/{cid}/generation-jobs/{job_id}/retry", json={"expected_state_version": version})
     assert response.status_code == 200, response.text
@@ -373,7 +374,7 @@ def test_async_send_receipt_replay_dispatches_persisted_mock_after_app_flag_chan
     session.commit()
     payload = {"speaker_type": "user", "speaker_id": "u", "content": "A distinct synthetic continuation.", "metadata": {"client_request_id": "persisted-mock-acceptance"}}
     with monkeypatch.context() as patch:
-        patch.setattr(api, "_run_mock_generation_queue", no_run)
+        patch.setattr(generation_execution, "run_mock_generation_queue", no_run)
         first = client.post(f"/conversations/{cid}/messages/jobs", json=payload)
     assert first.status_code == 200, first.text
     job_id = first.json()["job"]["id"]
@@ -383,11 +384,11 @@ def test_async_send_receipt_replay_dispatches_persisted_mock_after_app_flag_chan
     source_id = accepted.incoming_message_id
     monkeypatch.setattr(app.state, "mock_execution", False)
     calls = []
-    real_runner = api._run_mock_generation_queue
+    real_runner = generation_execution.run_mock_generation_queue
     async def observed(bind):
         calls.append(bind is session.get_bind())
         await real_runner(bind)
-    monkeypatch.setattr(api, "_run_mock_generation_queue", observed)
+    monkeypatch.setattr(generation_execution, "run_mock_generation_queue", observed)
     replay = client.post(f"/conversations/{cid}/messages/jobs", json=payload)
     assert replay.status_code == 200 and replay.json()["job"]["id"] == job_id
     session.expire_all()

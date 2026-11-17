@@ -3,7 +3,8 @@ import { AgentMark } from './AgentMark';
 import { AgentMarkdown } from './AgentMarkdown';
 import { useI18n } from '../i18n/I18nProvider';
 import type { UiMessageKey } from '../i18n/core';
-import { AgentError, AgentImage } from './components';
+import { AgentError } from './AgentError';
+import { AgentImage } from './AgentImage';
 import { agentActions, conversationPending, imageRecoveryTargets, selectedImageJobs, useAgentStore } from './store';
 import type { AgentDraft, ContextSelection, ImageJob, ImageSelection, ImageTargetKind } from './types';
 

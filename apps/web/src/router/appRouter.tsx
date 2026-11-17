@@ -1,4 +1,4 @@
-import { createRootRoute, createRoute, createRouter, type Router } from '@tanstack/react-router';
+import { createRootRoute, createRoute, createRouter, type RouterHistory, type RouteComponent, type Router } from '@tanstack/react-router';
 import type { UiMessageKey } from '../i18n/core';
 
 export const routeNames = {
@@ -119,25 +119,25 @@ export function pageTitle(route: LegacyRoute): UiMessageKey {
   return descriptor?.title || '홈';
 }
 
-export function createAppRouter(): Router<any, any> {
-  const rootRoute = createRootRoute();
+// App is the stable root: route changes must not remount chat/Agent owners.
+// Route components remain rendered by App through the LegacyRoute adapter.
+export function createAppRouter(component: RouteComponent, history?: RouterHistory) {
+  const rootRoute = createRootRoute({ component });
   const routeEntries = routeDescriptors.map((descriptor) => createRoute({
-    id: descriptor.name,
-    path: descriptor.path === '/' ? '/' : descriptor.path.replace(/^\//, ''),
+    path: descriptor.path,
     getParentRoute: () => rootRoute,
   }));
-
-  const makeRouter = createRouter as unknown as (options: { routeTree: unknown }) => Router<any, any>;
-  return makeRouter({ routeTree: rootRoute.addChildren(routeEntries) });
+  const fallback = createRoute({ path: '$', getParentRoute: () => rootRoute });
+  const routeTree = rootRoute.addChildren([...routeEntries, fallback]);
+  // This legacy project does not yet enable strictNullChecks. The factory's
+  // conditional gate rejects all options in that mode; its public constructor
+  // has the same runtime options without that gate. Keep those installed types
+  // (including this exact tree), rather than erasing configuration with `any`.
+  const createCompatibleRouter = createRouter as (
+    ...options: ConstructorParameters<typeof Router<typeof routeTree>>
+  ) => Router<typeof routeTree>;
+  return createCompatibleRouter({ routeTree, history });
 }
-
-export const appRouter = {
-  routeDescriptors,
-  navigate({ to }: { to?: string }) {
-    window.history.pushState({}, '', toRouterPath(to));
-    return Promise.resolve();
-  },
-};
 
 export function toRouterPath(path?: string): string {
   return path || routeNames.home;

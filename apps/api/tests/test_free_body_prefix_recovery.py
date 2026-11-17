@@ -1,3 +1,4 @@
+from app.db.llm_telemetry import SQLTelemetryWriter
 """Output-limit recovery uses original grammar and ordinary runtime firewalls."""
 import hashlib
 import json
@@ -152,14 +153,14 @@ async def test_combined_panels_keep_existing_owner_without_false_integrity(monke
 def test_actual_job_finalizer_saves_prefix_atomically_with_private_marker(client, session, engine, monkeypatch):
     import asyncio
     from sqlmodel import select
-    from app.api.conversations import _run_message_generation_job_in_session
+    from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session
     from app.db.models import Message, LLMPromptSnapshot, LLMUsageEvent
     from app.engine.llm_client import LLMClient
     from app.services import conversation_service
     from test_free_body_persistence import room_fixture
 
     monkeypatch.setattr('app.api.conversations._start_message_generation_worker', lambda *a: None)
-    monkeypatch.setattr('app.engine.llm_client.engine', engine)
+    monkeypatch.setattr("app.engine.llm_client.default_telemetry_writer", lambda: SQLTelemetryWriter(engine))
     room, cast = room_fixture(client)
     texts = ['<a>First movement.</a>First.<t>Private possibility.</t>', 'Narrator sees a tree.', '<a>Waits.</a>Last.']
     raw = cut(','.join(item(who, text) for who, text in zip(['C1', 'N', 'C2'], texts)))
@@ -211,7 +212,7 @@ async def test_recovered_prefix_atomic_finalizer_rolls_back_on_second_insert(ses
     from sqlalchemy import text
     from sqlalchemy.exc import IntegrityError
     from sqlmodel import select
-    from app.api.conversations import persist_generated_reply_messages
+    from app.services.generation_execution import persist_generated_reply_messages
     from app.db.models import Conversation, Message, MessageGenerationJob, PostCommitTask
     from app.schemas.conversations import MessageCreate
     from app.services import conversation_service

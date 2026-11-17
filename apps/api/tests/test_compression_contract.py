@@ -5,7 +5,6 @@ from sqlmodel import select
 from app.db.models import CharacterMemory, Message, SceneState
 from app.engine.llm_client import LLMResponse
 from app.services.conversation_service import (
-    apply_continuity_update,
     apply_conversation_compression_update,
     build_compact_scene_memory,
     league_memory_key,
@@ -13,7 +12,6 @@ from app.services.conversation_service import (
     summarize_conversation_state_with_llm,
     summarize_scene_memory_with_llm,
     validate_conversation_compression_update,
-    validate_continuity_update,
     validate_scene_memory_summary,
 )
 
@@ -411,28 +409,6 @@ async def test_conversation_compression_returns_structured_scene_fields_from_rec
     assert "확인" in update["scene"]["last_event"] or "컵" in update["scene"]["last_event"]
 
 
-def test_relationship_hooks_drop_raw_transcript_markers(session):
-    update = validate_continuity_update({
-        "memories_to_add": [],
-        "state_patch": {"current_dynamic": "action=고개를 든다 dialogue=뭐라고 말했다"},
-        "unresolved_hooks": [
-            "dialogue=다음에 말하기 | action=고개를 든다",
-            "다음에는 둘의 약속을 확인한다",
-        ],
-    })
-
-    assert update["state_patch"]["current_dynamic"] == ""
-    assert update["unresolved_hooks"] == ["다음에는 둘의 약속을 확인한다"]
-
-    state = apply_continuity_update(
-        session,
-        conversation_id="conv_1",
-        character_id="char_a",
-        update=update,
-        counterpart_type="character",
-        counterpart_id="char_b",
-    )
-    assert state.unresolved_hooks == ["다음에는 둘의 약속을 확인한다"]
 
 
 def test_compression_update_does_not_create_automatic_long_term_memories(session):

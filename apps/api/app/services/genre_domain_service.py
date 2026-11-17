@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from sqlmodel import Session
-
-from app.db.models import Conversation
-from app.services import battle_ledger_service
+if TYPE_CHECKING:
+    from sqlmodel import Session
+    from app.db.models import Conversation
 
 DEFAULT_GENRE_MODE = "battle"
 VALID_GENRE_MODES = {"battle", "romance", "fantasy", "slice_of_life", "mystery", "custom"}
+
+
+def normalize_genre_mode(value: str | None) -> str:
+    """Normalize authored genre values without importing persistence or engines."""
+    cleaned = (value or DEFAULT_GENRE_MODE).strip().lower().replace("-", "_")
+    return cleaned if cleaned in VALID_GENRE_MODES else DEFAULT_GENRE_MODE
 
 
 @dataclass(frozen=True)
@@ -36,8 +41,16 @@ def _normalize_genre(conversation: Conversation | None) -> str:
 
 
 def _apply_battle_payload(session: Session, conversation: Conversation | None, update: dict) -> list[object]:
+    from app.services import battle_ledger_service
+
     events = update.get("battle_events") if isinstance(update.get("battle_events"), list) else []
     return list(battle_ledger_service.apply_battle_events(session, conversation, events))
+
+
+def _format_battle_state(session: Session, conversation: Conversation | None) -> str:
+    from app.services import battle_ledger_service
+
+    return battle_ledger_service.format_official_battle_state(session, conversation)
 
 
 HANDLERS: dict[str, GenreDomainHandler] = {
@@ -45,7 +58,7 @@ HANDLERS: dict[str, GenreDomainHandler] = {
         genre_mode="battle",
         context_key="official_battle_state",
         context_title="Official battle state",
-        format_official_state=battle_ledger_service.format_official_battle_state,
+        format_official_state=_format_battle_state,
         apply_events=_apply_battle_payload,
     ),
 }

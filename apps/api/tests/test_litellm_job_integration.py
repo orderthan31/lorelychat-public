@@ -1,3 +1,4 @@
+from app.db.llm_telemetry import SQLTelemetryWriter
 """API job/finalizer proof through the actual SDK and mocked HTTP boundary."""
 import asyncio
 import json
@@ -10,7 +11,7 @@ from app.core.config import get_settings
 from app.db.models import Message, LLMPromptSnapshot, LLMUsageEvent
 from app.engine.llm_client import LLMClient
 from app.engine import litellm_transport as sdk
-from app.api.conversations import _run_message_generation_job_in_session
+from app.services.generation_execution import run_message_generation_job_in_session as _run_message_generation_job_in_session
 from test_free_body_persistence import room_fixture
 from test_free_body_prefix_recovery import cut, item
 from test_litellm_transport import native, make, wire
@@ -27,7 +28,7 @@ def test_sdk_job_retains_complete_prefix_atomically_and_privately(client, sessio
     monkeypatch.setenv('CHAT_RESPONSE_PROTOCOL', 'free_body_json')
     get_settings.cache_clear()
     monkeypatch.setattr('app.api.conversations._start_message_generation_worker', lambda *a: None)
-    monkeypatch.setattr('app.engine.llm_client.engine', engine)
+    monkeypatch.setattr("app.engine.llm_client.default_telemetry_writer", lambda: SQLTelemetryWriter(engine))
     room, cast = room_fixture(client)
     texts = ['<a>First movement.</a>First.<t>Private possibility.</t>', 'Narrator sees a tree.', '<a>Waits.</a>Last.']
     raw = cut(','.join(item(who, text) for who, text in zip(['C1', 'N', 'C2'], texts)))

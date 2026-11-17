@@ -1,3 +1,4 @@
+import { testViteCacheDir } from './isolated-vite-cache.mjs';
 import assert from 'node:assert/strict';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -46,7 +47,7 @@ createRoot(document.getElementById('root')).render(<I18nProvider><Fixture/></I18
 `;
 const id='/virtual-ux-editor-actions.tsx';
 const plugin={name:'ux-editor-actions-fixture',resolveId(source){if(source===id)return id;},load(source){if(source===id)return fixture;},configureServer(server){server.middlewares.use('/ux-editor-actions-fixture',async(req,res)=>{res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml('/ux-editor-actions-fixture','<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="'+id+'"></script></body></html>'));});}};
-const server=await createServer({configFile:false,envFile:false,plugins:[plugin,react(),tailwindcss()],server:{host:'127.0.0.1',port:0,hmr:false,watch:null},logLevel:'error'});
+const server=await createServer({ cacheDir: testViteCacheDir,configFile:false,envFile:false,plugins:[plugin,react(),tailwindcss()],server:{host:'127.0.0.1',port:0,hmr:false,watch:null},logLevel:'error'});
 let browser;
 try {
  await server.listen(); browser=await chromium.launch({headless:true});

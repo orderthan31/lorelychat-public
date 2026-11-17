@@ -1,3 +1,4 @@
+from app.services import generation_execution, generation_preparation, post_commit_execution
 """Serialized request accounting, with real API/job/preview and fake transport."""
 import asyncio
 from dataclasses import asdict, replace
@@ -74,8 +75,7 @@ def test_actual_preview_threshold(client, session, monkeypatch, record_property,
     preview = response.json()
     threshold = preview['projected_input_tokens']
     capacity = replace(resolve_safe_model_context_capacity(None), working_input_tokens=threshold + delta)
-    monkeypatch.setattr(api, 'resolve_safe_model_context_capacity', lambda *args, **kwargs: capacity)
-    monkeypatch.setattr(context_preview_service, 'resolve_safe_model_context_capacity', lambda *args, **kwargs: capacity)
+    monkeypatch.setattr(generation_preparation, 'resolve_safe_model_context_capacity', lambda *args, **kwargs: capacity)
     again = client.get(f"/conversations/{room['id']}/context-preview").json()
     assert again['projected_input_tokens'] == threshold
     assert any('context_budget_exceeded' in warning for warning in again['warnings']) == (delta < 0)
@@ -103,7 +103,7 @@ def test_actual_preview_threshold(client, session, monkeypatch, record_property,
     if policy != 'full_history':
         assert plans[-1].pressure.projected_input_tokens == threshold
     plans.clear()
-    asyncio.run(api._run_message_generation_job_in_session(session, queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session, queued['job']['id']))
     status = client.get(f"/conversations/{room['id']}/generation-jobs/{queued['job']['id']}").json()
     if delta == 0:
         assert status['status'] == 'completed', (threshold, plans, status)
@@ -142,7 +142,7 @@ def test_actual_preview_threshold(client, session, monkeypatch, record_property,
         persisted = client.get(f"/conversations/{room['id']}/messages").json()
         assert sum(message['id'] in generated_ids for message in persisted) == 1
         outbox_ids = [task.id for task in session.exec(select(PostCommitTask)).all()]
-        asyncio.run(api._run_message_generation_job_in_session(session, queued['job']['id']))
+        asyncio.run(generation_execution.run_message_generation_job_in_session(session, queued['job']['id']))
         assert len(calls) == 1
         assert [task.id for task in session.exec(select(PostCommitTask)).all()] == outbox_ids
         if history_kind == 'rounding' and policy != 'full_history':
@@ -157,7 +157,7 @@ def test_actual_preview_threshold(client, session, monkeypatch, record_property,
 
             with monkeypatch.context() as worker_patch, pytest.raises(RuntimeError, match='without boundary or revision progress'):
                 worker_patch.setattr(conversation_service, 'update_scene_orchestration_summary', worker_no_progress)
-                asyncio.run(api._run_scene_compression_in_session(
+                asyncio.run(post_commit_execution.run_scene_compression_in_session(
                     session, room['id'], generated_character_count=task_payload['generated_character_count'],
                     character_ids=task_payload['character_ids'],
                     mandatory_prompt_tokens=task_payload['mandatory_prompt_tokens'],
@@ -257,9 +257,9 @@ def test_useful_catchup_recounts_after_real_cas(client, session, monkeypatch, se
 
     monkeypatch.setattr(prompts, 'build_multi_character_prompt_harness', build)
     monkeypatch.setattr(conversation_service, 'automatic_context_plan', plan)
-    monkeypatch.setattr(conversation_service, 'summarize_conversation_state_with_llm', summarize)
+    monkeypatch.setattr('app.services.conversation_compression_service.summarize_conversation_state_with_llm', summarize)
     monkeypatch.setattr(LLMClient, 'chat', chat)
-    asyncio.run(api._run_message_generation_job_in_session(session, queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session, queued['job']['id']))
     status = client.get(f"/conversations/{room['id']}/generation-jobs/{queued['job']['id']}").json()
     assert status['status'] == 'completed', status
     assert len(calls) == 1 and len(folds) == 1 and len(evaluations) == 2
@@ -277,7 +277,7 @@ def test_useful_catchup_recounts_after_real_cas(client, session, monkeypatch, se
         expected_boundary_message_id=None, folded_message_ids=folds[0]) is False
     session.expire_all()
     assert session.get(SceneState, room['id']).summary == 'All original facts preserved in the new Arc.'
-    asyncio.run(api._run_message_generation_job_in_session(session, queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session, queued['job']['id']))
     assert len(calls) == len(folds) == 1
 
 
@@ -343,7 +343,7 @@ def test_real_expanded_budget_keeps_output_reserves(client, session, monkeypatch
 
     monkeypatch.setattr(LLMClient, 'chat', chat)
     monkeypatch.setattr(conversation_service, 'update_scene_orchestration_summary', no_progress)
-    asyncio.run(api._run_message_generation_job_in_session(session, queued['job']['id']))
+    asyncio.run(generation_execution.run_message_generation_job_in_session(session, queued['job']['id']))
     status = client.get(f"/conversations/{room['id']}/generation-jobs/{queued['job']['id']}").json()
     assert status['status'] == 'completed'
     assert len(calls) == 1 and compress == []

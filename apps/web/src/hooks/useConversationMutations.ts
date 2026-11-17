@@ -1,6 +1,7 @@
+import { refreshAfterMutation } from './refreshAfterMutation';
 import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 import { conversationApi } from '../api/resources';
-import { queryKeys } from './useBootstrapResources';
+import { queryKeys } from '../api/queryKeys';
 import type { RuntimeSettingUpdatePayload } from '../types/domain';
 
 type ConversationMutation<TVariables = unknown> = UseMutationResult<unknown, Error, TVariables, unknown>;
@@ -27,19 +28,20 @@ export type ConversationMutationsState = {
 export function useConversationMutations(): ConversationMutationsState {
   const queryClient = useQueryClient();
   const invalidateConversations = () => queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+  const refreshConversationListAfterWrite = () => refreshAfterMutation(queryClient, queryKeys.conversations);
 
   return {
     createConversation: useMutation({
       mutationFn: conversationApi.create,
-      onSuccess: invalidateConversations,
+      onSuccess: refreshConversationListAfterWrite,
     }),
     updateConversation: useMutation({
       mutationFn: ({ id, payload }: IdPayload) => conversationApi.update(id, payload),
-      onSuccess: invalidateConversations,
+      onSuccess: refreshConversationListAfterWrite,
     }),
     deleteConversation: useMutation({
       mutationFn: conversationApi.remove,
-      onSuccess: invalidateConversations,
+      onSuccess: refreshConversationListAfterWrite,
     }),
     generateMessageTts: useMutation({
       mutationFn: conversationApi.generateMessageTts,

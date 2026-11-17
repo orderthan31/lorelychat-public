@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.api.conversations import (
-    AutomaticGenerationContextEvaluation,
-    ContextMaintenanceRequired,
-    _ensure_automatic_generation_context,
-)
+from app.services.generation_execution import AutomaticGenerationContextEvaluation, _ensure_automatic_generation_context
+from app.api.conversations import ContextMaintenanceRequired
 from app.db.models import Message, SceneState
 from app.engine.prompt_harness import compile_prompt_harness
 from app.engine.prompts import ContextCoverageError

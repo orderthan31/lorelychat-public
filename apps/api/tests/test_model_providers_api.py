@@ -452,7 +452,7 @@ def test_decision_selector_requires_implemented_route(session, monkeypatch, prov
     session.add(account)
     session.add(option)
     session.commit()
-    monkeypatch.setattr(model_provider_service, "_configured", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(model_provider_service, "account_is_configured", lambda *_args, **_kwargs: True)
     assert model_provider_service.option_is_active_for_capability(session, option, "decision") is expected
     assert bool(model_provider_service.active_options_for_runtime(session, "decision")) is expected
 

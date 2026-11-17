@@ -58,7 +58,7 @@ def test_dynamic_inheritance_omission_and_explicit_reset(session):
 def test_chat_only_primary_fallback_and_mock_overrides(session, monkeypatch):
     service.update_global_setting(session, RuntimeSettingUpdate(thinking_level="xhigh"))
     room = RuntimeSetting(id="room", conversation_id="room", model_key="primary", fallback_model_key="fallback", compression_model_key="compression", default_tts_model_option_key="tts")
-    monkeypatch.setattr(service, "_dynamic_llm_overrides", lambda _session, key, capability: {"model": key, "capability": capability})
+    monkeypatch.setattr(service, "model_route_overrides", lambda _session, key, capability: {"model": key, "capability": capability})
     monkeypatch.setattr(service, "_option_available", lambda *args: True)
     monkeypatch.setattr(service.model_provider_service, "option_by_key", lambda *args: object())
     assert service.llm_overrides_for_setting(room, session=session)["reasoning_effort"] == "xhigh"
@@ -66,7 +66,7 @@ def test_chat_only_primary_fallback_and_mock_overrides(session, monkeypatch):
     assert "reasoning_effort" not in service.compression_llm_overrides_for_setting(room, session=session)
     assert "reasoning_effort" not in service.compression_fallback_llm_overrides_for_setting(room, session=session)
     assert "reasoning_effort" not in service.tts_overrides_for_setting(room, session=session)
-    monkeypatch.setattr(service, "_dynamic_llm_overrides", lambda *args: None)
+    monkeypatch.setattr(service, "model_route_overrides", lambda *args: None)
     assert service.llm_overrides_for_setting(room, session=session) == {"provider": "mock", "model": "mock", "reasoning_effort": "xhigh"}
     assert service.compression_llm_overrides_for_setting(room, session=session) == {"provider": "mock", "model": "mock"}
 
@@ -85,7 +85,7 @@ def test_dynamic_overrides_carry_only_positive_integer_limits(session, monkeypat
     monkeypatch.setattr(service.model_provider_service, "keyless_local_allowed", lambda *args: True)
     monkeypatch.setattr(service.provider_secret_service, "get_secret", lambda *args: None)
     monkeypatch.setattr(service, "_option_available", lambda *args: True)
-    overrides = service._dynamic_llm_overrides(session, option.key, "chat")
+    overrides = service.model_route_overrides(session, option.key, "chat")
     assert overrides is not None
     for key in ("model_max_output_tokens", "model_context_window_tokens"):
         if type(limit) is int and limit > 0:

@@ -1,9 +1,9 @@
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.db.models import CharacterMemory, Conversation, ConversationParticipant, ConversationRelationshipState, Message, SceneState
 from app.engine.prompts import messages_after_scene_summary_boundary
-from app.services import conversation_service
+from app.services import conversation_service, conversation_compression_service
 
 
 def make_message(index: int, speaker_type: str = "character", content: str | None = None) -> Message:
@@ -426,7 +426,7 @@ def test_compression_prompt_harness_exposes_budget_ledger():
 
 
 @pytest.mark.asyncio
-async def test_compression_graph_attaches_harness_ledger_before_callbacks():
+async def test_compression_graph_carries_supplied_harness_ledger_before_callbacks():
     from app.engine.compression_graph import run_compression_graph
 
     seen_ledger_keys = []
@@ -436,6 +436,12 @@ async def test_compression_graph_attaches_harness_ledger_before_callbacks():
         return "scene summary"
 
     result = await run_compression_graph({
+        "compression_harness": conversation_service.build_compression_prompt_harness(
+            scene_state=SceneState(conversation_id="conv_compress", summary="기존 요약"),
+            recent_messages=[make_message(i) for i in range(3)],
+            character_ids=["char_a"],
+            memories=[],
+        ),
         "scene_state": SceneState(conversation_id="conv_compress", summary="기존 요약"),
         "recent_messages": [make_message(i) for i in range(3)],
         "character_ids": ["char_a"],
@@ -623,7 +629,7 @@ async def test_compression_applies_old_prefix_when_new_message_arrives_during_ll
             "battle_events": [],
         }
 
-    monkeypatch.setattr(conversation_service, "summarize_conversation_state_with_llm", delayed_compression)
+    monkeypatch.setattr(conversation_compression_service, "summarize_conversation_state_with_llm", delayed_compression)
 
     result = await conversation_service.update_scene_orchestration_summary(
         session,
@@ -678,7 +684,7 @@ async def test_compression_update_uses_the_planned_token_estimator_for_exact_pre
             "battle_events": [],
         }
 
-    monkeypatch.setattr(conversation_service, "summarize_conversation_state_with_llm", fake_compression)
+    monkeypatch.setattr(conversation_compression_service, "summarize_conversation_state_with_llm", fake_compression)
 
     await conversation_service.update_scene_orchestration_summary(
         session,
@@ -716,18 +722,11 @@ def test_compression_skips_relationship_pair_changed_after_snapshot(session):
     session.refresh(relationship)
     expected_relationships = {("char_a", "user", "user_001"): relationship.updated_at}
 
-    conversation_service.apply_continuity_update(
-        session,
-        conversation_id=conversation.id,
-        character_id="char_a",
-        counterpart_type="user",
-        counterpart_id="user_001",
-        update={
-            "memories_to_add": [],
-            "state_patch": {"trust_delta": 2, "current_dynamic": ""},
-            "unresolved_hooks": [],
-        },
-    )
+    # An independently edited relationship must survive scene compression.
+    relationship.trust_level = 2
+    relationship.updated_at = datetime.now(timezone.utc) + timedelta(seconds=1)
+    session.add(relationship)
+    session.commit()
 
     applied = conversation_service.apply_conversation_compression_update(
         session,
@@ -782,7 +781,7 @@ async def test_compression_retries_with_fallback_after_primary_parse_failure(ses
             "battle_events": [],
         }
 
-    monkeypatch.setattr(conversation_service, "summarize_conversation_state_with_llm", fake_compression)
+    monkeypatch.setattr(conversation_compression_service, "summarize_conversation_state_with_llm", fake_compression)
 
     result = await conversation_service.update_scene_orchestration_summary(
         session,
@@ -845,7 +844,7 @@ async def test_compression_all_attempts_fail_preserves_existing_state(session, m
             }
         raise ValueError("fallback response JSON validation failed")
 
-    monkeypatch.setattr(conversation_service, "summarize_conversation_state_with_llm", fake_compression)
+    monkeypatch.setattr(conversation_compression_service, "summarize_conversation_state_with_llm", fake_compression)
 
     result = await conversation_service.update_scene_orchestration_summary(
         session,

@@ -1,24 +1,29 @@
 from __future__ import annotations
 
-import math
-from datetime import datetime
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from app.core.config import get_settings
 from app.db.models import Character, CharacterMemory, Conversation, SceneState
 from app.engine import prompts, command_overlay
 from app.services import chat_command_service
 from app.engine.character_runtime import format_runtime_source_message, generation_control_reserve_tokens
-from app.engine.llm_client import LLMClient
-from app.schemas.conversations import ConversationCompressionPreviewRead, ConversationContextPreviewRead, ContextPreviewSectionRead
-from app.services import conversation_service, domain_actor_service, external_memory_service, genre_domain_service, model_provider_service, runtime_settings_service, system_prompt_service
-from app.services.context_management_service import resolve_safe_model_context_capacity
+from app.engine.prompt_harness import approx_tokens
+from app.services import generation_preparation
+from app.schemas.conversations import (
+    ConversationCompressionPreviewRead,
+    ConversationContextPreviewRead,
+    ContextPreviewSectionRead,
+)
+from app.services import (
+    conversation_service,
+    domain_actor_service,
+    external_memory_service,
+    genre_domain_service,
+    runtime_settings_service,
+    system_prompt_service,
+)
 from app.engine.harness_comparison import HistoryAccounting, ComparisonOptions, generation_input_estimate
-
-
-def approx_tokens(text: str) -> int:
-    return int(math.ceil(len(text or "") / 2.2))
 
 
 def make_section(
@@ -101,37 +106,10 @@ def build_compression_preview(session: Session, conversation_id: str) -> Convers
     elif mode == "automatic":
         runtime_setting = runtime_settings_service.get_effective_setting(session, conversation_id)
         conversation = session.get(Conversation, conversation_id)
-        model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
-        room_prompt_budget = prompts.prompt_budget_for_context(
-            genre_mode=getattr(conversation, "genre_mode", None),
-            is_multi_room=len(character_ids) >= 2,
-        )
-        fallback_overrides = runtime_settings_service.fallback_llm_overrides_for_setting(
-            runtime_setting, session=session,
-        )
-        fallback_model_option = model_provider_service.option_by_key(
-            session,
-            getattr(runtime_setting, "fallback_model_key", None),
-        ) if fallback_overrides else None
-        token_target = runtime_settings_service.preset_token_target(
-            getattr(runtime_setting, "response_length_preset", runtime_settings_service.DEFAULT_RESPONSE_LENGTH_PRESET)
-        )
-        # A metadata-less client misses both room reasoning and model caps.
-        # Use the same selected/reachable routes as the generation preview.
-        primary_overrides = runtime_settings_service.llm_overrides_for_setting(runtime_setting, session=session)
-        primary_overrides["min_output_tokens"] = token_target
-        output_reserve = int(LLMClient(profile="chat", overrides=primary_overrides).max_output_tokens() or 0)
-        if fallback_overrides:
-            fallback_overrides["min_output_tokens"] = token_target
-            output_reserve = max(output_reserve, int(LLMClient(
-                profile="chat", overrides=fallback_overrides).max_output_tokens() or 0))
-        capacity = resolve_safe_model_context_capacity(
-            model_option,
-            fallback_model_option,
-            room_prompt_budget_tokens=room_prompt_budget,
-            comparison_options=comparison,
-            completion_reserve_tokens=output_reserve,
-        )
+        capacity = generation_preparation.prepare_generation_route(
+            session, runtime_setting, genre_mode=getattr(conversation, "genre_mode", None),
+            is_multi_room=len(character_ids) >= 2, comparison=comparison,
+        ).capacity
         characters = [
             character
             for character_id in character_ids
@@ -261,13 +239,11 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
     )
     is_multi_room = len(characters) >= 2
 
-    preview_query = "\n".join(filter(None, [
-        f"genre={genre_mode}",
-        scene.world_seed if scene and conversation and conversation.world_setting_id else "",
-        scene.current_conflict if scene and not full_history else "",
-        scene.summary if scene and not full_history else "",
-        messages[-1].content if messages else "",
-    ]))[:800]
+    preview_query = generation_preparation.offstage_recall_query(
+        genre_mode=genre_mode, scene=scene,
+        include_world=bool(conversation and conversation.world_setting_id), full_history=full_history,
+        source_text=messages[-1].content if messages else "",
+    )
     offstage_recall = domain_actor_service.build_offstage_actor_recall_context(
         session,
         conversation,
@@ -276,25 +252,16 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
         genre_mode=genre_mode,
         query=preview_query,
     )
-    common_memory_context = conversation_service.build_continuity_context(
-        conversation_service.list_common_room_memories(session, conversation_id),
-        None,
+    continuity_by_character, external_memory_context_by_character = generation_preparation.manual_memory_context(
+        session, conversation_id, characters,
     )
-    continuity_by_character: dict[str, str] = {
-        conversation_service.COMMON_ROOM_MEMORY_CHARACTER_ID: common_memory_context,
-    }
-    external_memory_context_by_character: dict[str, str] = {}
-    for character in characters:
-        local_context = conversation_service.build_continuity_context(
-            conversation_service.list_character_memories(session, conversation_id, character.id),
-            None,
-        )
-        external_memory_context_by_character[character.id] = ""
-        continuity_by_character[character.id] = local_context
-
-    preset_key = getattr(runtime_setting, "response_length_preset", runtime_settings_service.DEFAULT_RESPONSE_LENGTH_PRESET)
+    preparation = generation_preparation.prepare_generation_route(
+        session, runtime_setting, genre_mode=genre_mode,
+        is_multi_room=is_multi_room, comparison=comparison,
+    )
+    preset_key = preparation.preset_key
     prompt_settings = system_prompt_service.prompt_settings_map()
-    token_target = runtime_settings_service.preset_token_target(preset_key)
+    token_target = preparation.token_target
     min_bubbles = runtime_settings_service.min_bubbles_for_preset(preset_key, is_multi_room=is_multi_room)
     max_bubbles = runtime_settings_service.max_bubbles_for_preset(preset_key, is_multi_room=is_multi_room)
     official_domain_context = genre_domain_service.get_official_context(session, conversation)
@@ -311,30 +278,16 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
         action=preview_source_message.action,
         speaker_name=preview_speaker_name,
     ) if preview_source_message else ""
-    model_option = model_provider_service.option_by_key(session, runtime_setting.model_key)
+    model_option = preparation.model_option
     provider_type = getattr(model_option, "provider_type", None)
-    room_prompt_budget = prompts.prompt_budget_for_context(genre_mode=genre_mode, is_multi_room=is_multi_room)
-    fallback_overrides = runtime_settings_service.fallback_llm_overrides_for_setting(runtime_setting, session=session)
-    fallback_option = model_provider_service.option_by_key(session, getattr(runtime_setting, "fallback_model_key", None)) if fallback_overrides else None
-    primary_overrides = runtime_settings_service.llm_overrides_for_setting(runtime_setting, session=session)
-    primary_overrides["min_output_tokens"] = token_target
-    output_reserve = LLMClient(profile="chat", overrides=primary_overrides).max_output_tokens()
-    if fallback_overrides:
-        fallback_overrides["min_output_tokens"] = token_target
-        output_reserve = max(output_reserve, LLMClient(profile="chat", overrides=fallback_overrides).max_output_tokens())
-    capacity = resolve_safe_model_context_capacity(model_option, fallback_option,
-        room_prompt_budget_tokens=room_prompt_budget, completion_reserve_tokens=output_reserve,
-        comparison_options=comparison)
-    if comparison.context_policy != "compact":
-        room_prompt_budget = capacity.working_input_tokens
+    room_prompt_budget = preparation.room_prompt_budget
+    capacity = preparation.capacity
 
     active_commands = _active_commands(session, conversation)
     panel_plan = command_overlay.build_plan(active_commands)
     source_is_scene_direction = preview_source_message is not None and preview_source_message.speaker_type == "system"
-    base_directive = (
-        prompt_settings.get("directive_scene_direction", "Acknowledge this scene direction as true state and continue the room. Do not treat it as user dialogue.")
-        if source_is_scene_direction
-        else prompt_settings.get("directive_natural_chat", "Generate the next natural chat bubbles for this room. In multi-character rooms, let the listed characters interact in one model call.")
+    base_directive = generation_preparation.generation_base_directive(
+        prompt_settings, scene_direction=source_is_scene_direction,
     )
     directive = prompts.compose_generation_directive(
         base_directive=base_directive,

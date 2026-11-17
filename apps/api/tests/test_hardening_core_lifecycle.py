@@ -150,10 +150,10 @@ def test_mock_startup_resumes_only_explicitly_accepted_mock_jobs(engine, monkeyp
         s.add(MessageGenerationJob(id='mock_resume_job',conversation_id='mock_resume_room',incoming_message_id='mock_resume_source',execution_options={'execution_mode':'mock'}))
         s.add(MessageGenerationJob(id='untouched_old_live_job',conversation_id='old_room',incoming_message_id='old_source'))
         s.commit()
-    run=main._run_mock_generation_queue
+    run=main.run_mock_generation_queue
     async def observe(bind):
         await run(bind);progressed.set()
-    monkeypatch.setattr(main,'_run_mock_generation_queue',observe)
+    monkeypatch.setattr(main,'run_mock_generation_queue',observe)
     monkeypatch.setattr(main.app.state,'engine',engine,raising=False)
     monkeypatch.setattr(main.app.state,'mock_execution',True,raising=False)
     with TestClient(main.app):

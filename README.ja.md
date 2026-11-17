@@ -161,8 +161,8 @@ docker-compose.yml
 cd apps/web
 npm ci
 npm run typecheck
-npm run test
 npm run build
+npm run test
 npm audit --omit=dev
 ```
 

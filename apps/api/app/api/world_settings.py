@@ -1,7 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
-from app.db.models import WorldSetting
-from app.ops.catalog_queries import catalog_page
 
 from app.db.session import get_session
 from app.schemas.world_settings import WorldSettingCreate, WorldSettingRead, WorldSettingUpdate
@@ -21,7 +19,7 @@ def list_world_settings(
     session: Session = Depends(get_session),
 ):
     if paginated:
-        result = catalog_page(session, WorldSetting, fields=[WorldSetting.title, WorldSetting.description, WorldSetting.world_seed, WorldSetting.opening_scene, WorldSetting.compression_focus], order=[WorldSetting.updated_at.desc(), WorldSetting.created_at.desc(), WorldSetting.id], page=page, page_size=page_size, q=q, predicates=() if include_disabled else (WorldSetting.enabled == True,))
+        result = world_setting_service.list_world_settings_page(session, page=page, page_size=page_size, q=q, include_disabled=include_disabled)
         result["items"] = [WorldSettingRead.model_validate(item.model_dump()) for item in result["items"]]
         return WorldSettingPageRead(**result)
     return world_setting_service.list_world_settings(session, include_disabled=include_disabled)
