@@ -71,24 +71,15 @@ function normalizedRenderPartsFor(message: ChatMessage): RenderPart[] {
     .filter((part) => ['dialogue', 'action', 'thought'].includes(part.type) && part.text);
 }
 
-function renderMessagePart(part: RenderPart, key: string | number, side: string, thoughtLabel: string, isStorytelling = false, literalHtml = false) {
+function renderMessagePart(part: RenderPart, key: string | number, thoughtLabel: string, isStorytelling = false, literalHtml = false) {
   const text = String(part.text || '');
-  if (part.type === 'action') return <div
-    className={`mb-2 rounded-r-xl border-l-2 px-2.5 py-1.5 text-[13px] italic leading-[1.45] ${side === 'right' ? 'border-white/35 bg-white/10 text-white/90' : 'border-primary/40 bg-primary/5 text-foreground/75'}`}
-    data-semantic-part="action"
-    key={key}
-  ><BubbleRichText text={text} literalHtml={literalHtml} /></div>;
-  if (part.type === 'thought') return <div
-    aria-label={thoughtLabel}
-    className={`mt-2 flex items-start gap-1.5 rounded-xl border px-2.5 py-2 text-[13px] italic leading-[1.45] ${side === 'right' ? 'border-white/20 bg-white/10 text-white/80' : 'border-violet-500/20 bg-violet-500/10 text-violet-950/75 dark:text-violet-100/80'}`}
-    data-semantic-part="thought"
-    key={key}
-  ><Cloud aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 opacity-70" /><span className="min-w-0"><BubbleRichText text={text} literalHtml={literalHtml} /></span></div>;
-  return <div
-    className={`m-0 whitespace-pre-wrap text-[15px] font-[430] leading-[1.55] text-inherit ${isStorytelling ? 'italic' : ''}`}
-    data-semantic-part="dialogue"
-    key={key}
-  ><BubbleRichText text={text} literalHtml={literalHtml} /></div>;
+  if (part.type === 'thought') return <div className="scene-thought" key={key}>
+    <span className="scene-thought-label"><Cloud aria-hidden="true" className="size-3.5 shrink-0" />{thoughtLabel}</span>
+    <div data-semantic-part="thought"><BubbleRichText text={text} literalHtml={literalHtml} /></div>
+  </div>;
+  return <div key={key} className="scene-prose" data-semantic-part={part.type} data-narration={isStorytelling || undefined}>
+    <BubbleRichText text={text} literalHtml={literalHtml} />
+  </div>;
 }
 
 export type BubbleListProps = {
@@ -156,11 +147,6 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
     if (message.speaker_type === 'user') return t('나');
     if (message.is_typing) return nameById.get(message.speaker_id) || t('캐릭터');
     return nameById.get(message.speaker_id) || `${t('삭제된 캐릭터')} · ${String(message.speaker_id || '').slice(-4)}`;
-  };
-  const bubbleSide = (message: ChatMessage) => {
-    if (message.speaker_type === 'system' || message.speaker_type === 'storytelling') return 'center';
-    if (message.speaker_type === 'user') return 'right';
-    return 'left';
   };
   const displayName = (message: ChatMessage) => {
     if (message.speaker_type === 'system') return t('시스템');
@@ -258,8 +244,7 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
     <div ref={windowed.listRef} role="list" data-chat-window data-total-messages={messages.length} style={{ position: 'relative', height: windowed.total, flexShrink: 0 }}>
     <div style={{ position: 'absolute', top: windowed.top, left: 0, right: 0, display: 'flex', flexDirection: 'column', gap: 7 }}>
     {messages.slice(windowed.start, windowed.end).map((message, index) => {
-      const side = bubbleSide(message);
-      const showAvatar = message.speaker_type === 'character' && side !== 'center';
+      const showAvatar = message.speaker_type === 'character';
       const character = characterForMessage(message);
       const isPersistedMessage = message.id && !String(message.id).startsWith('local_') && !message.is_typing;
       const canRegenerate = message.speaker_type === 'character' && isPersistedMessage;
@@ -276,13 +261,15 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
       const renderPartsIncludeThought = renderParts.some((part) => part.type === 'thought');
       const showDialogue = !hasRenderParts && Boolean(message.content);
       const showAction = !hasRenderParts && Boolean(message.action);
-      return <div data-chat-row={message.id || `row_${windowed.start + index}`} role="listitem" aria-posinset={windowed.start + index + 1} aria-setsize={messages.length} className={`flex w-full items-end gap-2 ${side === 'right' ? 'justify-end' : ''} ${side === 'center' ? 'justify-center' : ''} ${selectionMode ? 'cursor-pointer' : ''}`} key={message.id || index}>
+      return <div data-chat-row={message.id || `row_${windowed.start + index}`} role="listitem" aria-posinset={windowed.start + index + 1} aria-setsize={messages.length} className={`scene-row ${selectionMode ? 'cursor-pointer' : ''}`} key={message.id || index}>
         {selectionMode && isSelectableMessage(message) && <Button type="button" variant="ghost" size="icon" className={`message-select-toggle ${selected ? 'selected' : ''}`} aria-label={t(selected ? '버블 선택 해제' : '버블 선택')} onClick={(event) => { event.stopPropagation(); onToggleMessageSelection?.(message.id); }}>{selected ? '✓' : ''}</Button>}
-        {showAvatar && side === 'left' && <Button type="button" variant="ghost" size="icon" className="size-11 min-h-11 shrink-0 rounded-full border-0 bg-transparent p-0 shadow-none hover:bg-transparent" onClick={() => onAvatarPreview?.({ character, emotion: message.emotion || t('아직 없음'), src: avatarUrlFor(character, theme, 'full') })}><WebpImage className="size-9 rounded-full border border-white/20 bg-white/10 object-cover shadow-[0_6px_16px_rgba(0,0,0,.22)]" src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(String(character.name || t('캐릭터')), locale)} /></Button>}
-        <article className={`bubble ${side} ${side === 'right' ? 'text-white' : ''} ${message.speaker_type === 'system' ? 'system' : ''} ${message.speaker_type === 'storytelling' ? 'storytelling' : ''} ${message.is_typing ? 'typing' : ''} ${selected ? 'selected' : ''}`} onPointerDown={(event) => startLongPress(message, event)} onPointerMove={(event) => { const origin = longPressOriginRef.current; if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 10) clearLongPressTimer(); }} onPointerUp={clearLongPressTimer} onPointerCancel={clearLongPressTimer} onPointerLeave={clearLongPressTimer} onClick={(event) => handleBubbleClick(event, message)}>
-          <div className={`bubble-name ${side === 'right' ? 'text-white/90' : ''}`}>{displayName(message)}</div>
+        <article className={`bubble scene-message ${selected ? 'selected' : ''}`} data-speaker={message.speaker_type} onPointerDown={(event) => startLongPress(message, event)} onPointerMove={(event) => { const origin = longPressOriginRef.current; if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 10) clearLongPressTimer(); }} onPointerUp={clearLongPressTimer} onPointerCancel={clearLongPressTimer} onPointerLeave={clearLongPressTimer} onClick={(event) => handleBubbleClick(event, message)}>
+          <header className="scene-speaker">
+            {showAvatar && <Button type="button" variant="ghost" size="icon" className="scene-avatar" onClick={() => onAvatarPreview?.({ character, emotion: message.emotion || t('아직 없음'), src: avatarUrlFor(character, theme, 'full') })}><WebpImage className="size-7 rounded-full bg-muted object-cover" src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(String(character.name || t('캐릭터')), locale)} /></Button>}
+            <div className="bubble-name">{displayName(message)}</div>
+            {!message.is_typing && <div className="bubble-menu-wrap"><Button type="button" variant="ghost" size="icon" className="bubble-menu-button" aria-label={t('버블 액션 메뉴')} disabled={selectionMode} onClick={(event) => { event.stopPropagation(); copyVersion.current += 1; setCopyFeedback(null); setOpenMenuId(openMenuId === message.id ? '' : String(message.id || '')); }}>⋯</Button>{openMenuId === message.id && <div className="bubble-action-menu" role="menu"><Button type="button" variant="ghost" size="sm" onClick={() => copyMessage(message)}>{t('복사')}</Button><Button type="button" variant="ghost" size="sm" disabled={!canEdit || busy} onClick={() => startMessageEdit(message)}>{t('수정')}</Button>{canSpeak && <Button type="button" variant="ghost" size="sm" onClick={() => { setOpenMenuId(''); onGenerateTts?.(message); }}>{t('TTS')}</Button>}{message.failed && message.retryPayload && <Button type="button" variant="ghost" size="sm" onClick={() => { setOpenMenuId(''); onRetryMessage?.(message); }}>{t('재시도')}</Button>}<Button type="button" variant="ghost" size="sm" disabled={!canRegenerate || busy} title={t(canRegenerate ? '이 메시지 이후를 새로 생성' : '저장된 캐릭터 메시지만 가능')} onClick={() => { setOpenMenuId(''); onRegenerateMessage?.(message); }}>{t('이후 재생성')}</Button><Button type="button" variant="destructive" size="sm" className="danger-menu-item" disabled={!canDelete || busy} title={t('이 버블 삭제')} onClick={() => { setOpenMenuId(''); onDeleteMessage?.(message); }}>{t('삭제')}</Button><Button type="button" variant="ghost" size="sm" disabled={!canDelete || busy} onClick={() => { setOpenMenuId(''); onEnterSelectionMode?.(message.id); }}>{t('여러 개 선택')}</Button></div>}</div>}
+          </header>
           {message.is_typing ? <div className="inline-flex min-h-[22px] min-w-[52px] items-center gap-[5px]" aria-label={t('대화 생성 중')}><span className="size-[7px] animate-[typingPulse_1s_infinite_ease-in-out] rounded-full bg-current opacity-35"></span><span className="size-[7px] animate-[typingPulse_1s_infinite_ease-in-out] rounded-full bg-current opacity-35 [animation-delay:.14s]"></span><span className="size-[7px] animate-[typingPulse_1s_infinite_ease-in-out] rounded-full bg-current opacity-35 [animation-delay:.28s]"></span></div> : <>
-            <div className="bubble-menu-wrap"><Button type="button" variant="ghost" size="icon" className="bubble-menu-button" aria-label={t('버블 액션 메뉴')} disabled={selectionMode} onClick={(event) => { event.stopPropagation(); copyVersion.current += 1; setCopyFeedback(null); setOpenMenuId(openMenuId === message.id ? '' : String(message.id || '')); }}>⋯</Button>{openMenuId === message.id && <div className="bubble-action-menu" role="menu"><Button type="button" variant="ghost" size="sm" onClick={() => copyMessage(message)}>{t('복사')}</Button><Button type="button" variant="ghost" size="sm" disabled={!canEdit || busy} onClick={() => startMessageEdit(message)}>{t('수정')}</Button>{canSpeak && <Button type="button" variant="ghost" size="sm" onClick={() => { setOpenMenuId(''); onGenerateTts?.(message); }}>{t('TTS')}</Button>}{message.failed && message.retryPayload && <Button type="button" variant="ghost" size="sm" onClick={() => { setOpenMenuId(''); onRetryMessage?.(message); }}>{t('재시도')}</Button>}<Button type="button" variant="ghost" size="sm" disabled={!canRegenerate || busy} title={t(canRegenerate ? '이 메시지 이후를 새로 생성' : '저장된 캐릭터 메시지만 가능')} onClick={() => { setOpenMenuId(''); onRegenerateMessage?.(message); }}>{t('이후 재생성')}</Button><Button type="button" variant="destructive" size="sm" className="danger-menu-item" disabled={!canDelete || busy} title={t('이 버블 삭제')} onClick={() => { setOpenMenuId(''); onDeleteMessage?.(message); }}>{t('삭제')}</Button><Button type="button" variant="ghost" size="sm" disabled={!canDelete || busy} onClick={() => { setOpenMenuId(''); onEnterSelectionMode?.(message.id); }}>{t('여러 개 선택')}</Button></div>}</div>
             {isEditing ? <form className="grid w-full min-w-0 grid-cols-1 gap-2 rounded-2xl border border-border bg-card p-3 text-foreground" aria-label={t('버블 수정')} onSubmit={(event) => submitMessageEdit(event, message)} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
               {editError && <p role="alert">{editError}</p>}
               {editDraft.raw_body !== undefined ? <label className="grid min-w-0 gap-1 text-xs font-semibold text-muted-foreground">{t('본문')}<Textarea rows={7} value={editDraft.raw_body} onChange={(event) => setEditDraft({ ...editDraft, raw_body: event.target.value })} aria-label={t('버블 본문 수정')} /></label> : <>
@@ -294,20 +281,19 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
             </form> : <>
             <BubbleContentBoundary key={`${message.id}:${message.content}`} source={message} failureLabel={t('표시할 수 없는 콘텐츠')} retryLabel={t('재시도')}>
             {renderImages && message.assets && message.assets.length > 0 && <div className="bubble-assets grid gap-1.5">{(Array.isArray(message.assets) ? message.assets : []).filter(asset => asset && typeof asset === 'object' && typeof (asset.thumbnail_url || asset.image_url) === 'string').map((asset) => <ChatImageFrame key={asset.id} src={imageUrlFor(asset.thumbnail_url || asset.image_url)} alt={asset.label || t('상황별 이미지')} onClick={() => onAvatarPreview?.({ character: { id: asset.character_id, name: asset.label }, emotion: asset.description || t('이미지 에셋'), src: imageUrlFor(asset.image_url, 'full') })} />)}</div>}
-            {hasRenderParts && renderParts.map((part, partIndex) => renderMessagePart(part, partIndex, side, t('속마음'), message.speaker_type === 'storytelling', freeBody))}
-            {showAction && renderMessagePart({ type: 'action', text: message.action }, 'action', side, t('속마음'))}
-            {showDialogue && renderMessagePart({ type: 'dialogue', text: message.content }, 'dialogue', side, t('속마음'), message.speaker_type === 'storytelling')}
-            {hasCommandBlocks && <div className="mt-2.5 grid gap-2 rounded-2xl border border-border bg-card p-2.5 shadow-inner shadow-foreground/5">{commandBlocks.map((block, blockIndex) => <CommandBlockRenderer key={blockIndex} block={block} index={blockIndex} />)}</div>}
+            {hasRenderParts && renderParts.map((part, partIndex) => renderMessagePart(part, partIndex, t('속마음'), message.speaker_type === 'storytelling', freeBody))}
+            {showAction && renderMessagePart({ type: 'action', text: message.action }, 'action', t('속마음'))}
+            {showDialogue && renderMessagePart({ type: 'dialogue', text: message.content }, 'dialogue', t('속마음'), message.speaker_type === 'storytelling')}
+            {hasCommandBlocks && <div className="mt-3 grid min-w-0 gap-2">{commandBlocks.map((block, blockIndex) => <CommandBlockRenderer key={blockIndex} block={block} index={blockIndex} />)}</div>}
             {!hasRenderParts && !showDialogue && !showAction && commandBlocks.length === 0 && <p className="m-0 whitespace-pre-wrap text-[14px] font-[430] leading-[1.45] text-inherit">{t('(빈 응답)')}</p>}
-            {message.thought && !freeBody && !renderPartsIncludeThought && renderMessagePart({ type: 'thought', text: message.thought }, 'thought', side, t('속마음'))}
-            {canSpeak && <div className="mt-2 flex justify-end gap-1.5 [&_audio]:h-8 [&_audio]:w-[min(240px,100%)] [&_button]:min-h-[30px] [&_button]:px-2.5 [&_button]:py-1.5 [&_button]:text-xs">{message.tts_audio_url ? <audio controls preload="none" src={assetUrlFor(message.tts_audio_url)} title={message.tts_text || t('TTS')} /> : <Button type="button" variant="ghost" size="sm" onClick={() => onGenerateTts?.(message)}>🔊 {t('TTS')}</Button>}</div>}
+            {message.thought && !freeBody && !renderPartsIncludeThought && renderMessagePart({ type: 'thought', text: message.thought }, 'thought', t('속마음'))}
+            {canSpeak && <div className="mt-2 flex items-center gap-1.5 [&_audio]:h-8 [&_audio]:w-[min(240px,100%)] [&_button]:min-h-11 [&_button]:px-2.5 [&_button]:py-1.5 [&_button]:text-xs">{message.tts_audio_url ? <audio controls preload="none" src={assetUrlFor(message.tts_audio_url)} title={message.tts_text || t('TTS')} /> : <Button type="button" variant="ghost" size="sm" onClick={() => onGenerateTts?.(message)}>🔊 {t('TTS')}</Button>}</div>}
             </BubbleContentBoundary>
             </>}
-            {message.failed && <div className="mt-2 text-[0.78rem] leading-[1.3] text-red-200">{t('전송 실패 ·')} {message.error || t('요청 실패')}</div>}
+            {message.failed && <div className="mt-2 text-[0.78rem] leading-[1.3] text-destructive">{t('전송 실패 ·')} {message.error || t('요청 실패')}</div>}
           </>}
-          {message.failed && message.retryPayload && <div className="mt-[7px] flex justify-end"><Button type="button" variant="ghost" size="icon" className="size-11 min-h-11 rounded-full border-white/25 bg-white/15 p-0 text-[17px] text-inherit shadow-none hover:bg-white/20" aria-label={t('마지막 입력 재요청')} title={t('재요청')} onClick={() => onRetryMessage?.(message)}>↻</Button></div>}
+          {message.failed && message.retryPayload && <div className="mt-[7px] flex justify-end"><Button type="button" variant="ghost" size="icon" className="size-11 min-h-11 p-0 text-[17px] text-inherit" aria-label={t('마지막 입력 재요청')} title={t('재요청')} onClick={() => onRetryMessage?.(message)}>↻</Button></div>}
         </article>
-        {showAvatar && side === 'right' && <Button type="button" variant="ghost" size="icon" className="size-11 min-h-11 shrink-0 rounded-full border-0 bg-transparent p-0 shadow-none hover:bg-transparent" onClick={() => onAvatarPreview?.({ character, emotion: message.emotion || t('아직 없음'), src: avatarUrlFor(character, theme, 'full') })}><WebpImage className="size-9 rounded-full border border-white/20 bg-white/10 object-cover shadow-[0_6px_16px_rgba(0,0,0,.22)]" src={avatarUrlFor(character, theme)} alt={formatProfileImageAlt(String(character.name || t('캐릭터')), locale)} /></Button>}
       </div>;
     })}
     </div>

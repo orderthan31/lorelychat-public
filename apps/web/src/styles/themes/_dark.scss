@@ -199,42 +199,10 @@ html.theme-dark .drawer-tab-bar {
 html.theme-dark .chat-thread {
   background: var(--bg);
 }
-html.theme-dark .bubble {
-  border-color: var(--line);
-  box-shadow: 0 8px 24px rgba(0,0,0,.22);
-}
-html.theme-dark .bubble.left {
-  background: rgba(17,24,39,.96);
-  color: var(--text);
-}
-html.theme-dark .bubble.right {
-  background: var(--primary);
-  color: #fff;
-}
-html.theme-dark .bubble.right p,
-html.theme-dark .bubble.right .bubble-name {
-  color: #fff !important;
-}
 html.theme-dark .command-ui-guide pre {
   background: #020617;
   color: #f8fafc;
   border-color: rgba(148, 163, 184, .36);
-}
-html.theme-dark .bubble.center,
-html.theme-dark .bubble.center.system,
-html.theme-dark .bubble.center.storytelling {
-  background: rgba(23,32,51,.90);
-  color: var(--muted);
-}
-html.theme-dark .bubble.system {
-  background: rgba(59,130,246,.14);
-  border-color: rgba(96,165,250,.24);
-  color: #bfdbfe;
-}
-html.theme-dark .bubble.storytelling {
-  background: rgba(167,139,250,.12);
-  border-color: rgba(167,139,250,.24);
-  color: #ddd6fe;
 }
 html.theme-dark .theme-toggle {
   background: rgba(255,255,255,.06);
