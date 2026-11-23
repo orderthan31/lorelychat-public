@@ -12,9 +12,12 @@
 .card-preview-grid section { display: grid; gap: 5px; padding: 11px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.045); }
 .card-preview-grid h3 { margin: 0; color: var(--accent-2); }
 .card-preview-grid p { margin: 0; color: var(--text); white-space: pre-wrap; line-height: 1.45; }
-.bubble-menu-wrap { position: relative; flex: 0 0 auto; z-index: 5; }
-.bubble-menu-button { width: 44px; height: 44px; min-height: 44px; padding: 0; font-size: 18px; color: var(--muted-foreground); }
-.bubble-action-menu { position: absolute; top: 100%; right: 0; min-width: 132px; display: grid; gap: 4px; padding: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 8px 24px rgb(0 0 0 / 0.12); }
+.bubble { position: relative; }
+.bubble-menu-wrap { position: absolute; top: 4px; right: 4px; z-index: 5; }
+.bubble.left .bubble-menu-wrap { right: 4px; }
+.bubble-menu-button { width: 44px; height: 44px; min-height: 44px; padding: 0; display: inline-grid; place-items: center; border-radius: 999px; font-size: 18px; opacity: .75; background: rgba(0,0,0,.18); color: inherit; }
+.bubble:hover .bubble-menu-button, .bubble-menu-button:focus { opacity: 1; }
+.bubble-action-menu { position: absolute; top: 46px; right: 0; min-width: 132px; display: grid; gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: rgba(15,23,42,.98); box-shadow: 0 16px 40px rgba(0,0,0,.36); }
 .bubble-action-menu button { width: 100%; min-height: 32px; padding: 6px 10px; justify-content: flex-start; text-align: left; font-size: 12px; }
 @media (min-width: 720px) {
   .card-preview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

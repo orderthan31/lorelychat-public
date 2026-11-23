@@ -508,7 +508,14 @@ try {
     assert.equal(state.writes.filter(w => w.path.endsWith('/commit')).length,0);
     await expect(draft.getByRole('heading')).toHaveText('After');
     await expect(draft.getByRole('button', { name: t('agent.reviewProposal') })).toBeEnabled();
-    await expect(draft.locator('textarea,pre,del,ins,code,details')).toHaveCount(0);
+    await expect(draft.locator('textarea,pre,del,ins,code')).toHaveCount(0);
+    const writesBeforeComparison = state.writes.length;
+    await draft.getByText(t('agent.proposalChanges'), { exact: true }).click();
+    const comparison = draft.locator('[data-agent-preview="a2ui"]');
+    await expect(comparison.locator('dt')).toHaveText(t('이름'));
+    await expect(comparison.locator('dd')).toHaveText([`${t('agent.proposalBefore')}Before`, `${t('agent.proposalAfter')}After`]);
+    assert.equal(state.writes.length, writesBeforeComparison, 'read-only preview makes no mutation request');
+    await draft.getByText(t('agent.proposalChanges'), { exact: true }).click();
     await expect(draft.getByRole('button', { name: t('agent.approve') })).toHaveCount(0);
     await expect(draft.getByRole('button', { name: t('agent.commit') })).toHaveCount(0);
     const referencePlan = panel.locator('[data-agent-draft=reference-plan]');

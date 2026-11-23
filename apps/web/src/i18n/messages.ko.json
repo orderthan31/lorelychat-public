@@ -1,4 +1,8 @@
 {
+  "chat.sceneView": "장면 보기",
+  "chat.bubbleView": "말풍선 보기",
+  "chat.viewArtwork": "이미지만 보기",
+  "chat.showChat": "채팅 다시 보기",
   "agent.imageRequestSubmitted": "생성 요청 전송됨",
   "agent.imageRequestUnknown": "미확정 이미지 요청",
   "agent.imageRequestNoOutput": "아직 생성 결과가 확인되지 않았습니다.",
@@ -277,6 +281,9 @@
   "agent.imageFailed": "이미지를 불러오지 못했습니다.",
   "agent.generatedImage": "생성 이미지 미리보기",
   "agent.target": "대상",
+  "agent.proposalChanges": "변경 내용",
+  "agent.proposalBefore": "이전",
+  "agent.proposalAfter": "제안",
   "agent.reviewProposal": "작성 화면에서 확인",
   "agent.progress.model": "답변 생성 중…",
   "agent.progress.search": "관련 자료 찾는 중…",

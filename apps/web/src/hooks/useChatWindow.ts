@@ -11,15 +11,22 @@ export function setChatScrollIntent(node: HTMLElement, intent: 'latest' | 'prese
 }
 
 // Keep the complete data history; only Markdown/media DOM is windowed.
-export function useChatWindow(messages: WindowMessage[], threadRef: RefObject<HTMLDivElement>) {
+export function useChatWindow(messages: WindowMessage[], threadRef: RefObject<HTMLDivElement>, layoutKey = '') {
   const listRef = useRef<HTMLDivElement>(null);
   const heights = useRef(new Map<string, number>());
+  const layout = useRef(layoutKey);
   const [measurement, setMeasurement] = useState(0);
   const [viewport, setViewport] = useState({ top: 0, height: 800 });
   const viewportRef = useRef(viewport);
   const followingLatest = useRef(true);
   const lastScrollTop = useRef(0);
-  const offsets = useMemo(() => messageOffsets(messages, heights.current), [messages, measurement]);
+  const offsets = useMemo(() => {
+    if (layout.current !== layoutKey) {
+      layout.current = layoutKey;
+      heights.current.clear();
+    }
+    return messageOffsets(messages, heights.current);
+  }, [messages, measurement, layoutKey]);
   const range = chatWindow(offsets, viewport.top, viewport.height);
   const previous = useRef({ messages, offsets });
   const mounted = useRef(false);
@@ -124,7 +131,7 @@ export function useChatWindow(messages: WindowMessage[], threadRef: RefObject<HT
     const resize = new ResizeObserver(measure);
     for (const row of list.querySelectorAll('[data-chat-row]')) resize.observe(row);
     return () => resize.disconnect();
-  }, [messages, range.start, range.end, measurement]);
+  }, [messages, range.start, range.end, measurement, layoutKey]);
 
   useLayoutEffect(() => {
     const ids = new Set(messages.map((message, index) => message.id || `row_${index}`));

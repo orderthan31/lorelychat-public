@@ -66,7 +66,7 @@ try {
         if (state.failRoom) return json({ detail: 'Synthetic refresh unavailable' }, 503);
         return json({ id: 'A', title: 'Synthetic UX room', genre_mode: 'romance', mode: 'multi_character', tts_enabled: false });
       }
-      if (path === '/api/conversations/A/messages') return json(Array.from({ length: 40 }, (_, i) => ({ id: `m-${i}`, conversation_id: 'A', speaker_type: 'user', content: `Synthetic history ${i}. ` + 'Retained conversation text. '.repeat(12), created_at: `2026-11-14T00:${String(i).padStart(2, '0')}:00Z` })));
+      if (path === '/api/conversations/A/messages') return json(Array.from({ length: 40 }, (_, i) => ({ id: `m-${i}`, conversation_id: 'A', speaker_type: 'user', content: `Synthetic history ${i}. ` + 'Retained conversation text. '.repeat(12), created_at: `2026-11-14T00:${String(i).padStart(2, '0')}:00Z`, ...(i === 39 ? { assets: [{ id: 'asset', label: 'Synthetic scene', image_url: '/brand/lorely-app-icon-light.webp' }] } : {}) })));
       if (path.endsWith('/participants')) return json(state.participants);
       if (path.includes('/generation-jobs/active')) return json({ jobs: [] });
       if (path.endsWith('/context')) return json({ scene: { summary: 'Synthetic story context' }, memories: [] });
@@ -87,7 +87,7 @@ try {
     await page.goto(origin + '/conversations/A');
     await expect(page.locator('[data-chat-loading]')).toBeVisible();
     await expect(input(page)).toBeVisible();
-    const original = await input(page).elementHandle();
+    let original = await input(page).elementHandle();
     await input(page).fill('Unsent draft retained across controls and resize');
     const geometry = await page.locator('.chat-workspace').evaluate(node => ({ width: node.getBoundingClientRect().width, docked: node.classList.contains('has-docked-panel') }));
     assert.equal(geometry.docked, geometry.width >= 960);
@@ -122,6 +122,38 @@ try {
     await expect(input(page)).toHaveValue('Unsent draft retained across controls and resize');
     assert.equal(await original.evaluate(node => node === document.querySelector('textarea[aria-label="메시지 입력 · Enter 줄바꿈 · Ctrl+Enter 전송"]')), true);
     await overflow(page);
+    if ([390, 820, 1180].includes(width)) {
+      const toggle = page.getByRole('button', { name: t('chat.sceneView') });
+      await expect(page.locator('.chat-thread')).toHaveAttribute('data-chat-view', 'bubble');
+      await toggle.click();
+      await expect(page.locator('.chat-thread')).toHaveAttribute('data-chat-view', 'scene');
+      const art = page.locator('.scene-art-background');
+      await expect(art).toHaveAttribute('data-image-state', 'ready');
+      const background = await art.boundingBox();
+      assert.ok(background.width === width && background.height === height, 'art spans the chat workspace');
+      await page.getByRole('button', { name: t('chat.viewArtwork') }).click();
+      const viewer = page.getByRole('dialog', { name: t('chat.viewArtwork') });
+      await expect(viewer).toBeVisible();
+      await expect(viewer.getByRole('img', { name: 'Synthetic scene' })).toHaveCSS('object-fit', 'contain');
+      const size = await viewer.boundingBox();
+      assert.ok(size.x === 0 && size.y === 0 && size.width === width && size.height === height);
+      assert.equal(await viewer.evaluate(node => node.matches(':modal')), true);
+      assert.equal(await page.evaluate(() => {
+        const input = document.querySelector('.composer textarea');
+        const { x, y, width, height } = input.getBoundingClientRect();
+        return Boolean(document.elementFromPoint(x + width / 2, y + height / 2)?.closest('.scene-art-full'));
+      }), true, 'artwork covers the composer without unmounting it');
+      await viewer.getByRole('button', { name: t('chat.showChat') }).click();
+      await expect(input(page)).toHaveValue('Unsent draft retained across controls and resize');
+      await expect(page.getByRole('button', { name: t('chat.viewArtwork') })).toBeFocused();
+      await page.reload();
+      await expect(page.locator('.chat-thread')).toHaveAttribute('data-chat-view', 'scene');
+      await page.getByRole('button', { name: t('chat.bubbleView') }).click();
+      await expect(page.locator('.chat-thread')).toHaveAttribute('data-chat-view', 'bubble');
+      await input(page).fill('Unsent draft retained across controls and resize');
+      original = await input(page).elementHandle();
+      await overflow(page);
+    }
     if (width >= 1280) {
       await expect.poll(() => page.locator('.chat-shell').evaluate(node => Math.round(node.getBoundingClientRect().width))).toBe(960);
       const closed = await page.locator('.chat-shell').boundingBox();

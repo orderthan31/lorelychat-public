@@ -36,14 +36,9 @@ try {
   const load = async messages => { await page.evaluate(messages => window.setFixtureMessages(messages), messages); await row(messages[0].id).waitFor(); };
   const check = async (name, fn) => { await fn(); console.log(`ok ${++passed} - ${name}`); };
   await row('ordered').waitFor();
-  await check('ordered parts in one reading row, Markdown stays styled', async () => {
+  await check('ordered parts exactly once, one bubble, Markdown stays styling', async () => {
     assert.deepEqual(await row('ordered').locator('[data-semantic-part]').evaluateAll(nodes => nodes.map(n => [n.dataset.semanticPart, n.textContent])), [['action','Action one'],['dialogue','Dialogue one'],['thought','Thought one'],['dialogue','Dialogue two\nNext paragraph']]);
-    const { article, rowWidth, thought } = await row('ordered').evaluate(row => ({
-      article: row.querySelector('article').getBoundingClientRect().width,
-      rowWidth: row.getBoundingClientRect().width,
-      thought: row.querySelector('[data-semantic-part=thought]').getBoundingClientRect().height,
-    }));
-    assert.ok(Math.abs(article - rowWidth) < 1 && thought > 0, 'prose fills the row and thoughts are readable without extra clicks');
+    assert.equal(await page.locator('article.bubble').count(), 1);
     assert.equal(await row('ordered').locator('strong').textContent(), 'Dialogue one');
     assert.ok(!(await row('ordered').textContent()).includes('AGGREGATE'));
   });

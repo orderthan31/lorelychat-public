@@ -1,4 +1,8 @@
 {
+  "chat.sceneView": "Scene view",
+  "chat.bubbleView": "Bubble view",
+  "chat.viewArtwork": "View artwork",
+  "chat.showChat": "Show chat",
   "agent.imageRequestSubmitted": "Generation request submitted",
   "agent.imageRequestUnknown": "Unresolved image request",
   "agent.imageRequestNoOutput": "No generated result has been verified yet.",
@@ -1107,6 +1111,9 @@
   "agent.imageFailed": "Could not load image.",
   "agent.generatedImage": "Generated image preview",
   "agent.target": "Target",
+  "agent.proposalChanges": "Changes",
+  "agent.proposalBefore": "Before",
+  "agent.proposalAfter": "Proposed",
   "agent.reviewProposal": "Review in editor",
   "agent.progress.model": "Creating a reply…",
   "agent.progress.search": "Finding relevant material…",

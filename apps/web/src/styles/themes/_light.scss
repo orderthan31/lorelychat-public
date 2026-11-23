@@ -78,6 +78,15 @@ p,
 .composer,
 .battle-control-dock { background: var(--card); border-color: var(--line); }
 .chat-thread { background: var(--panel-2); }
+.bubble { border-color: var(--line); box-shadow: 0 1px 2px rgba(15,23,42,.06); }
+.bubble.left { background: var(--card); color: var(--text); }
+.bubble.right { background: var(--primary); color: #fff; }
+.bubble.center,
+.bubble.center.system,
+.bubble.center.storytelling { background: var(--surface-muted); color: var(--muted); }
+.bubble.system { background: #eef3ff; border-color: #cfdbfa; color: #315caa; }
+.bubble.storytelling { background: var(--primary-soft); border-color: #f3ccd3; color: #93414d; }
+.bubble-name,
 .context-section h3,
 .card-preview-grid h3,
 .avatar-character-info h3 { color: var(--primary); }

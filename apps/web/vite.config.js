@@ -15,6 +15,8 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          // Keep the optional proposal renderer and its validation runtime off the RP entry path.
+          if (/[\/]node_modules[\/](?:@a2ui[\/]|zod(?:-to-json-schema)?[\/]|@preact[\/]signals-core[\/]|redos-detector[\/]|validate-color[\/]|markdown-it[\/]|dompurify[\/])/.test(id)) return undefined;
           if (id.includes('node_modules/react') || id.includes('node_modules/react-dom')) return 'react';
           if (id.includes('node_modules/@tanstack')) return 'tanstack';
           if (id.includes('node_modules/sweetalert2')) return 'ui';

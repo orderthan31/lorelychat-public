@@ -11,6 +11,7 @@ import type { AgentDraft, ContextSelection, ImageJob, ImageSelection, ImageTarge
 import { ImageDraftCard } from './imageDraft';
 import { ImageContextCard } from './imageContext';
 import { RecoveryNotice } from './RecoveryNotice';
+import { ProposalChanges } from './ProposalChanges';
 
 export function AgentDraftCard({ draft }: { draft: AgentDraft }) {
   if (draft.kind === 'image_generation') return <ImageDraftCard draft={draft} />;
@@ -26,6 +27,7 @@ function GenericDraftCard({ draft }: { draft: AgentDraft }) {
     {draft.warnings.filter(warning => warning !== 'Owner approval requested for this exact preview.').map((warning, i) => <p role="note" key={i}>{warning}</p>)}
     {draft.status === 'conflict' && <p role="alert">{t('agent.conflict')}</p>}
     {draft.status === 'committed' ? <p>{t('agent.status.committed')}</p> : <button type="button" disabled={working || !!pending.length} onClick={() => agentActions.openProposal(draft)}>{t('agent.reviewProposal')}</button>}
+    {(draft.status === 'draft' || draft.status === 'approved') && <ProposalChanges draft={draft} />}
   </article>;
 }
 function ImageRegistrationCard({ draft }: { draft: AgentDraft }) {

@@ -1,4 +1,8 @@
 {
+  "chat.sceneView": "シーン表示",
+  "chat.bubbleView": "吹き出し表示",
+  "chat.viewArtwork": "画像だけ表示",
+  "chat.showChat": "チャットを表示",
   "agent.imageRequestSubmitted": "生成リクエスト送信済み",
   "agent.imageRequestUnknown": "未確定の画像リクエスト",
   "agent.imageRequestNoOutput": "生成結果はまだ確認できていません。",
@@ -1107,6 +1111,9 @@
   "agent.imageFailed": "画像を読み込めませんでした。",
   "agent.generatedImage": "生成画像プレビュー",
   "agent.target": "対象",
+  "agent.proposalChanges": "変更内容",
+  "agent.proposalBefore": "変更前",
+  "agent.proposalAfter": "提案",
   "agent.reviewProposal": "編集画面で確認",
   "agent.progress.model": "応答を生成中…",
   "agent.progress.search": "関連する資料を検索中…",

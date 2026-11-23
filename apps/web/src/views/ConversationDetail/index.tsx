@@ -1,5 +1,8 @@
-import { useEffect, type CSSProperties } from 'react';
-import { BubbleList } from '../../components/organisms';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { BubbleList, displayableMessageAssets, type MessageAsset } from '../../components/organisms/BubbleList';
+import { useUiStore } from '../../stores/uiStore';
+import { Scan } from 'lucide-react';
+import { SceneArtwork, SceneModeControl, useSceneArtwork } from './SceneArtwork';
 import { AgentLauncher } from '../../agent/components';
 import { MessageSelectionToolbar } from '../../components/organisms/MessageSelectionToolbar';
 import { Badge, Button } from '../../components/atoms';
@@ -21,6 +24,20 @@ export function ConversationDetailView(props: ConversationDetailViewProps) {
     setShowJumpToLatest, showJumpToLatest, scrollToLatest, participantName,
   } = props;
   const { t } = useI18n();
+  const viewMode = useUiStore(state => state.chatViewMode);
+  const [selectedAsset, setSelectedAsset] = useState<{ room: string; asset: MessageAsset }>();
+  const latestAsset = useMemo(() => {
+    if (viewMode !== 'scene' || !renderChatImages) return undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const asset = displayableMessageAssets(messages[i]).at(-1);
+      if (asset) return asset;
+    }
+    return undefined;
+  }, [messages, renderChatImages, viewMode]);
+  const asset = viewMode === 'scene' && renderChatImages
+    ? (selectedAsset?.room === selectedConversationId ? selectedAsset.asset : latestAsset) : undefined;
+  const artwork = useSceneArtwork(asset, selectedConversationId);
+  useEffect(() => { setSelectedAsset(undefined); }, [selectedConversationId]);
   useEffect(() => {
     if (!messageSelectionMode) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -31,10 +48,12 @@ export function ConversationDetailView(props: ConversationDetailViewProps) {
   }, [messageSelectionMode, busy, clearMessageSelection]);
 
   return (
-    <div ref={props.workspaceRef} className={`chat-workspace${props.panelDocked && props.panelOpen ? ' has-docked-panel' : ''}`} style={{ '--chat-max-width': `${CONVERSATION_CHAT_MAX_WIDTH}px`, '--chat-panel-width': `${props.panelWidth || CONVERSATION_PANEL_MIN_WIDTH}px` } as CSSProperties}>
+    <div ref={props.workspaceRef} data-scene-art={asset ? '' : undefined} className={`chat-workspace${props.panelDocked && props.panelOpen ? ' has-docked-panel' : ''}`} style={{ '--chat-max-width': `${CONVERSATION_CHAT_MAX_WIDTH}px`, '--chat-panel-width': `${props.panelWidth || CONVERSATION_PANEL_MIN_WIDTH}px` } as CSSProperties}>
+    {asset && <SceneArtwork {...artwork} />}
     <section className="chat-shell page">
       <div className="chat-header-region"><ConversationHeader {...props} />{props.feedback}</div>
       <div className="chat-body-wrap">
+        {asset && <button type="button" className="scene-art-toggle" title={t('chat.viewArtwork')} aria-label={t('chat.viewArtwork')} onClick={() => artwork.show(asset)}><Scan size={18} aria-hidden="true" /></button>}
         <BubbleList
           messages={messages}
           characters={characters}
@@ -49,6 +68,8 @@ export function ConversationDetailView(props: ConversationDetailViewProps) {
           olderPagingReady={olderPagingReady}
           onRetryMessage={retryMessage}
           renderImages={renderChatImages}
+          viewMode={viewMode}
+          onSceneAsset={item => { setSelectedAsset({ room: selectedConversationId, asset: item }); artwork.show(item); }}
           onGenerateTts={generateMessageTts}
           onRegenerateMessage={regenerateFromMessage}
           onDeleteMessage={deleteMessageBubble}
@@ -110,6 +131,7 @@ function ConversationHeader({ conversation, selectedConversationId, status, navi
             </Badge>
           );
         })}
+        <SceneModeControl />
         <Button type="button" variant="ghost" size="icon" className="chat-header-button chat-context-button" aria-label={t(panelOpen ? '대화 정보 닫기' : '대화 흐름 열기')} aria-expanded={panelOpen} onClick={openConversationContextDrawer}>☰</Button>
         <AgentLauncher />
       </div>
