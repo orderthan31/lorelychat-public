@@ -161,9 +161,6 @@ html.theme-dark .jump-to-latest-button { background: rgba(15,23,42,.95); color: 
   .bubble .bubble-menu-wrap { position: absolute; inset: 0 0 auto auto; }
   .bubble .bubble-menu-button { width: 44px; height: 44px; min-height: 44px; color: inherit; }
   .bubble .bubble-action-menu { inset: 100% 0 auto auto; }
-  .bubble .bubble-assets { display: flex; flex-wrap: wrap; width: auto; margin: 0 0 8px; }
-  .scene-asset-thumb { display: grid; width: 52px; height: 52px; min-height: 44px; padding: 0; overflow: hidden; }
-  .scene-asset-thumb img { width: 100%; height: 100%; object-fit: cover; }
   .scene-prose { font-size: 15px; line-height: 1.7; white-space: pre-wrap; }
   .scene-prose p, .scene-thought p { color: inherit; }
   .scene-prose + .scene-prose { margin-top: 6px; }
@@ -178,11 +175,12 @@ html.theme-dark .jump-to-latest-button { background: rgba(15,23,42,.95); color: 
 .chat-workspace[data-scene-art] .chat-shell > .chat-footer { z-index: 1; background: var(--card); }
 .scene-art-background { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; pointer-events: none; }
 .chat-workspace[data-scene-art] .chat-thread[data-chat-view="scene"] {
-  position: relative; background: linear-gradient(rgb(16 16 16 / .68), rgb(16 16 16 / .84));
-  --scene-ink: #fff; --scene-muted: #e5e5e5; --scene-line: rgb(255 255 255 / .28); --scene-selection: rgb(0 0 0 / .65);
+  position: relative; background: linear-gradient(rgb(16 16 16 / .18), rgb(16 16 16 / .30));
+  --scene-ink: #fff; --scene-muted: #f4f4f4; --scene-line: rgb(255 255 255 / .30); --scene-selection: rgb(0 0 0 / .60);
+  .scene-prose, .scene-thought, .bubble-name, .bubble-menu-button { text-shadow: 0 1px 2px #000, 0 0 5px #000; }
 }
 .scene-art-toggle { position: absolute; z-index: 8; inset: auto auto 12px 12px; display: grid; place-items: center; width: 44px; min-height: 44px; padding: 0; color: white; background: #252525; border: 1px solid #aaa; }
-.chat-workspace[data-scene-art] .chat-thread { padding-bottom: 64px; }
+.chat-thread[data-chat-view="scene"] { padding-bottom: 64px; }
 .scene-art-full { position: fixed; inset: 0; width: 100%; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; overflow: hidden; border: 0; background: black; }
 .scene-art-full::backdrop { background: black; }
 .scene-art-full .scene-art-dismiss { position: relative; display: block; width: 100%; height: 100%; padding: 0; border: 0; border-radius: 0; background: black; color: white; }

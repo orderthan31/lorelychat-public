@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
-import { BubbleList, displayableMessageAssets, type MessageAsset } from '../../components/organisms/BubbleList';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { BubbleList, type MessageAsset } from '../../components/organisms/BubbleList';
 import { useUiStore } from '../../stores/uiStore';
 import { Scan } from 'lucide-react';
 import { SceneArtwork, SceneModeControl, useSceneArtwork } from './SceneArtwork';
@@ -25,19 +25,9 @@ export function ConversationDetailView(props: ConversationDetailViewProps) {
   } = props;
   const { t } = useI18n();
   const viewMode = useUiStore(state => state.chatViewMode);
-  const [selectedAsset, setSelectedAsset] = useState<{ room: string; asset: MessageAsset }>();
-  const latestAsset = useMemo(() => {
-    if (viewMode !== 'scene' || !renderChatImages) return undefined;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const asset = displayableMessageAssets(messages[i]).at(-1);
-      if (asset) return asset;
-    }
-    return undefined;
-  }, [messages, renderChatImages, viewMode]);
-  const asset = viewMode === 'scene' && renderChatImages
-    ? (selectedAsset?.room === selectedConversationId ? selectedAsset.asset : latestAsset) : undefined;
+  const [sceneAsset, setSceneAsset] = useState<{ room: string; asset: MessageAsset }>();
+  const asset = viewMode === 'scene' && renderChatImages && sceneAsset?.room === selectedConversationId ? sceneAsset.asset : undefined;
   const artwork = useSceneArtwork(asset, selectedConversationId);
-  useEffect(() => { setSelectedAsset(undefined); }, [selectedConversationId]);
   useEffect(() => {
     if (!messageSelectionMode) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -69,7 +59,7 @@ export function ConversationDetailView(props: ConversationDetailViewProps) {
           onRetryMessage={retryMessage}
           renderImages={renderChatImages}
           viewMode={viewMode}
-          onSceneAsset={item => { setSelectedAsset({ room: selectedConversationId, asset: item }); artwork.show(item); }}
+          onSceneAssetChange={item => setSceneAsset(item ? { room: selectedConversationId, asset: item } : undefined)}
           onGenerateTts={generateMessageTts}
           onRegenerateMessage={regenerateFromMessage}
           onDeleteMessage={deleteMessageBubble}

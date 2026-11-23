@@ -66,7 +66,7 @@ try {
         if (state.failRoom) return json({ detail: 'Synthetic refresh unavailable' }, 503);
         return json({ id: 'A', title: 'Synthetic UX room', genre_mode: 'romance', mode: 'multi_character', tts_enabled: false });
       }
-      if (path === '/api/conversations/A/messages') return json(Array.from({ length: 40 }, (_, i) => ({ id: `m-${i}`, conversation_id: 'A', speaker_type: 'user', content: `Synthetic history ${i}. ` + 'Retained conversation text. '.repeat(12), created_at: `2026-11-14T00:${String(i).padStart(2, '0')}:00Z`, ...(i === 39 ? { assets: [{ id: 'asset', label: 'Synthetic scene', image_url: '/brand/lorely-app-icon-light.webp' }] } : {}) })));
+      if (path === '/api/conversations/A/messages') return json(Array.from({ length: 40 }, (_, i) => ({ id: `m-${i}`, conversation_id: 'A', speaker_type: 'user', content: `Synthetic history ${i}. ` + 'Retained conversation text. '.repeat(12), created_at: `2026-11-14T00:${String(i).padStart(2, '0')}:00Z`, ...([0, 19, 39].includes(i) ? { assets: [{ id: `asset-${i}`, label: `Synthetic scene ${i}`, image_url: `/api/images/cache/synthetic/scene-${i}.webp` }] } : {}) })));
       if (path.endsWith('/participants')) return json(state.participants);
       if (path.includes('/generation-jobs/active')) return json({ jobs: [] });
       if (path.endsWith('/context')) return json({ scene: { summary: 'Synthetic story context' }, memories: [] });
@@ -122,19 +122,30 @@ try {
     await expect(input(page)).toHaveValue('Unsent draft retained across controls and resize');
     assert.equal(await original.evaluate(node => node === document.querySelector('textarea[aria-label="메시지 입력 · Enter 줄바꿈 · Ctrl+Enter 전송"]')), true);
     await overflow(page);
-    if ([390, 820, 1180].includes(width)) {
+    if ([390, 820, 1024, 1180].includes(width)) {
       const toggle = page.getByRole('button', { name: t('chat.sceneView') });
       await expect(page.locator('.chat-thread')).toHaveAttribute('data-chat-view', 'bubble');
       await toggle.click();
       await expect(page.locator('.chat-thread')).toHaveAttribute('data-chat-view', 'scene');
       const art = page.locator('.scene-art-background');
+      const thread = page.locator('.chat-thread');
+      await expect(art).toHaveAttribute('src', /scene-39\.webp$/);
+      await expect(thread.locator('.bubble-assets')).toHaveCount(0);
+      const move = (fraction) => thread.evaluate((node, f) => { node.scrollTop = (node.scrollHeight - node.clientHeight) * f; }, fraction);
+      // Move in stages so the real virtualizer measures both sides before checking farther away.
+      await move(.5);
+      await expect(art).toHaveAttribute('src', /scene-19\.webp$/);
+      await move(0);
+      await expect(art).toHaveAttribute('src', /scene-0\.webp$/);
+      await move(1);
+      await expect(art).toHaveAttribute('src', /scene-39\.webp$/);
       await expect(art).toHaveAttribute('data-image-state', 'ready');
       const background = await art.boundingBox();
       assert.ok(background.width === width && background.height === height, 'art spans the chat workspace');
       await page.getByRole('button', { name: t('chat.viewArtwork') }).click();
       const viewer = page.getByRole('dialog', { name: t('chat.viewArtwork') });
       await expect(viewer).toBeVisible();
-      await expect(viewer.getByRole('img', { name: 'Synthetic scene' })).toHaveCSS('object-fit', 'contain');
+      await expect(viewer.getByRole('img', { name: 'Synthetic scene 39' })).toHaveCSS('object-fit', 'contain');
       const size = await viewer.boundingBox();
       assert.ok(size.x === 0 && size.y === 0 && size.width === width && size.height === height);
       assert.equal(await viewer.evaluate(node => node.matches(':modal')), true);
@@ -150,6 +161,7 @@ try {
       await expect(page.locator('.chat-thread')).toHaveAttribute('data-chat-view', 'scene');
       await page.getByRole('button', { name: t('chat.bubbleView') }).click();
       await expect(page.locator('.chat-thread')).toHaveAttribute('data-chat-view', 'bubble');
+      await expect(page.locator('.bubble-assets').last()).toBeVisible();
       await input(page).fill('Unsent draft retained across controls and resize');
       original = await input(page).elementHandle();
       await overflow(page);

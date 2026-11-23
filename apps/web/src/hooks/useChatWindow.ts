@@ -16,7 +16,7 @@ export function useChatWindow(messages: WindowMessage[], threadRef: RefObject<HT
   const heights = useRef(new Map<string, number>());
   const layout = useRef(layoutKey);
   const [measurement, setMeasurement] = useState(0);
-  const [viewport, setViewport] = useState({ top: 0, height: 800 });
+  const [viewport, setViewport] = useState({ top: 0, height: 800, atTail: true });
   const viewportRef = useRef(viewport);
   const followingLatest = useRef(true);
   const lastScrollTop = useRef(0);
@@ -38,8 +38,9 @@ export function useChatWindow(messages: WindowMessage[], threadRef: RefObject<HT
     const top = node.getBoundingClientRect().top - list.getBoundingClientRect().top;
     const height = node.clientHeight;
     lastScrollTop.current = node.scrollTop;
-    viewportRef.current = { top, height };
-    setViewport((old) => old.top === top && old.height === height ? old : { top, height });
+    const atTail = node.scrollHeight - node.scrollTop - height <= 24;
+    viewportRef.current = { top, height, atTail };
+    setViewport((old) => old.top === top && old.height === height && old.atTail === atTail ? old : { top, height, atTail });
   };
 
   useLayoutEffect(() => {
@@ -138,5 +139,5 @@ export function useChatWindow(messages: WindowMessage[], threadRef: RefObject<HT
     for (const id of heights.current.keys()) if (!ids.has(id)) heights.current.delete(id);
   }, [messages]);
 
-  return { listRef, start: range.start, end: range.end, top: offsets[range.start], total: offsets[offsets.length - 1] };
+  return { listRef, offsets, readingPoint: viewport.atTail ? Infinity : viewport.top + viewport.height / 2, start: range.start, end: range.end, top: offsets[range.start], total: offsets[offsets.length - 1] };
 }

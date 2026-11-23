@@ -24,7 +24,7 @@ type Character = { id?: string; name?: string; [key: string]: unknown };
 type Participant = { id?: string; type?: string; [key: string]: unknown };
 type Conversation = { id?: string; title?: string; [key: string]: unknown };
 export type MessageAsset = { id?: string; character_id?: string; label?: string; description?: string; image_url?: string; thumbnail_url?: string };
-export function displayableMessageAssets(message: ChatMessage) {
+function displayableMessageAssets(message: ChatMessage) {
   return Array.isArray(message.assets) ? message.assets.filter(asset => asset && typeof asset === 'object' && Boolean(sceneAssetSource(asset))) : [];
 }
 
@@ -123,7 +123,7 @@ export type BubbleListProps = {
   onRetryMessage?: (message: ChatMessage) => void;
   renderImages?: boolean;
   viewMode?: ChatViewMode;
-  onSceneAsset?: (asset: MessageAsset) => void;
+  onSceneAssetChange?: (asset: MessageAsset | undefined) => void;
   onGenerateTts?: (message: ChatMessage) => void;
   onRegenerateMessage?: (message: ChatMessage) => void;
   onDeleteMessage?: (message: ChatMessage) => void;
@@ -136,7 +136,7 @@ export type BubbleListProps = {
   onScrollAwayChange?: (away: boolean) => void;
 };
 
-const CALLBACK_KEYS = ['onAvatarPreview', 'onSceneAsset', 'onLoadOlderMessages', 'onRetryMessage', 'onGenerateTts', 'onRegenerateMessage', 'onDeleteMessage', 'onUpdateMessage', 'onEnterSelectionMode', 'onToggleMessageSelection', 'onScrollAwayChange'] as const;
+const CALLBACK_KEYS = ['onAvatarPreview', 'onSceneAssetChange', 'onLoadOlderMessages', 'onRetryMessage', 'onGenerateTts', 'onRegenerateMessage', 'onDeleteMessage', 'onUpdateMessage', 'onEnterSelectionMode', 'onToggleMessageSelection', 'onScrollAwayChange'] as const;
 
 // Parent composer keystrokes must not traverse/reparse the history. Stable
 // forwarding callbacks retain fresh room closures without ignoring prop changes.
@@ -151,8 +151,31 @@ export function BubbleList({ messages, characters, onAvatarPreview, bottomRef, t
 }
 
 const MemoBubbleList = memo(BubbleListContent);
-function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, threadRef, onLoadOlderMessages, hasOlderMessages = false, loadingOlderMessages = false, olderPagingReady = false, onRetryMessage, renderImages = true, onGenerateTts, onRegenerateMessage, onDeleteMessage, onUpdateMessage, busy = false, selectionMode = false, selectedMessageIds = [], onEnterSelectionMode, onToggleMessageSelection, onScrollAwayChange, viewMode = 'bubble', onSceneAsset }: BubbleListProps) {
+function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, threadRef, onLoadOlderMessages, hasOlderMessages = false, loadingOlderMessages = false, olderPagingReady = false, onRetryMessage, renderImages = true, onGenerateTts, onRegenerateMessage, onDeleteMessage, onUpdateMessage, busy = false, selectionMode = false, selectedMessageIds = [], onEnterSelectionMode, onToggleMessageSelection, onScrollAwayChange, viewMode = 'bubble', onSceneAssetChange }: BubbleListProps) {
   const windowed = useChatWindow(messages, threadRef, viewMode);
+  const sceneAssets = useMemo(() => {
+    if (viewMode !== 'scene' || !renderImages) return [];
+    return messages.flatMap((message, index) => {
+      const asset = displayableMessageAssets(message).at(-1);
+      return asset ? [{ index, asset }] : [];
+    });
+  }, [messages, viewMode, renderImages]);
+  // Use the measured list coordinates, not just the mounted rows. Blank
+  // stretches still resolve against the closest artwork on either side.
+  const { offsets, readingPoint } = windowed;
+  let lo = 0;
+  let hi = sceneAssets.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (offsets[sceneAssets[mid].index] <= readingPoint) lo = mid + 1;
+    else hi = mid;
+  }
+  const prior = sceneAssets[lo - 1];
+  const next = sceneAssets[lo];
+  const nearbyAsset = prior && next
+    ? (readingPoint - offsets[prior.index + 1] <= offsets[next.index] - readingPoint ? prior.asset : next.asset)
+    : (prior || next)?.asset;
+  useEffect(() => { onSceneAssetChange?.(nearbyAsset); }, [nearbyAsset, onSceneAssetChange]);
   const theme = useUiStore((state) => state.theme);
   const { locale, t } = useI18n();
   const [openMenuId, setOpenMenuId] = useState('');
@@ -279,7 +302,7 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
     {messages.slice(windowed.start, windowed.end).map((message, index) => {
       const side = bubbleSide(message);
       const showAvatar = message.speaker_type === 'character' && side !== 'center';
-      const assets = renderImages ? displayableMessageAssets(message) : [];
+      const assets = viewMode === 'bubble' && renderImages ? displayableMessageAssets(message) : [];
       const character = characterForMessage(message);
       const isPersistedMessage = message.id && !String(message.id).startsWith('local_') && !message.is_typing;
       const canRegenerate = message.speaker_type === 'character' && isPersistedMessage;
@@ -316,9 +339,6 @@ function BubbleListContent({ messages, characters, onAvatarPreview, bottomRef, t
             {assets.length > 0 && <div className="bubble-assets grid gap-1.5">{assets.map((asset, assetIndex) => {
               const label = asset.label || t('상황별 이미지');
               const key = asset.id || `${sceneAssetSource(asset)}:${assetIndex}`;
-              if (viewMode === 'scene') return <Button key={key} type="button" variant="ghost" className="scene-asset-thumb" title={label} onClick={event => { event.stopPropagation(); if (!selectionMode) onSceneAsset?.(asset); }} disabled={selectionMode}>
-                <WebpImage src={imageUrlFor(asset.thumbnail_url || sceneAssetSource(asset))} alt={label} />
-              </Button>;
               return <ChatImageFrame key={key} src={imageUrlFor(asset.thumbnail_url || sceneAssetSource(asset))} alt={label} onClick={() => onAvatarPreview?.({ character: { id: asset.character_id, name: asset.label }, emotion: asset.description || t('이미지 에셋'), src: imageUrlFor(sceneAssetSource(asset), 'full') })} />;
             })}</div>}
             {hasRenderParts && renderParts.map((part, partIndex) => renderMessagePart(part, partIndex, side, viewMode, t('속마음'), message.speaker_type === 'storytelling', freeBody))}
