@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { AgentMark } from './AgentMark';
+import { AgentSheetGrip } from './AgentSheetGrip';
 import { useI18n } from '../i18n/I18nProvider';
 import { AGENT_DOCK_QUERY, agentActions, useAgentStore } from './store';
 import { AgentPanel } from './panel';
@@ -64,7 +65,11 @@ export function AgentSurface() {
   // One DOM owner throughout resize/open/close; no Portal/branch remount can
   // interrupt an IME composition, textarea selection or transcript reading.
   return <aside className={`agent-surface agent-ui ${mode === 'dock' ? 'agent-dock' : 'agent-modal'}`} data-surface={mode} hidden={!open} role={mode === 'sheet' ? 'dialog' : 'complementary'} aria-label={t('agent.title')} aria-modal={mode === 'sheet' ? false : undefined}>
-    <header className="agent-panel-header"><h2><AgentMark size={28} />{t('agent.title')}</h2><button type="button" aria-label={t('닫기')} onClick={close}><X size={20} /></button></header>
+    <header className="agent-panel-header">
+      <h2><AgentMark size={28} />{t('agent.title')}</h2>
+      {open && mode === 'sheet' && <AgentSheetGrip />}
+      <button type="button" aria-label={t('닫기')} onClick={close}><X size={20} /></button>
+    </header>
     {enabled && <AgentPanel />}
   </aside>;
 }

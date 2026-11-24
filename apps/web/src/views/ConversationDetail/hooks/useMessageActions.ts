@@ -100,7 +100,6 @@ export function useMessageActions(options: MessageActionsOptions) {
         o.setMessages((messages) => c.visit.current ? messages.filter((item) => !ids.includes(item.id || '')) : messages);
         o.clearMessageSelection();
         await refreshContext(c);
-        if (current(c)) o.setStatus(o.t('선택한 메시지 삭제 완료'));
       } catch (error) {
         if (current(c)) o.setStatus(`${o.t('선택 버블 삭제 실패 ·')} ${errorMessage(error)}`);
       } finally { finish(c, work); }
@@ -112,17 +111,13 @@ export function useMessageActions(options: MessageActionsOptions) {
       const { o } = c;
       const work = begin(c);
       if (!work) return null;
+      // The edit form owns its error display; a rejection propagates to it.
       try {
         const updated = await o.updateMessage(c.conversationId, messageId, draft);
         if (!current(c)) return null;
         o.nextScrollModeRef.current = 'preserve';
         o.setMessages((messages) => c.visit.current ? messages.map((item) => item.id === updated.id ? { ...item, ...updated } : item) : messages);
-        o.setStatus(o.t('버블 수정 완료'));
         return updated;
-      } catch (error) {
-        if (current(c)) o.setStatus(`${o.t('버블 수정 실패 ·')} ${errorMessage(error)}`);
-        // The edit form owns its error display. Preserve the transport rejection.
-        throw error;
       } finally { finish(c, work); }
     }
     async function deleteMessageBubble(message: ChatMessage) {
@@ -133,7 +128,6 @@ export function useMessageActions(options: MessageActionsOptions) {
       if (messageId.startsWith('local_')) {
         o.nextScrollModeRef.current = 'preserve';
         o.setMessages((messages) => c.visit.current ? messages.filter((item) => item.id !== messageId) : messages);
-        o.setStatus(o.t('임시 실패 버블 삭제 완료'));
         return;
       }
       if (!(await o.confirmLocalizedDanger(formatDangerConfirmation('message', o.locale)))) return;
@@ -146,7 +140,6 @@ export function useMessageActions(options: MessageActionsOptions) {
         o.nextScrollModeRef.current = 'preserve';
         o.setMessages((messages) => c.visit.current ? messages.filter((item) => item.id !== messageId) : messages);
         await refreshContext(c);
-        if (current(c)) o.setStatus(o.t('버블 삭제 완료'));
       } catch (error) {
         if (current(c)) o.setStatus(`${o.t('버블 삭제 실패 ·')} ${errorMessage(error)}`);
       } finally { finish(c, work); }
@@ -164,7 +157,7 @@ export function useMessageActions(options: MessageActionsOptions) {
         if (!current(c)) return;
         await o.regeneration.revealServerMessages([null, ...(serverMessages || [])], `regen_${messageId}`, c.visit);
         if (!current(c)) return;
-        o.setStatus(o.t('재생성 완료'));
+        o.setStatus(status => status === o.t('재생성 중…') ? '' : status);
         await o.regeneration.loadConversations();
         if (!current(c)) return;
         await refreshContext(c);

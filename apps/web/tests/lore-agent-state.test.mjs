@@ -22,7 +22,8 @@ const api = {
     assert.ok(!JSON.stringify(journal).includes(content)); assert.deepEqual(context, []);
     if (mode === 'held') await new Promise(r => { release = r; });
     if (mode === 'unknown') throw new TypeError('synthetic lost response');
-    return session;
+    if (mode === 'timeout') throw new AgentHttpError(408);
+    return { ...session, messages: [{ id: `user-${request_id}`, request_id, role: 'user', content }] };
   },
   operation: async request_id => { calls.push('GET operation'); return { request_id, status: 'unknown', kind: 'agent_turn', result: null, error: null }; },
   commit: async (_draft, _requestId) => { calls.push('POST commit'); throw new AgentHttpError(409); },
@@ -42,13 +43,19 @@ assert.equal('lock' in actions, false);
 store.setState({ settings: { enabled: true, llm_model_option_key: 'model' }, selected: 's', sessions: { s: session }, input: 'Synthetic input not persisted' });
 const first = actions.send(); await actions.send();
 assert.equal(calls.filter(c => c === 'POST message').length,1,'synchronous submission ownership prevents duplicates');
-assert.equal(store.getState().working,true); release(); await first;
+assert.equal(store.getState().working,true); assert.equal(store.getState().input, '');
+assert.equal(store.getState().turns.s.content, 'Synthetic input not persisted'); release(); await first;
 assert.equal(store.getState().pending.length,0); assert.equal(store.getState().input,'');
 mode = 'unknown'; store.setState({ input: 'Uncertain input retained' }); await actions.send();
-assert.equal(store.getState().pending.length,1); assert.equal(store.getState().input,'Uncertain input retained');
+assert.equal(store.getState().pending.length,1); assert.equal(store.getState().input,'');
+assert.equal(store.getState().turns.s.phase,'unknown'); assert.equal(store.getState().turns.s.content,'Uncertain input retained');
 const count = calls.filter(c => c.startsWith('POST')).length; await actions.refresh(); await actions.send();
 assert.equal(calls.filter(c => c.startsWith('POST')).length,count,'uncertain receipt only performs GET and blocks repeat POST');
 assert.equal(store.getState().pending.length,1);
+store.setState({ pending: [], input: 'Do not replay after gateway timeout' }); memory.clear();
+mode = 'timeout'; await actions.send();
+assert.equal(store.getState().pending.length, 1, 'HTTP 408 is not proof of rejection');
+assert.equal(store.getState().turns.s.phase, 'unknown');
 store.setState({ pending: [] }); memory.clear();
 await actions.commit(draft);
 assert.equal(store.getState().pending.length,0,'definite CAS rejection releases pending reservation');

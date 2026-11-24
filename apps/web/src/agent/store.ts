@@ -40,7 +40,10 @@ function matchProposal(actual: AgentDraft, expected: AgentDraft) {
 }
 export type RecoveryTarget = { key: string; requestId?: string; sessionId?: string; draftId?: string; jobId?: string };
 export type RecoveryFocus = RecoveryTarget & { token: number };
+// Transient display state only. The recovery journal never receives message text.
+type LocalTurn = { id: string; content: string; phase: 'sending' | 'unknown' | 'failed'; restored?: boolean };
 export type AgentState = {
+  turns: Record<string, LocalTurn | undefined>; activeCreation: string | null;
   recoveryLoading: string; recoveryErrors: Record<string, string>; recoveryFocus: RecoveryFocus | null; localRecovery: RecoveryTarget | null;
   surfaceMode: 'dock' | 'sheet';
   activeMessage: string | null;
@@ -57,7 +60,7 @@ export type AgentState = {
 export const useAgentStore = create<AgentState>((set) => ({
   surfaceMode: typeof window !== 'undefined' && window.matchMedia?.(AGENT_DOCK_QUERY).matches ? 'dock' : 'sheet',
   recoveryLoading: '', recoveryErrors: {}, recoveryFocus: null, localRecovery: null,
-  activeMessage: null, proposalRequest: null,
+  turns: {}, activeCreation: null, activeMessage: null, proposalRequest: null,
   open: false, settings: null, settingsError: '', error: '', refreshing: false, working: false, newChat: true,
   resources: [], imageChoices: {}, imageSelections: {}, sessions: {}, selected: '', input: '', contexts: [], drafts: {}, edits: {}, pending: recovered(), operations: {}, imageJobs: {},
   setOpen: open => set({ open }),
@@ -65,8 +68,15 @@ export const useAgentStore = create<AgentState>((set) => ({
 const state = useAgentStore.getState;
 const set = useAgentStore.setState;
 const describe = (error: unknown) => error instanceof AgentHttpError ? error.message : 'agent.requestFailed';
+// These are request validation/auth/claim rejections, not transport outcomes.
+// A timeout or a lost gateway response may arrive after the server accepted it.
+const turnRejected = (error: unknown) => error instanceof AgentHttpError && [400, 401, 403, 404, 409, 422].includes(error.status);
 let selectionEpoch = 0;
-useAgentStore.subscribe((next, previous) => { if (next.selected !== previous.selected) selectionEpoch++; });
+let inputEpoch = 0;
+useAgentStore.subscribe((next, previous) => {
+  if (next.selected !== previous.selected) selectionEpoch++;
+  if (next.input !== previous.input) inputEpoch++;
+});
 const sessionVersions = new Map<string, number>();
 export function conversationPending(s: AgentState, selected = s.selected) {
   return s.pending.some(p => p.kind === 'session' || (p.kind === 'message' && (!p.session_id || p.session_id === selected)));
@@ -108,8 +118,8 @@ function requestId() {
   if (typeof random?.getRandomValues !== 'function') throw new Error('Secure request identifiers are unavailable');
   return Array.from(random.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join('');
 }
-function reserve(kind: PendingRequest['kind'], extra: Omit<PendingRequest, 'kind' | 'request_id'> = {}) {
-  const request = { request_id: requestId(), kind, ...extra };
+function reserve(kind: PendingRequest['kind'], extra: Omit<PendingRequest, 'kind' | 'request_id'> = {}, id = requestId()) {
+  const request = { request_id: id, kind, ...extra };
   const pending = [...state().pending, request];
   // Storage failure must stop dispatch, not produce an untraceable paid request.
   persist(pending); set({ pending }); return request.request_id;
@@ -193,7 +203,7 @@ let recoveryToken = 0;
 export const agentActions = {
   selectSession(id: string) {
     selectionEpoch++;
-    set({ selected: id, newChat: !id, localRecovery: null, recoveryFocus: null });
+    set(s => ({ turns: { ...s.turns, '': undefined }, selected: id, newChat: !id, localRecovery: null, recoveryFocus: null }));
   },
   async openRecovery(target: RecoveryTarget) {
     if (state().recoveryLoading) return;
@@ -331,7 +341,7 @@ export const agentActions = {
   newChat: () => {
     // Explicit new-chat intent also fences a creation begun from the blank view.
     selectionEpoch++;
-    set({ selected: '', newChat: true, error: '', localRecovery: null, recoveryFocus: null });
+    set(s => ({ turns: { ...s.turns, '': undefined }, selected: '', newChat: true, error: '', localRecovery: null, recoveryFocus: null }));
   },
   createSession: () => guarded(async () => {
     if (conversationPending(state())) return;
@@ -345,32 +355,52 @@ export const agentActions = {
     if (!s.input.trim() || !s.settings?.enabled || !s.settings.llm_model_option_key || conversationPending(s) || s.sessions[s.selected]?.busy) return;
     let sessionId = s.selected;
     let epoch = selectionEpoch;
-    if (!sessionId) {
-      // One guard owns both steps. Journal creation before dispatch; never replay
-      // the model turn automatically if session creation has an unknown outcome.
-      const creationId = reserve('session');
-      try {
-        const session = await agentApi.createSession(creationId);
-        acceptSession(session); sessionId = session.id;
-        forget(creationId);
-        if (selectionEpoch !== epoch) return;
-        set({ selected: sessionId, newChat: false, localRecovery: null, recoveryFocus: null }); epoch = selectionEpoch;
-      } catch (error) {
-        if (error instanceof AgentHttpError && error.status < 500) forget(creationId);
-        throw error;
-      }
-    }
-    if (!state().settings?.enabled || !state().settings?.llm_model_option_key || conversationPending(state(), sessionId) || state().sessions[sessionId]?.busy) return;
-    const id = reserve('message', { session_id: sessionId });
-    set({ activeMessage: id });
-    const stopPolling = pollMessage(id, sessionId);
+    const id = requestId();
+    const turn: LocalTurn = { id, content: s.input, phase: 'sending' };
+    set({ input: '', turns: { ...s.turns, [sessionId]: turn } });
+    const clearedAt = inputEpoch;
+    let journalId: string | undefined;
+    let messageDispatched = false;
+    let stopPolling: (() => void) | undefined;
     try {
-      const session = await agentApi.message(sessionId, id, s.input, s.contexts);
+      if (!sessionId) {
+        journalId = reserve('session');
+        set({ activeCreation: journalId });
+        const session = await agentApi.createSession(journalId);
+        acceptSession(session); forget(journalId); journalId = undefined;
+        if (selectionEpoch !== epoch) {
+          // Preserve the unsent text in its own conversation, not the new view.
+          set(s => ({ turns: { ...s.turns, [session.id]: { ...turn, phase: 'failed' }, '': undefined } }));
+          return;
+        }
+        sessionId = session.id;
+        set(s => ({ selected: sessionId, newChat: false, localRecovery: null, recoveryFocus: null,
+          turns: { ...s.turns, '': undefined, [sessionId]: turn } }));
+        epoch = selectionEpoch;
+      }
+      if (!state().settings?.enabled || !state().settings?.llm_model_option_key || conversationPending(state(), sessionId) || state().sessions[sessionId]?.busy) throw new Error('Dispatch blocked');
+      journalId = reserve('message', { session_id: sessionId }, id);
+      set({ activeMessage: id });
+      stopPolling = pollMessage(id, sessionId);
+      messageDispatched = true;
+      const session = await agentApi.message(sessionId, id, turn.content, s.contexts);
       stopPolling();
-      acceptSession(session); forget(id);
-      if (selectionEpoch === epoch && state().selected === sessionId && state().input === s.input) set({ input: '' });
-    } catch (error) { if (error instanceof AgentHttpError && error.status < 500) forget(id); throw error; }
-    finally { stopPolling(); if (state().activeMessage === id) set({ activeMessage: null }); }
+      if (session.id !== sessionId) throw new Error('Mismatched session receipt');
+      acceptSession(session);
+      if (session.busy || !session.messages.some(m => m.role === 'user' && m.request_id === id)) throw new Error('Turn completion not confirmed');
+      forget(id);
+      set(s => ({ turns: { ...s.turns, [sessionId]: undefined } }));
+    } catch (error) {
+      const accepted = state().sessions[sessionId]?.messages.some(m => m.role === 'user' && m.request_id === id);
+      const rejected = !accepted && turnRejected(error);
+      if (journalId && rejected) forget(journalId);
+      const unknown = messageDispatched && !rejected;
+      const restore = !unknown && !accepted && selectionEpoch === epoch && inputEpoch === clearedAt;
+      if (state().turns[sessionId]?.id === id) set(s => ({
+        turns: { ...s.turns, [sessionId]: { ...turn, phase: unknown ? 'unknown' : 'failed', restored: restore } },
+        ...(restore ? { input: turn.content } : {}),
+      }));
+    } finally { stopPolling?.(); set({ activeCreation: null, activeMessage: null }); }
   }),
   refresh: async () => {
     if (state().refreshing) return;
@@ -378,6 +408,7 @@ export const agentActions = {
     try {
     // Recovery is GET-only. Missing receipts never authorize replay.
     for (const pending of state().pending) {
+      if (pending.request_id === state().activeCreation || pending.request_id === state().activeMessage) continue;
       try {
       const operation = await agentApi.operation(pending.request_id);
       if (operation.request_id !== pending.request_id) throw new Error('Mismatched receipt');
@@ -387,6 +418,8 @@ export const agentActions = {
         if (typeof sessionId !== 'string' || !sessionId) throw new Error('Missing session receipt');
         await readSession(sessionId); // Recovery never changes the browsing selection.
       }
+      if (pending.kind === 'message' && (operation.status === 'completed' || operation.status === 'failed') &&
+          (!pending.session_id || operation.kind !== 'agent_turn' || operation.result?.session_id !== pending.session_id)) continue;
       if (pending.session_id) await readSession(pending.session_id);
       if (pending.draft_id) acceptDraft(await agentApi.draft(pending.draft_id));
       if (pending.image_job_id) {
@@ -396,11 +429,18 @@ export const agentActions = {
       if (typeof recoveredDraftId === 'string') acceptDraft(await agentApi.draft(recoveredDraftId));
       const imageJobId = operation.result?.job_id;
       if (typeof imageJobId === 'string') await agentActions.loadImageJob(imageJobId);
-      if (operation.status === 'completed' || operation.status === 'failed') forget(pending.request_id);
+      if (operation.status === 'completed' || operation.status === 'failed') {
+        const key = pending.session_id;
+        if (pending.kind === 'message' && operation.status === 'completed' && key && state().turns[key]?.id === pending.request_id
+          && !state().sessions[key]?.messages.some(m => m.role === 'user' && m.request_id === pending.request_id)) continue;
+        forget(pending.request_id);
+        if (key && state().turns[key]?.id === pending.request_id) set(s => ({ turns: { ...s.turns,
+          [key]: operation.status === 'failed' ? { ...s.turns[key]!, phase: 'failed' } : undefined } }));
+      }
       } catch (error) {
         const target = imageRecoveryTargets(state()).find(t => t.requestId === pending.request_id);
         if (target) set(s => ({ recoveryErrors: { ...s.recoveryErrors, [target.key]: 'agent.recoveryFailed' } }));
-        else set({ error: describe(error) });
+        else if (pending.kind !== 'message' && pending.kind !== 'session') set({ error: describe(error) });
       }
     }
     const versions = new Map(sessionVersions);

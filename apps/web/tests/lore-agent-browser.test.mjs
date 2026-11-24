@@ -62,13 +62,20 @@ async function setup(width, height, locale = 'en') {
         assert.ok(!persisted.includes('Synthetic request'), 'journal contains identifiers only');
       }
       if (suffix === '/sessions') {
-        if (method === 'POST') { state.sessions = [{ id: 's1', title: 'Synthetic session', messages: [], busy: false, last_error: null }]; state.operations[body.request_id] = { request_id: body.request_id, status: 'completed', kind: 'session', result: { id: 's1' }, error: null }; return json(sessionView()); }
+        if (method === 'POST') {
+          if (state.holdCreation) await new Promise(resolve => { state.releaseCreation = resolve; });
+          state.sessions = [{ id: 's1', title: 'Synthetic session', messages: [], busy: false, last_error: null }]; state.operations[body.request_id] = { request_id: body.request_id, status: 'completed', kind: 'session', result: { id: 's1' }, error: null }; return json(sessionView()); }
         return json(state.sessions.map(s => sessionView(s.id)));
       }
       if (/^\/sessions\/[^/]+$/.test(suffix)) return json(sessionView(suffix.split('/').at(-1)));
       if (suffix === '/sessions/s1/messages') {
+        if (state.rejectNext) {
+          await new Promise(resolve => { state.releaseRejection = resolve; });
+          state.rejectNext = false;
+          return json({}, 422);
+        }
         if (state.inFlightContext) {
-          state.sessions[0].messages.push({id:'accepted',role:'user',content:body.content});
+          state.sessions[0].messages.push({id:'accepted',role:'user',content:body.content,request_id:body.request_id});
           state.sessions[0].busy = true;
           state.sessions[0].image_contexts = [state.inFlightContext];
           state.operations[body.request_id] = {request_id:body.request_id,status:'running',kind:'agent_turn',progress:{stage:'image_context',sequence:1},result:null,error:null};
@@ -79,14 +86,23 @@ async function setup(width, height, locale = 'en') {
         }
         if (state.delayMessage) await new Promise(resolve => setTimeout(resolve, 400));
         assert.deepEqual(body.context, state.expectedContext || [], 'only explicitly selected fields are attached');
+        if (state.failTurn) {
+          state.failTurn = false;
+          const error = 'Agent run failed; accepted request will not be retried';
+          state.sessions[0].messages.push({ id: `u-${body.request_id}`, role: 'user', content: body.content, request_id: body.request_id });
+          state.sessions[0].last_error = error;
+          state.operations[body.request_id] = { request_id: body.request_id, status: 'failed', kind: 'agent_turn', result: { session_id: 's1' }, error };
+          return json(sessionView());
+        }
         state.operations[body.request_id] = { request_id: body.request_id, status: state.abortMessage ? 'unknown' : 'completed', kind: 'agent_turn', result: { session_id: 's1' }, error: null };
         if (state.abortMessage) return route.abort();
-        state.sessions[0].messages.push({ id: 'u1', role: 'user', content: body.content }, { id: 'a1', role: 'assistant', content: 'Synthetic preview, not applied.' });
+        state.sessions[0].last_error = null;
+        state.sessions[0].messages.push({ id: `u-${body.request_id}`, role: 'user', content: body.content, request_id: body.request_id }, { id: 'a1', role: 'assistant', content: 'Synthetic preview, not applied.' });
         makeDraft('d1', 'character', { name: 'After' });
         // A restored committed native-form proposal supplies image registration targets.
         Object.assign(makeDraft('world-create', 'world', { title: 'Newly committed world' }), { status: 'committed', result: { id: 'w-new', kind: 'world' } });
         makeDraft('world-plan', 'image_generation', { target_kind: 'world', target_id: 'w-new', provider_account_id: 'a', model_id: 'gpt-image-1.5', prompt: 'Synthetic world', count: 2 });
-        makeDraft('image-plan', 'image_generation', { provider_account_id: 'a', model_id: 'gpt-image-1.5', prompt: 'Synthetic image prompt', count: 1, options: {}, reference_output_id: null, target_id: 'c1' });
+        makeDraft('image-plan', 'image_generation', { target_kind: 'character', provider_account_id: 'a', model_id: 'gpt-image-1.5', prompt: 'Synthetic image prompt', count: 1, options: {}, reference_output_id: null, target_id: 'c1' });
         const image_context = { has_existing_images: true, requires_choice: true, inventory_digest: 'fixture-inventory', candidates: [{ id: 'avatar', label: 'Current portrait', kind: 'avatar', is_default: true, available: true }, { id: 'asset', label: 'Blue outfit', kind: 'asset', is_default: false, available: true }, { id: 'remote', label: 'Remote portrait', kind: 'avatar', is_default: false, available: false }] };
         makeDraft('reference-plan', 'image_generation', { target_kind: 'character', target_id: 'c1', provider_account_id: 'a', model_id: 'gpt-image-1.5', prompt: 'Keep identity, new pose', count: 1, generation_mode: 'undecided', image_context });
         makeDraft('unsupported-plan', 'image_generation', { target_kind: 'character', target_id: 'c1', provider_account_id: 'x', model_id: 'grok-imagine-image', prompt: 'Fresh design', count: 1, generation_mode: 'undecided', image_context });
@@ -134,6 +150,7 @@ async function setup(width, height, locale = 'en') {
       if (suffix.startsWith('/image-outputs/')) return route.fulfill({ body: image, contentType: 'image/webp' });
       if (suffix === '/image-jobs/j1/registration') {
         assert.deepEqual(body.output_ids, ['o1']); assert.equal(body.target_id, 'c1'); assert.equal(body.target_kind, 'character');
+        assert.deepEqual(body.metadata, {}, 'blank labels use the server default and do not fail validation');
         const draft = makeDraft('registration', 'image_registration', { output_ids: ['o1'], target_id: 'c1', metadata: body.metadata }, null);
         state.operations[body.request_id] = { request_id: body.request_id, status: 'completed', kind: 'stage_image_registration', result: { draft_id: draft.id }, error: null }; return json(draft);
       }
@@ -265,11 +282,19 @@ async function verifyImageFeedback(width, height, locale) {
   await panel.getByRole('button',{name:local['닫기'] || '닫기',exact:true}).click(); await page.locator('.agent-launcher').click();
   await expect(card).toHaveCount(0);
   await transcript.evaluate(n=>{n.scrollTop=100;n.dispatchEvent(new Event('scroll'));});
+  // An earlier identical turn must not consume the new provisional bubble.
+  state.sessions[0].messages.push({ id:'old-same', role:'user', content:'Synthetic in-flight image request', request_id:'prior-request' });
+  await panel.getByRole('button',{name:local['닫기'] || '닫기',exact:true}).click(); await page.locator('.agent-launcher').click();
+  await expect(panel.locator('.agent-message[data-role=user]')).toHaveCount(1);
+  await transcript.evaluate(n=>{n.scrollTop=100;n.dispatchEvent(new Event('scroll'));});
   state.inFlightContext=item;
   await panel.getByLabel(local['agent.message']).fill('Synthetic in-flight image request');
   await panel.getByRole('button',{name:local['전송'] || '전송',exact:true}).click();
-  await expect(panel.locator('.agent-messages')).toContainText('Synthetic in-flight image request',{timeout:8000});
+  await expect(panel.getByLabel(local['agent.message'])).toHaveValue('');
+  const sameText = panel.locator('.agent-message[data-role=user]').getByText('Synthetic in-flight image request',{exact:true});
+  await expect(sameText).toHaveCount(2);
   await expect(card).toHaveCount(1);
+  await expect(sameText).toHaveCount(2); // Accepted readback replaced the provisional row.
   await expect(card.getByText(local['agent.imagePlanPreparing'],{exact:true})).toBeVisible();
   assert.equal(state.writes.length,1,'only explicitly submitted message; no choice, approval or generation');
   assert.ok(Math.abs(await transcript.evaluate(n=>n.scrollTop)-100)<4,'context arrival preserves upward reading');
@@ -286,6 +311,8 @@ async function verifyImageFeedback(width, height, locale) {
   assert.equal(state.writes.length,1);
   state.releaseMessage();
   await expect(panel.getByLabel(local['agent.message'])).toHaveValue('');
+  await expect(panel.locator('#agent-send-status')).toHaveCount(0);
+  await expect(sameText).toHaveCount(2);
   if (artifacts) await page.screenshot({path:`${artifacts}/image-plan-final-${width}.png`});
   await expect(panel.getByRole('button',{name:local['agent.newSession'],exact:true})).toBeEnabled();
   assert.equal(await transcript.evaluate(n=>n.scrollWidth>n.clientWidth+1),false);
@@ -323,10 +350,29 @@ async function verifyPendingRecovery() {
   await panel.getByText(t('agent.chatAdvanced'),{exact:true}).click();await expect(history).toHaveValue('s2');
   await panel.getByText(t('agent.chatAdvanced'),{exact:true}).click();
   assert.deepEqual(await page.evaluate(()=>JSON.parse(sessionStorage.getItem('lore-agent-request-recovery-v1'))),[paid]);
-  state.inFlightContext=null;await panel.getByRole('button',{name:t('agent.newSession'),exact:true}).click();
+  state.rejectNext = true;
+  await panel.getByText(t('agent.chatAdvanced'),{exact:true}).click(); await history.selectOption('s1');
+  await panel.getByText(t('agent.chatAdvanced'),{exact:true}).click();
+  await input.fill('Rejected message'); await send.click();
+  await expect.poll(()=>typeof state.releaseRejection).toBe('function');
+  await input.fill('New edit while awaiting response'); state.releaseRejection();
+  await expect(composer.getByText(t('agent.sendFailed'))).toBeVisible();
+  await expect(input).toHaveValue('New edit while awaiting response');
+  await expect(panel.locator('.agent-messages')).toContainText('Rejected message');
+  state.inFlightContext = null;
+  state.failTurn = true;
+  await input.fill('Accepted but no reply'); await send.click();
+  await expect(composer.getByText(t('agent.turnFailed'))).toBeVisible();
+  await expect(panel.locator('.agent-messages').getByText('Accepted but no reply', { exact: true })).toHaveCount(1);
+  await input.fill('New turn in the same conversation'); await send.click();
+  await expect(panel.getByText('Synthetic preview, not applied.', { exact: true })).toBeVisible();
+  await expect(composer.getByText(t('agent.turnFailed'))).toHaveCount(0);
+  assert.deepEqual(state.writes.slice(2).map(write => write.path), ['/api/lore-agent/sessions/s1/messages', '/api/lore-agent/sessions/s1/messages']);
+  await panel.getByRole('button',{name:t('agent.newSession'),exact:true}).click();
   await input.fill('Explicit fresh conversation');await send.click();
   await expect(input).toHaveValue('');
-  assert.equal(state.writes.length,3,'only explicit message plus fresh session/message');
+  await expect.poll(() => state.writes.length).toBe(6);
+  await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('lore-agent-request-recovery-v1')).length)).toBe(1);
   assert.deepEqual(await page.evaluate(()=>JSON.parse(sessionStorage.getItem('lore-agent-request-recovery-v1'))),[paid]);
   assert.ok(state.writes.every(w=>w.path.endsWith('/messages') || w.path.endsWith('/sessions')));
   await expect(panel.locator('[data-agent-draft=image-plan]').getByRole('button',{name:t('agent.generatePaid'),exact:true})).toHaveCount(0);
@@ -431,7 +477,53 @@ async function saveAgentSettings(page, label) {
   assert.equal(await save.evaluate(button => !!button.form?.closest('[data-page="agent-settings"]')), true, 'save action belongs to the Agent settings form');
   await save.click();
 }
+async function verifySheet() {
+  const { page, state } = await setup(344, 882);
+  Object.assign(state.settings, { enabled: true, llm_model_option_key: 'agent-llm' });
+  await page.goto(origin + '/settings');
+  await page.locator('.agent-launcher').click();
+  const panel = page.locator('.agent-surface');
+  const grip = panel.locator('.agent-sheet-grip');
+  const composer = panel.getByLabel(t('agent.message'));
+  await composer.fill('Fold composer draft');
+  const node = await composer.elementHandle();
+  const compact = (await panel.boundingBox()).height;
+  assert.ok(compact > 690 && compact < 720, `cover viewport compact height: ${compact}`);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  async function drag(dy) {
+    const box = await grip.boundingBox();
+    assert.ok(box.width >= 44 && box.height >= 44, 'grip hit area');
+    const x = Math.round(box.x + box.width / 2), y = Math.round(box.y + box.height / 2);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    for (let i = 1; i <= 4; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y + Math.round(dy * i / 4) }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  }
+  await drag(-110);
+  await expect(grip).toHaveAttribute('aria-expanded', 'true');
+  const full = (await panel.boundingBox()).height;
+  assert.ok(full - compact > 140 && full <= 882, `cover viewport expanded height: ${full}`);
+  await expect(composer).toBeInViewport();
+  await expect(composer).toBeFocused();
+  await drag(115);
+  await expect(grip).toHaveAttribute('aria-expanded', 'false');
+  await grip.press('Enter');
+  await expect(grip).toHaveAttribute('aria-expanded', 'true');
+  for (const viewport of [{ width: 690, height: 829 }, { width: 820, height: 1180 }, { width: 1180, height: 620 }]) {
+    await page.setViewportSize(viewport);
+    await expect(panel).toHaveAttribute('data-surface', viewport.width < 768 ? 'sheet' : 'dock');
+    await expect(composer).toBeInViewport();
+    await expect(composer).toHaveValue('Fold composer draft');
+    assert.ok(await node.evaluate(el => el === document.querySelector('.agent-composer textarea')));
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  }
+  assert.deepEqual(state.errors, []);
+  assert.deepEqual(state.writes, []);
+  console.log(`PASS cover 344x882 touch drag ${compact.toFixed(0)}→${full.toFixed(0)}; keyboard, unfolded and tablet keep the composer`);
+  assertions++; await page.close();
+}
 try {
+  await verifySheet();
   for (const profile of [[390,844,'ko'], [820,1180,'en']]) await verifyRecoveryNavigation(...profile);
   await verifyPendingRecovery();
   for (const profile of (process.env.AGENT_IMAGE_ONLY ? [[390,844,'ko'],[820,1180,'ja']] : [[320,740,'ko'],[390,844,'en'],[820,1180,'ja'],[1440,1000,'en']])) await verifyImageFeedback(...profile);
@@ -496,13 +588,17 @@ try {
     assert.equal(state.writes.filter(w => w.path.endsWith('/sessions')).length, 0, 'opening is GET-only, no manual creation needed');
     await expect(panel.getByLabel(t('agent.sessions'))).not.toBeVisible();
     await expect(panel.getByLabel(t('agent.contextFields'))).not.toBeVisible();
-    state.delayMessage = true;
+    state.delayMessage = true; state.holdCreation = true;
     await panel.getByLabel(t('agent.message')).fill('Synthetic request');
     await panel.getByRole('button', { name: t('전송'), exact: true }).click();
     await expect(panel.locator('#agent-send-status .agent-progress')).toHaveText(t('agent.working'));
     await expect(panel.locator('#agent-send-status [data-agent-mark]')).toHaveCount(1);
     assert.equal(await panel.locator('#agent-send-status').evaluate(node => [...node.childNodes].filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join('').trim()), '', 'working indicator has no canned visible guide text');
     await expect(panel.locator('.agent-empty')).toHaveCount(0);
+    await expect(panel.getByLabel(t('agent.message'))).toHaveValue('');
+    await expect(panel.locator('.agent-message[data-role=user]').getByText('Synthetic request', { exact: true })).toHaveCount(1);
+    await expect.poll(() => typeof state.releaseCreation).toBe('function');
+    state.holdCreation = false; state.releaseCreation();
     await expect.poll(() => state.writes.filter(w => w.path.includes('/sessions')).map(w => w.path)).toEqual(['/api/lore-agent/sessions', '/api/lore-agent/sessions/s1/messages']);
     const draft = panel.locator('[data-agent-draft=d1]'); await expect(draft).toContainText('After');
     assert.equal(state.writes.filter(w => w.path.endsWith('/commit')).length,0);
@@ -558,12 +654,13 @@ try {
     await expect(panel.getByAltText(t('agent.generatedImage'))).toBeVisible();
     assert.ok((await panel.getByAltText(t('agent.generatedImage')).getAttribute('src')).startsWith('blob:'));
     await panel.getByLabel(t('agent.selectImage')).check();
-    await panel.getByLabel(t('agent.imageTarget'), { exact: true }).selectOption('c1');
-    await panel.getByLabel(t('agent.imageLabel')).fill('Synthetic asset');
+    const characterImages = panel.locator('[data-agent-image-job=j1]');
+    await expect(characterImages.locator('select')).toHaveCount(0);
+    await panel.getByLabel(t('agent.imageLabel')).fill('   ');
     await panel.getByRole('button', { name: t('닫기'), exact: true }).click();
     await page.locator('.agent-launcher').click();
     await expect(panel.getByLabel(t('agent.selectImage'))).toBeChecked();
-    await expect(panel.getByLabel(t('agent.imageLabel'))).toHaveValue('Synthetic asset');
+    await expect(panel.getByLabel(t('agent.imageLabel'))).toHaveValue('   ');
     await panel.getByRole('button', { name: t('agent.stageRegistration') }).click();
     const registration = panel.locator('[data-agent-draft=registration]'); await expect(registration).toBeVisible();
     await expect(registration.getByRole('button', { name: t('agent.commit') })).toHaveCount(0);
@@ -577,16 +674,15 @@ try {
     await worldPlan.getByRole('button', { name: t('agent.approve') }).click();
     await worldPlan.getByRole('button', { name: t('agent.generatePaid') }).click();
     const worldImages = panel.locator('[data-agent-image-job=jw]');
-    await expect(worldImages.getByLabel(t('agent.imageTargetKind'))).toHaveValue('world');
-    await expect(worldImages.getByLabel(t('agent.imageTarget'), { exact: true })).toHaveValue('w-new');
-    await expect(worldImages.getByLabel(t('agent.imageTarget'), { exact: true }).locator('option:checked')).toHaveText('Newly committed world');
+    await expect(worldImages.locator('select')).toHaveCount(0);
+    await expect(worldImages).toContainText('Newly committed world');
     await worldImages.getByLabel(t('agent.selectImage')).nth(0).check();
     await worldImages.getByLabel(t('agent.selectImage')).nth(1).check();
     await expect(worldImages.getByLabel(t('agent.selectImage')).nth(0)).not.toBeChecked();
     await panel.getByRole('button', { name: t('닫기'), exact: true }).click();
     await page.locator('.agent-launcher').click();
     await expect(worldImages.getByLabel(t('agent.selectImage')).nth(1)).toBeChecked();
-    await expect(panel.locator('[data-agent-image-job=j1]').getByLabel(t('agent.imageLabel'))).toHaveValue('Synthetic asset');
+    await expect(characterImages.getByLabel(t('agent.imageLabel'))).toHaveValue('   ');
     await worldImages.getByRole('button', { name: t('agent.stageRegistration') }).click();
     const worldRegistration = panel.locator('[data-agent-draft=world-registration]');
     await expect(worldRegistration).toContainText(t('agent.worldRegistrationHint'));
@@ -612,7 +708,7 @@ try {
     state.expectedContext = [{ kind: 'character', id: 'c1', fields: ['persona'] }];
     state.abortMessage = true;
     await panel.getByRole('button', { name: t('전송'), exact: true }).click();
-    await expect(panel.getByText(t('agent.uncertain'))).toBeVisible();
+    await expect(panel.getByText(t('agent.checkTurn'))).toBeVisible();
     const postCount = state.writes.length;
     await panel.getByRole('button', { name: t('agent.refresh'), exact: true }).first().click();
     await expect(panel.getByRole('button', { name: t('agent.newSession') })).toBeEnabled();

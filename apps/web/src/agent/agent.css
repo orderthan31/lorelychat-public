@@ -44,12 +44,25 @@
 .agent-composer textarea { resize: none; max-height: 120px; line-height: 1.5; border-radius: 12px; }
 .agent-composer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .agent-composer-actions p { display: flex; align-items: center; gap: 6px; margin-right: auto; font-size: 12px; min-width: 0; }
+.agent-composer-actions .agent-turn-error { color: var(--destructive, #b42318); }
 .agent-composer-actions button[type=submit] { background: var(--primary); color: var(--primary-foreground); }
 .agent-surface { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
 .agent-surface[hidden] { display: none; }
 .agent-dock { width: clamp(300px, 30vw, 420px); flex-shrink: 0; position: sticky; top: 57px; height: calc(100dvh - 57px); border-left: 1px solid var(--border); }
-.agent-modal { position: fixed; z-index: 40; inset: auto 0 0; height: min(100dvh, max(320px, 65dvh)); border: 1px solid var(--border); border-bottom: 0; border-radius: 18px 18px 0 0; box-shadow: 0 -8px 28px #0002; padding-bottom: env(safe-area-inset-bottom); }
-.agent-modal .agent-panel-header { padding: 4px 12px; }
+.agent-modal {
+  --agent-available: 100dvh;
+  --agent-full: calc(var(--agent-available) - max(8px, env(safe-area-inset-top)));
+  --agent-compact: min(var(--agent-full), max(320px, calc(var(--agent-available) * .8)));
+  position: fixed; z-index: 40; inset: auto 0 var(--agent-bottom, 0px);
+  box-sizing: border-box; height: clamp(var(--agent-compact), var(--agent-drag-height, var(--agent-rest-height, var(--agent-compact))), var(--agent-full));
+  border: 1px solid var(--border); border-bottom: 0; border-radius: 18px 18px 0 0;
+  box-shadow: 0 -8px 28px #0002; padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.agent-modal:has(.agent-sheet-grip[aria-expanded=true]) { --agent-rest-height: var(--agent-full); }
+.agent-modal .agent-panel-header { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); padding: 4px 12px; }
+.agent-modal .agent-panel-header > :last-child { justify-self: end; }
+.agent-ui .agent-sheet-grip { display: grid; place-items: center; width: 52px; height: 44px; padding: 0; background: transparent; border: 0; touch-action: none; user-select: none; cursor: ns-resize; }
+.agent-sheet-grip::before { content: ''; width: 32px; height: 4px; border-radius: 2px; background: var(--muted-foreground); }
 .agent-modal .agent-composer { padding: 6px 12px 8px; }
 .agent-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .agent-error { color: var(--destructive, #b42318); }

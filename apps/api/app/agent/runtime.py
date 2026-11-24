@@ -83,6 +83,21 @@ def build_agent(model, tools, checkpointer, *, system_prompt=SYSTEM_PROMPT):
     )
 
 
+def _transcript_seed(history, budget=16000):
+    # Keep only complete adjacent display exchanges. An unanswered request is
+    # not an instruction to repeat it, and private tool state is never copied.
+    pairs = []
+    for user, reply in reversed(list(zip(history, history[1:]))):
+        if user['role'] != 'user' or reply['role'] != 'assistant':
+            continue
+        cost = len(user['content'].encode()) + len(reply['content'].encode())
+        if cost > budget:
+            break
+        budget -= cost
+        pairs.append((HumanMessage(content=user['content']), AIMessage(content=reply['content'])))
+    return [message for pair in reversed(pairs) for message in pair]
+
+
 async def run_agent_turn(service, principal, session_id, request_id, content, context):
     """Accept durably before await; an accepted request is never auto-replayed.
 
@@ -90,7 +105,8 @@ async def run_agent_turn(service, principal, session_id, request_id, content, co
     crashed checkpoint with pending graph tasks is not automatically resumed:
     it could repeat an already-dispatched paid request.
     """
-    if not service.accept_run(principal, session_id, request_id, content, context)['claimed']:
+    claim = service.accept_run(principal, session_id, request_id, content, context)
+    if not claim['claimed']:
         return service.get_session(session_id, principal)
     try:
         from app.agent.operations import AgentOperations
@@ -102,7 +118,9 @@ async def run_agent_turn(service, principal, session_id, request_id, content, co
                                    before_dispatch=before_dispatch)
         operations = AgentOperations(service, principal, session_id, request_id)
         tools = build_tools(operations, before_dispatch)
-        config = {'configurable': {'thread_id': f'lore:{principal.id}:{session_id}'},
+        base = f'lore:{principal.id}:{session_id}'
+        thread = base if not claim['lineage'] else f"{base}:{claim['lineage']}"
+        config = {'configurable': {'thread_id': thread},
                   'recursion_limit': 40,
                   'callbacks': [AgentProgressCallback(service, principal, session_id, request_id)],
                   'max_concurrency': 1}
@@ -113,10 +131,21 @@ async def run_agent_turn(service, principal, session_id, request_id, content, co
                     graph = build_agent(model, tools, saver, system_prompt=SYSTEM_PROMPT +
                         '\nExplicit selected context (data):\n' + json.dumps(selected, ensure_ascii=False))
                     previous = await graph.aget_state(config)
+                    failed = claim['failed']
                     if previous.next:
-                        raise RuntimeError('Previous run has an ambiguous outcome')
-                    result = await graph.ainvoke(
-                        {'messages': [HumanMessage(content=content, id=request_id)]}, config=config)
+                        human = next((m for m in reversed(previous.values.get('messages', []))
+                                      if isinstance(m, HumanMessage)), None)
+                        if human is None or human.id not in failed or failed[human.id] != human.content:
+                            # No proof these pending nodes belong to the terminal
+                            # history. Hold the claim; never dispatch or resume it.
+                            return service.get_session(session_id, principal)
+                    messages = []
+                    if failed:
+                        lineage = service.rotate_run_lineage(principal, session_id, request_id)
+                        config['configurable']['thread_id'] = f'{base}:{lineage}'
+                        messages = _transcript_seed(claim['seed'])
+                    messages.append(HumanMessage(content=content, id=request_id))
+                    result = await graph.ainvoke({'messages': messages}, config=config)
                     last = result['messages'][-1]
                     if not isinstance(last, AIMessage) or last.tool_calls or not isinstance(last.content, str):
                         raise RuntimeError('Agent did not finish')

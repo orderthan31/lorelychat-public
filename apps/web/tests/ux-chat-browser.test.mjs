@@ -110,7 +110,8 @@ try {
     const save = page.getByRole('button', { name: '이 방 설정 저장', exact: true });
     await save.click();
     await expect.poll(() => state.patches).toBe(1);
-    await expect(page.locator('.ux-operation-toast')).toContainText(t('이 방 채팅 설정 저장 완료'));
+    await expect(save).toBeEnabled();
+    await expect(page.locator('.ux-operation-toast')).toHaveCount(0);
     if (geometry.docked) await page.locator('.drawer-close').click();
     else {
       await expect(page.locator('.context-drawer')).toHaveAttribute('aria-modal', 'true');

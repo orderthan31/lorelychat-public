@@ -4,9 +4,9 @@ import { AgentMarkdown } from './AgentMarkdown';
 import { useI18n } from '../i18n/I18nProvider';
 import type { UiMessageKey } from '../i18n/core';
 import { AgentError } from './AgentError';
-import { AgentImage } from './AgentImage';
+import { ImageResults } from './imageResults';
 import { agentActions, conversationPending, imageRecoveryTargets, selectedImageJobs, useAgentStore } from './store';
-import type { AgentDraft, ContextSelection, ImageJob, ImageSelection, ImageTargetKind } from './types';
+import type { AgentDraft, ContextSelection } from './types';
 
 import { ImageDraftCard } from './imageDraft';
 import { ImageContextCard } from './imageContext';
@@ -48,27 +48,6 @@ function ImageRegistrationCard({ draft }: { draft: AgentDraft }) {
     {draft.status === 'conflict' && <p role="alert">{t('agent.conflict')}</p>}
   </article>;
 }
-function ImageResults({ job }: { job: ImageJob }) {
-  const { t } = useI18n();
-  const { working, pending, resources } = useAgentStore();
-  const selection = useAgentStore(s => s.imageSelections[job.id]);
-  const { selected, target, targetKind, label } = selection || { selected: [], target: job.plan?.target_id || '', targetKind: job.plan?.target_kind || 'character', label: '' };
-  const targets = resources.filter(r => r.kind === targetKind);
-  const update = (value: Partial<ImageSelection>) => useAgentStore.setState(s => ({ imageSelections: { ...s.imageSelections, [job.id]: { selected, target, targetKind, label, ...value } } }));
-  const [error, setError] = useState('');
-  return <section className="agent-image-results" data-agent-image-job={job.id} tabIndex={-1} aria-labelledby={`agent-job-heading-${job.id}`}>
-    <h3 id={`agent-job-heading-${job.id}`}>{t(job.status === 'unknown' ? 'agent.imageRequestUnknown' : 'agent.images')}{job.status !== 'unknown' && ` · ${t(`agent.status.${job.status}` as UiMessageKey)}`}</h3>
-    {job.status === 'unknown' && <p>{t(job.outputs.length ? 'agent.imageRequestUnresolved' : 'agent.imageRequestNoOutput')}</p>}
-    <AgentError value={(job.status !== 'unknown' ? job.error : '') || error} />
-    <button disabled={working} onClick={() => { setError(''); void agentActions.loadImageJob(job.id).catch(() => setError('agent.requestFailed')); }}>{t('agent.refresh')}</button>
-    <div className="agent-image-grid">{job.outputs.map(output => <label key={output.id}><AgentImage id={output.id} /><span><input type="checkbox" checked={selected.includes(output.id)} onChange={e => update({ selected: e.target.checked ? (targetKind === 'world' ? [output.id] : [...selected, output.id]) : selected.filter(id => id !== output.id) })} />{t('agent.selectImage')}</span></label>)}</div>
-    {job.status === 'completed' && <>
-      <label>{t('agent.imageTargetKind')}<select aria-label={t('agent.imageTargetKind')} value={targetKind} onChange={e => update({ targetKind: e.target.value as ImageTargetKind, target: '', selected: [] })}><option value="character">{t('캐릭터')}</option><option value="world">{t('세계관')}</option></select></label>
-      <label>{t('agent.imageTarget')}<select aria-label={t('agent.imageTarget')} value={target} onChange={e => update({ target: e.target.value })}><option value="">{t('선택')}</option>{targets.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}</select></label>
-      {targetKind === 'character' && <label>{t('agent.imageLabel')}<input value={label} onChange={e => update({ label: e.target.value })} /></label>}
-      <p>{t(targetKind === 'world' ? 'agent.worldRegistrationHint' : 'agent.registrationHint')}</p><button disabled={working || !!pending.length || !selected.length || (targetKind === 'world' && selected.length !== 1) || !targets.some(r => r.id === target)} onClick={() => void agentActions.registration(job.id, selected, target, targetKind === 'world' ? {} : { label }, targetKind)}>{t('agent.stageRegistration')}</button></>}
-  </section>;
-}
 function ContextPicker() {
   const { t } = useI18n(); const contexts = useAgentStore(s => s.contexts);
   const resources = useAgentStore(s => s.resources);
@@ -86,15 +65,33 @@ const readingPositions = new Map<string, { top: number; following: boolean }>();
 export function AgentPanel() {
   const { t } = useI18n(); const s = useAgentStore();
   const session = s.sessions[s.selected];
+  const turn = !s.localRecovery ? s.turns[s.selected] : undefined;
+  const messages = session?.messages || [];
+  const showLocal = turn && !turn.restored && !messages.some(m => m.role === 'user' && m.request_id === turn.id);
+  const rows = showLocal ? [...messages, { id: `local:${turn.id}`, role: 'user' as const, content: turn.content, request_id: turn.id }] : messages;
   const drafts = Object.values(s.drafts).filter(d => s.localRecovery ? d.id === s.localRecovery.draftId : !d.session_id || d.session_id === s.selected);
   const recoveryTargets = imageRecoveryTargets(s);
   const recoveryOperation = (id: string) => recoveryTargets.some(target => target.requestId === id || (target.jobId && target.jobId === s.operations[id]?.result?.job_id) || (target.draftId && target.draftId === s.operations[id]?.result?.draft_id));
+  const visibleOperationError = (op: (typeof s.operations)[string]) => {
+    if (!op.error || op.kind === 'agent_turn' || recoveryOperation(op.request_id)) return false;
+    const jobId = op.result?.job_id;
+    if (typeof jobId === 'string' && s.imageJobs[jobId]?.error) return false;
+    const draftId = op.result?.draft_id;
+    const owner = s.pending.find(p => p.request_id === op.request_id)?.session_id || op.result?.session_id
+      || (typeof draftId === 'string' ? s.drafts[draftId]?.session_id : null);
+    // Never hide an unlinked critical receipt by guessing its owner.
+    return !owner || owner === s.selected;
+  };
   const jobs = selectedImageJobs(s);
   const contexts = (session?.image_contexts || []).filter(item => !drafts.some(d => d.kind === 'image_generation' && (d.after.target_kind || 'character') === item.target_kind && (d.after.target_id || d.target_id) === item.target_id && !!(d.after.image_context as { candidates?: unknown[] } | undefined)?.candidates?.length));
   const contentKey = JSON.stringify([contexts, drafts.map(d => [d.id, d.version, d.status]), jobs.map(j => [j.id, j.status, j.outputs.length])]);
   const activeRequest = s.pending.find(p => p.request_id === s.activeMessage && p.session_id === s.selected);
   const progress = activeRequest ? s.operations[activeRequest.request_id]?.progress : null;
   const sendBlock = !s.settings?.enabled ? 'agent.disabledHint' : !s.settings.llm_model_option_key ? 'agent.needModel' : s.working ? 'agent.working' : conversationPending(s) ? 'agent.uncertain' : session?.busy ? 'agent.working' : !s.input.trim() ? 'agent.needMessage' : null;
+  const uncertain = sendBlock === 'agent.uncertain';
+  const failed = (!sendBlock || sendBlock === 'agent.needMessage') && (turn?.phase === 'failed' || (!turn && session?.last_error && !session.busy));
+  const unsent = !!failed && !!turn && !messages.some(m => m.role === 'user' && m.request_id === turn.id);
+  const hasRecovery = s.pending.some(p => p.request_id !== s.activeMessage && p.request_id !== s.activeCreation);
   const [draftId, setDraftId] = useState('');
   const transcript = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -129,7 +126,7 @@ export function AgentPanel() {
   }, [sessionKey, visible]);
   useLayoutEffect(() => {
     if (visible && transcript.current && following.current) transcript.current.scrollTop = transcript.current.scrollHeight;
-  }, [sessionKey, visible, session?.messages.length, session?.messages.at(-1)?.content, contentKey]);
+  }, [sessionKey, visible, rows.length, rows.at(-1)?.content, contentKey]);
   useLayoutEffect(() => {
     const target = s.recoveryFocus;
     if (!target) { releaseRecoveryAnchor(); return; }
@@ -161,6 +158,7 @@ export function AgentPanel() {
     <button disabled={s.refreshing} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button>
     <details><summary>{t('agent.history')}</summary><label>{t('agent.sessions')}<select value={s.selected} onChange={e => agentActions.selectSession(e.target.value)}><option value="">{t('agent.newSession')}</option>{Object.values(s.sessions).map(item => <option value={item.id} key={item.id}>{(item.title && item.title !== 'Lore Agent' && item.title !== item.id ? item.title : item.messages.find(message => message.role === 'user')?.content || t('agent.untitledConversation')).slice(0, 80)}</option>)}</select></label></details>
     <details><summary>{t('agent.advancedRecovery')}</summary><label>{t('agent.draftId')}<input value={draftId} onChange={e => setDraftId(e.target.value)} /></label><button disabled={s.working || !draftId.trim()} onClick={() => void agentActions.refreshDraft(draftId.trim())}>{t('agent.openDraft')}</button></details>
+    {session?.last_error && <details><summary>{t('agent.status.failed')}</summary><p>{session.last_error}</p></details>}
     <ContextPicker />
     </details>
     </div>
@@ -177,25 +175,25 @@ export function AgentPanel() {
       readingPositions.set(sessionKey, { top: node.scrollTop, following: following.current });
     }}>
     <div ref={content} className="agent-transcript-content">
-    <AgentError value={Object.values(s.operations).some(op => recoveryOperation(op.request_id) && op.error === s.error) ? '' : s.error} />
+    <AgentError value={Object.values(s.operations).some(op => op.error === s.error) ? '' : s.error} />
     {s.localRecovery && <p className="agent-local-request">{t('agent.localImageRequest')}</p>}
-    {session?.last_error && <AgentError value={session.last_error} />}
-    {!session?.messages.length && !contexts.length && !drafts.length && !jobs.length && !s.working && !session?.busy && <div className="agent-empty"><AgentMark size={48} /></div>}
-    <div className="agent-messages" aria-live="polite">{session?.messages.map(message => <article key={message.id} data-role={message.role} className="agent-message">
+    {!rows.length && !contexts.length && !drafts.length && !jobs.length && !s.working && !session?.busy && <div className="agent-empty"><AgentMark size={48} /></div>}
+    <div className="agent-messages" aria-live="polite">{rows.map(message => <article key={message.role === 'user' && message.request_id ? `turn:${message.request_id}` : message.id} data-role={message.role} className="agent-message">
       {message.role !== 'user' && <AgentMark size={26} animate={false} className="agent-message-avatar" />}
       <div className="agent-message-content"><span className="sr-only">{t(message.role === 'user' ? 'agent.you' : 'agent.title')}</span>{message.role === 'user' ? <p>{message.content}</p> : <AgentMarkdown text={message.content} />}</div>
     </article>)}</div>
     {contexts.map(item => <ImageContextCard key={`${session?.id}:${item.target_kind}:${item.target_id}`} item={item} busy={!!activeRequest || !!session?.busy} />)}
     {drafts.map(draft => <AgentDraftCard key={draft.id} draft={draft} />)}
     {jobs.map(job => <ImageResults key={job.id} job={job} />)}
-    {Object.values(s.operations).filter(operation => operation.error && !recoveryOperation(operation.request_id)).map(operation => <AgentError key={operation.request_id} value={operation.error || ''} />)}
+    {Object.values(s.operations).filter(visibleOperationError).map(operation => <AgentError key={operation.request_id} value={operation.error || ''} />)}
     </div>
     </div>
     <form className="agent-composer" onSubmit={event => { event.preventDefault(); void agentActions.send(); }}>
       <label><span className="sr-only">{t('agent.message')}</span><textarea rows={2} placeholder={t('agent.needMessage')} value={s.input} onChange={e => useAgentStore.setState({ input: e.target.value })} /></label>
       <div className="agent-composer-actions">
-      {sendBlock && sendBlock !== 'agent.needMessage' && <p id="agent-send-status" role="status">{sendBlock === 'agent.working' ? <><AgentMark size={20} active /><span className="agent-progress" data-agent-progress={progress?.stage}>{t(progress ? `agent.progress.${progress.stage}` as UiMessageKey : sendBlock)}</span></> : t(sendBlock)}</p>}
-      {!!s.pending.length && <button type="button" disabled={s.refreshing} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button>}
+      {failed && <p className="agent-turn-error" role="alert">{t(unsent ? 'agent.sendFailed' : 'agent.turnFailed')}</p>}
+      {sendBlock && sendBlock !== 'agent.needMessage' && <p id="agent-send-status" role="status">{sendBlock === 'agent.working' ? <><AgentMark size={20} active /><span className={progress ? "agent-progress" : "agent-progress sr-only"} data-agent-progress={progress?.stage}>{t(progress ? `agent.progress.${progress.stage}` as UiMessageKey : sendBlock)}</span></> : t(uncertain ? 'agent.checkTurn' : sendBlock)}</p>}
+      {hasRecovery && <button type="button" disabled={s.refreshing} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button>}
       <button aria-describedby={sendBlock && sendBlock !== 'agent.needMessage' ? 'agent-send-status' : undefined} disabled={!!sendBlock} type="submit">{t('전송')}</button>
       </div>
     </form>

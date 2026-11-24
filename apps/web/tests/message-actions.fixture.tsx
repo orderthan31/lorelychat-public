@@ -94,8 +94,11 @@ export async function runMessageActionTests() {
     });
     await scenario(`${kind}: error preserved`, async (f) => {
       const work = f.start(kind); f.confirmation.resolve(true); await tick(); f.request.reject(new Error('fixture failure')); const result = await work; await tick();
-      assert(f.live.status.includes('fixture failure'), 'error status'); assert(!f.live.busy, 'error releases busy'); assert(f.live.messages[0].content === 'original', 'failed mutation preserves messages');
-      if (kind === 'edit') assert(result instanceof Error, 'edit form receives rejection');
+      if (kind === 'edit') {
+        assert(result instanceof Error && result.message === 'fixture failure', 'edit form receives rejection');
+        assert(!f.live.status.includes('fixture failure'), 'edit error is not also published globally');
+      } else assert(f.live.status.includes('fixture failure'), 'error status');
+      assert(!f.live.busy, 'error releases busy'); assert(f.live.messages[0].content === 'original', 'failed mutation preserves messages');
     });
     for (const route of ['B', 'ABA', 'unmount']) for (const outcome of ['resolve', 'reject']) {
       await scenario(`${kind}: ${route} stale ${outcome} does not write or release newer work`, async (f) => {
@@ -149,14 +152,14 @@ export async function runMessageActionTests() {
     f.request.resolve({ id: 'shared', content: 'obsolete' }); await old; await tick();
     assert(f.live.busy, 'old finally cannot release newer actual hook work');
     response.resolve({ id: 'shared', content: 'newest' }); await newer; await tick();
-    equal(f.live.status, '버블 수정 완료', 'new work succeeds'); assert(!f.live.busy, 'new work releases its reservation');
+    equal(f.live.messages[0].content, 'newest', 'new work succeeds'); assert(!f.live.busy, 'new work releases its reservation');
   });
   await scenario('regenerate: normal payload/reveal/context and busy release', async (f) => {
     const work = f.start('regenerate'); equal(f.requests, [['regenerate', { conversationId: 'A', messageId: 'shared' }]], 'regenerate payload');
     f.request.resolve({ id: 'new-reply' }); await tick();
     equal(f.reveals, [[[null, { id: 'new-reply' }], 'regen_shared', 'A']], 'existing reveal contract');
     f.reveal.resolve(); f.listing.resolve(); f.context.resolve(); await work; await tick();
-    assert(!f.live.busy, 'release regenerate busy'); equal(f.live.status, '재생성 완료', 'success status'); equal(f.contexts, ['A', 'A'], 'room context');
+    assert(!f.live.busy, 'release regenerate busy'); equal(f.live.status, '', 'clears progress without a success banner'); equal(f.contexts, ['A', 'A'], 'room context');
   });
   for (const stage of ['transport', 'reveal', 'listing', 'context']) for (const route of ['B', 'ABA', 'unmount']) {
     await scenario(`regenerate: ${stage} late completion after ${route}`, async (f) => {

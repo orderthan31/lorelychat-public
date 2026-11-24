@@ -527,6 +527,42 @@ class AgentService:
         if not selected: raise AgentError('Explicit context selection required for this entity',403)
         return set().union(*(set(x['fields']) for x in selected))
 
+    def _failed_predecessors(self, c, principal, data):
+        # Legacy user messages have no request id. The receipt was inserted in
+        # the same serialized transaction as its message. Verify the last
+        # session turn, its original payload, and the absence of active turns.
+        sid = data['id']
+        turns = select(m.operations).where(
+            m.operations.c.data['kind'].as_string() == 'agent_turn',
+            m.operations.c.data['result']['session_id'].as_string() == sid)
+        rows = c.execute(turns.order_by(text('rowid DESC')).limit(101)).mappings().all()
+        users = [msg for msg in data['messages'] if msg['role'] == 'user']
+        if (not rows or len(rows) != len(users) or data['messages'][-1]['role'] != 'user'
+                or any(row['data']['status'] not in ('completed', 'failed') for row in rows)):
+            raise AgentError('Cannot verify failed session turn')
+        row = rows[0]
+        op, rid, msg = row['data'], row['id'], users[-1]
+        payload = dict(session_id=sid, request_id=rid, content=msg['content'], context=data['_context'])
+        if (row['owner_id'] != principal.id or data['_owner_id'] != principal.id
+                or op['request_id'] != rid or op['status'] != 'failed'
+                or op['error'] != data['last_error'] or msg.get('request_id', rid) != rid
+                or op['_payload_hash'] != digest(payload)):
+            raise AgentError('Cannot verify failed session turn')
+        # Guard-only failures append a receipt but no graph message. The
+        # checkpoint can therefore refer to an earlier failed turn (B, not C).
+        return {r['id']: u['content'] for r, u in zip(rows, reversed(users))
+                if r['owner_id'] == principal.id and r['data']['status'] == 'failed'
+                and r['data']['request_id'] == r['id'] and u.get('request_id', r['id']) == r['id']}
+
+    def rotate_run_lineage(self, principal, session_id, request_id):
+        with self._write() as c:
+            data = self._get(c, m.sessions, session_id, principal)
+            if not data['busy'] or data.get('_active_run') != request_id or data.pop('_rotate_from', None) != request_id:
+                raise AgentError('Run ownership conflict')
+            data['_lineage'] = uid('lineage')
+            self._put(c, m.sessions, session_id, data)
+            return data['_lineage']
+
     def accept_run(self,principal,session_id,request_id,content,context):
         value=MessageInput.model_validate({'request_id':request_id,'content':content,'context':[x.model_dump() if hasattr(x,'model_dump') else x for x in context]})
         payload={'session_id':session_id,**value.model_dump()}
@@ -537,7 +573,11 @@ class AgentService:
             data=self._get(c,m.sessions,session_id,principal)
             if data['busy']: raise AgentError('Session is busy; reconcile its accepted run')
             if len(data['messages'])>=100: raise AgentError('Session message limit reached; start a new session',422)
-            data['messages'].append({'id':uid('msg'),'role':'user','content':content})
+            if data.get('_active_run'): raise AgentError('Session has an active run')
+            failed = self._failed_predecessors(c, principal, data) if data['last_error'] else {}
+            seed = data['messages'][:] if failed else []
+            if failed: data['_rotate_from'] = request_id
+            data['messages'].append({'id':uid('msg'),'request_id':request_id,'role':'user','content':content})
             context_values=[]
             for item in value.context:
                 entity,revision=self._entity(c,item.kind,item.id)
@@ -547,7 +587,7 @@ class AgentService:
             if len(data['messages'])==1: data['title']=content[:80]
             self._put(c,m.sessions,session_id,data)
             op=self._receipt(c,principal,request_id,payload,'agent_turn',{'session_id':session_id},'running')
-            return {'claimed':True,'operation':op}
+            return {'claimed':True,'operation':op,'failed':failed,'seed':seed,'lineage':data.get('_lineage')}
 
     def complete_run(self,principal,session_id,request_id,content=None,error=None):
         if content is not None and (not isinstance(content,str) or len(content)>32000): raise AgentError('Invalid response size',422)
@@ -561,6 +601,7 @@ class AgentService:
             if content:
                 data['messages'].append({'id':uid('msg'),'role':'assistant','content':content})
             data.update(busy=False,last_error=error[:500] if error else None); data.pop('_active_run',None)
+            data.pop('_rotate_from', None)
             op.update(status='failed' if error else 'completed',error=error[:500] if error else None)
             self._put(c,m.sessions,session_id,data); self._put(c,m.operations,request_id,op)
             return self._session_view(c,session_id,principal)

@@ -6,6 +6,7 @@ import { GenerationLifecycleSubscriptionClosedError, subscribeGenerationJobLifec
 import { terminalJobsForRoom, rememberTerminalJob, forgetTerminalJob, unknownSubmissionsForRoom, rememberUnknownSubmission, forgetUnknownSubmission } from '../../../utils/generationRecovery';
 import { GenerationOwners, RoomVisit, RoomWork, RoomWorkCancelledError } from '../../../utils/roomWork';
 import { createAssetDecisionRefresh } from '../../../utils/assetDecisionRefresh';
+import { isChatGenerationProgress } from '../../../utils/chatFeedback';
 import { useConversationMutations } from '../../../hooks/useConversationMutations';
 import { useConversationAutoScroll } from '../../../hooks/useConversationAutoScroll';
 import type { GuardUI } from '../../../hooks/useOperationOwnership';
@@ -214,7 +215,6 @@ export function useConversationSession({ route, selectedConversationId, routeWor
       setConversation(savedRoom);
       setConversationRuntimeSetting(normalizeRuntimeSetting(savedSetting || conversationRuntimeSetting));
       setChatSettingsOpen(false);
-      setStatus(t('이 방 채팅 설정 저장 완료'));
     } catch (error) { setStatus(`요청 실패 · ${error.message}`); } finally { setBusy(false); }
   }
 
@@ -534,7 +534,6 @@ export function useConversationSession({ route, selectedConversationId, routeWor
         if (node.querySelector('[data-chat-window]')) return;
         node.scrollTop = node.scrollHeight - previousScrollHeight + previousScrollTop;
       });
-      setStatus(t('이전 대화 불러옴'));
     } catch (error) {
       if (!visit.current) return;
       setStatus(`${t('이전 대화 불러오기 실패 ·')} ${error.message}`);
@@ -652,7 +651,6 @@ export function useConversationSession({ route, selectedConversationId, routeWor
       visit.assert();
       if (!message || deleted()?.has(message.id)) continue;
       const typingId = `typing_${message.id}`;
-      setStatus(t('대화 표시 중'));
       nextScrollModeRef.current = 'append';
       setMessages((current) => {
         if (!visit.current) return current;
@@ -705,10 +703,10 @@ export function useConversationSession({ route, selectedConversationId, routeWor
         conversationId,
         jobId,
         onStatus: (event) => {
-          if (!visit.current) return;
+          if (!visit.current || event.status === 'completed' || event.status === 'failed' || event.status === 'cancelled') return;
           const label = event.status in statusLabels
             ? t(statusLabels[event.status as keyof typeof statusLabels])
-            : t(event.status === 'completed' ? '응답 저장 완료' : '응답 작성 중');
+            : t('응답 작성 중');
           setStatus(`${t('대화 생성 중…')} ${label}`);
         },
       });
@@ -719,7 +717,6 @@ export function useConversationSession({ route, selectedConversationId, routeWor
     } catch (error) {
       visit.assert();
       if (error instanceof GenerationLifecycleSubscriptionClosedError) throw error;
-      setStatus(t('실시간 상태 연결이 불안정해 polling으로 계속 확인 중…'));
       return await pollGenerationJob(conversationId, jobId);
     } finally {
       subscription?.close();
@@ -794,7 +791,7 @@ export function useConversationSession({ route, selectedConversationId, routeWor
         generationOwners.finish(activeJob);
         forgetTerminalJob(activeJob.conversationId, activeJob.jobId);
         if (activeJob.nextJobs?.length) { const [next, ...rest] = activeJob.nextJobs; generationOwners.pending.set(activeJob.conversationId, { ...next, nextJobs: rest }); }
-        setStatus(t('응답 저장 완료'));
+        setStatus(current => isChatGenerationProgress(current, t) ? '' : current);
         await markConversationRead(activeJob.conversationId);
         if (!visit.current) return;
         if (activeJob.payload?.battle_control) await loadBattleState(activeJob.conversationId, { genre_mode: 'battle' }, true);

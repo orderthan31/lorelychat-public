@@ -128,6 +128,7 @@ class AgentDraftView(StrictModel):
     result: dict[str, Any] | None
 class AgentMessage(StrictModel):
     id: str
+    request_id: Identifier | None = None
     role: Literal['user','assistant']
     content: str
 class SessionImageContextView(StrictModel):
