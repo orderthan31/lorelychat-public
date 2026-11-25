@@ -82,6 +82,15 @@ def checkpoint_sqlite(target_engine: Engine | None = None, *, mode: str = "PASSI
     }
 
 
+def _replace_legacy_conversation_genre(connection) -> None:
+    # Drop the column default as well as NOT NULL. Run under an explicit SQLite
+    # transaction so a custom index or trigger that blocks DROP cannot strand it.
+    connection.exec_driver_sql("ALTER TABLE conversations ADD COLUMN genre_mode_nullable VARCHAR")
+    connection.exec_driver_sql("UPDATE conversations SET genre_mode_nullable = genre_mode")
+    connection.exec_driver_sql("ALTER TABLE conversations DROP COLUMN genre_mode")
+    connection.exec_driver_sql("ALTER TABLE conversations RENAME COLUMN genre_mode_nullable TO genre_mode")
+
+
 def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
     active_engine = target_engine or engine
     if not str(active_engine.url).startswith("sqlite"):
@@ -178,11 +187,15 @@ def migrate_sqlite_columns(target_engine: Engine | None = None) -> None:
             if "tts_sample_text" not in columns:
                 connection.execute(text("ALTER TABLE characters ADD COLUMN tts_sample_text VARCHAR"))
     if "conversations" in table_names:
-        columns = {column["name"] for column in inspector.get_columns("conversations")}
+        column_info = {column["name"]: column for column in inspector.get_columns("conversations")}
+        columns = set(column_info)
+        genre_column = column_info.get("genre_mode")
         with active_engine.begin() as connection:
-            if "genre_mode" not in columns:
-                connection.execute(text("ALTER TABLE conversations ADD COLUMN genre_mode VARCHAR NOT NULL DEFAULT 'battle'"))
-                connection.execute(text("UPDATE conversations SET genre_mode = 'battle' WHERE genre_mode IS NULL OR genre_mode = ''"))
+            if genre_column is None:
+                connection.execute(text("ALTER TABLE conversations ADD COLUMN genre_mode VARCHAR"))
+            elif not genre_column["nullable"] or genre_column["default"] is not None:
+                connection.exec_driver_sql("BEGIN IMMEDIATE")
+                _replace_legacy_conversation_genre(connection)
             if "tts_enabled" not in columns:
                 connection.execute(text("ALTER TABLE conversations ADD COLUMN tts_enabled BOOLEAN NOT NULL DEFAULT 0"))
             if "tts_provider" not in columns:

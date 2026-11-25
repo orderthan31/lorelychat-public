@@ -347,7 +347,7 @@ async def generate_replies_from_message(
     is_multi_room = effective_mode == "character_character"
     preparation = generation_preparation.prepare_generation_route(
         session, runtime_setting,
-        genre_mode=conversation_service.normalize_genre_mode(getattr(conversation, "genre_mode", None)),
+        genre_mode=conversation_service.normalize_conversation_genre(getattr(conversation, "genre_mode", None)),
         is_multi_room=is_multi_room, comparison=comparison,
     )
     preset_key = preparation.preset_key
@@ -390,14 +390,14 @@ async def generate_replies_from_message(
         for participant in character_participants
         if (participant.role or "").strip().lower().replace("-", "_").replace(" ", "_") == "silent"
     }
-    genre_mode = conversation_service.normalize_genre_mode(getattr(conversation, "genre_mode", None))
+    genre_mode = conversation_service.normalize_conversation_genre(getattr(conversation, "genre_mode", None))
     official_domain_context = genre_domain_service.get_official_context(session, conversation)
     battle_control_context = build_battle_control_runtime_context(
         session,
         payload,
         applied_record=applied_battle_record,
         conversation_id=conversation_id,
-    )
+    ) if genre_mode == "battle" else None
     recent_for_prompt = recent_messages if recent_messages is not None else conversation_service.list_messages(session, conversation_id)
     def through_source(messages):
         for index, message in enumerate(messages):

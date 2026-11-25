@@ -114,7 +114,7 @@ def build_offstage_actor_recall_context(
     *,
     text: str,
     active_character_ids: set[str],
-    genre_mode: str,
+    genre_mode: str | None,
     query: str,
 ) -> OffstageRecallContext:
     if not conversation:
@@ -126,7 +126,7 @@ def build_offstage_actor_recall_context(
 
     lines = [
         "[Relevant off-stage actor recall]",
-        "These actors are mentioned or relevant league/domain actors, but are not current speaking/on-stage participants. Use as lightweight recall only; do not make them speak unless invited on-stage.",
+        "These actors are mentioned or relevant actors, but are not current speaking/on-stage participants. Use as lightweight recall only; do not make them speak unless invited on-stage.",
     ]
     for actor in offstage:
         character = actor.character

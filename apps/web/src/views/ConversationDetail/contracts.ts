@@ -7,7 +7,7 @@ import type { ConversationComposerOptions, ConversationComposerState } from './h
 
 type Setter<T> = Dispatch<SetStateAction<T>>;
 export type ChatConversation = NonNullable<BubbleListProps['conversation']> & {
-  genre_mode?: string;
+  genre_mode?: string | null;
   active_command_ids?: string[];
   active_command_id?: string;
   tts_enabled?: boolean;

@@ -63,7 +63,7 @@ class Conversation(SQLModel, table=True):
     thumbnail_url: Optional[str] = None
     world_setting_id: Optional[str] = Field(default=None, index=True)
     mode: str
-    genre_mode: str = Field(default="battle")
+    genre_mode: str | None = None
     auto_mode: bool = False
     tts_enabled: bool = False
     tts_provider: str = Field(default="supertonic")

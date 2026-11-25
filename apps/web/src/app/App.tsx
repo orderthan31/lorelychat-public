@@ -316,10 +316,13 @@ export function App() {
           role: participant.type === 'character' ? participant.role || null : null,
           order_index: index,
         }));
+      const selectedWorld = worldSettings.find((world) => world.id === roomEditDraft.world_setting_id);
+      const genreMode = selectedWorld && selectedWorld.id !== roomEditDraft.original_world_setting_id
+        ? selectedWorld.genre_mode : roomEditDraft.genre_mode;
       const updated = await conversationMutations.updateConversation.mutateAsync({ id: routeId, payload: {
         title: roomEditDraft.title.trim(),
         world_setting_id: roomEditDraft.world_setting_id || null,
-        genre_mode: normalizeGenreMode(worldSettings.find((world) => world.id === roomEditDraft.world_setting_id)?.genre_mode || roomEditDraft.genre_mode),
+        genre_mode: genreMode == null ? null : normalizeGenreMode(genreMode),
         participants: normalizedParticipants,
         scene: { user_description: roomEditDraft.user_description || '' },
       } }) as any;
@@ -517,7 +520,8 @@ export function App() {
       id: room?.id,
       title: room?.title || '',
       thumbnail_url: room?.thumbnail_url || '',
-      genre_mode: normalizeGenreMode(room?.genre_mode),
+      genre_mode: room?.genre_mode ?? null,
+      original_world_setting_id: room?.world_setting_id || '',
       world_setting_id: room?.world_setting_id || '',
       participants: roomParticipants.map((participant, index) => ({ ...participant, role: participant.role || '', order_index: participant.order_index ?? index })),
       user_description: extractUserDescriptionFromScene(sceneState),

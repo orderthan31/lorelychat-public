@@ -1,4 +1,3 @@
-from app.services import generation_execution
 """Synthetic endpoint and provider-boundary coverage for character-only rooms."""
 import asyncio
 import json
@@ -11,7 +10,7 @@ from app.core.config import get_settings
 from app.db.models import Conversation, SceneState, WorldSetting, Message, ChatCommand
 from app.engine import prompts, command_overlay
 from app.engine.llm_client import LLMClient, LLMResponse
-from app.services import chat_command_service, conversation_service
+from app.services import chat_command_service, conversation_service, generation_execution
 
 
 def create_room(client, **extra):
@@ -21,7 +20,7 @@ def create_room(client, **extra):
     return response, char
 
 
-@pytest.mark.parametrize('extra', [{}, {'world_setting_id': None}])
+@pytest.mark.parametrize('extra', [{}, {'world_setting_id': None}, {'genre_mode': None}])
 def test_character_only_create_persists_no_world(client, session, extra):
     response, _ = create_room(client, **extra)
     assert response.status_code == 200, response.text
@@ -29,7 +28,7 @@ def test_character_only_create_persists_no_world(client, session, extra):
     assert room['world_setting_id'] is None
     stored = session.get(Conversation, room['id'])
     assert stored.world_setting_id is None
-    assert room['genre_mode'] == stored.genre_mode == 'slice_of_life'
+    assert room['genre_mode'] is None and stored.genre_mode is None
     assert client.get(f"/conversations/{room['id']}/battle-state").status_code == 404
     scene = session.get(SceneState, room['id'])
     assert scene is not None and not scene.world_seed and scene.user_description is None
@@ -69,7 +68,7 @@ def test_lifespan_does_not_clone_worldless_room(client, session, engine):
     assert session.get(SceneState, room_id).opening_scene == 'AUTHORED_HOOK'
 
 
-@pytest.mark.parametrize('linked', [False, True, 'detach'])
+@pytest.mark.parametrize('linked', [False, True, 'detach', 'clear'])
 def test_preview_and_real_job_prompt_world_policy(client, session, monkeypatch, linked):
     monkeypatch.setenv('CHAT_RESPONSE_PROTOCOL', 'tagged_text')
     get_settings.cache_clear()
@@ -87,6 +86,9 @@ def test_preview_and_real_job_prompt_world_policy(client, session, monkeypatch, 
     session.add(Message(id='prior-synthetic', conversation_id=room_id, speaker_type='character', speaker_id=char['id'], content='HISTORY_SENTINEL'))
     session.commit()
     monkeypatch.setattr(api, '_start_message_generation_worker', lambda *a: None)
+    if linked == 'clear':
+        cleared = client.patch(f'/conversations/{room_id}', json={'genre_mode': None})
+        assert cleared.status_code == 200 and cleared.json()['genre_mode'] is None
     if linked == 'detach':
         detached = client.patch(f'/conversations/{room_id}', json={'world_setting_id': None})
         assert detached.status_code == 200 and detached.json()['world_setting_id'] is None
@@ -114,7 +116,10 @@ def test_preview_and_real_job_prompt_world_policy(client, session, monkeypatch, 
     for text in [json.dumps(preview.json(), ensure_ascii=False), json.dumps(calls, ensure_ascii=False)]:
         for marker in ['PERSONA_SENTINEL', 'USER_SENTINEL', 'NOTE_SENTINEL', 'ARC_SENTINEL', 'HISTORY_SENTINEL']:
             assert marker in text
-        if linked is True:
+        if linked in (False, 'clear'):
+            for marker in ['Genre routing', 'genre policy', 'official_domain_state', 'battle_control_hint', 'genre_route:', 'battle ledger']:
+                assert marker.lower() not in text.lower()
+        if linked is True or linked == 'clear':
             assert 'WORLD_SENTINEL' in text
         else:
             assert 'WORLD_SENTINEL' not in text
@@ -122,7 +127,7 @@ def test_preview_and_real_job_prompt_world_policy(client, session, monkeypatch, 
             assert 'Room world and past story' not in text
             assert 'World setting defines the stage' not in text
             assert 'world_seed' not in text
-            assert 'Genre routing' not in text
+            assert ('Genre routing' in text) == (linked == 'detach')
             assert 'Official domain state' not in text
 
 
@@ -251,7 +256,7 @@ def test_worldless_actual_compression_request_has_only_history_sources(client, s
     text = json.dumps(calls, ensure_ascii=False)
     for marker in ['PREVIOUS_ARC_SENTINEL', 'PUBLIC_EVENT_0']:
         assert marker in text
-    for unwanted in ['ORPHAN_WORLD_SENTINEL', '**World Setting**', 'fixed world setting', 'Battle-domain provenance guard']:
+    for unwanted in ['ORPHAN_WORLD_SENTINEL', '**World Setting**', 'fixed world setting', 'genre policy', '**Genre Mode Policy**', 'Battle-domain provenance guard']:
         assert unwanted not in text
     session.expire_all()
     scene = session.get(SceneState, room_id)
@@ -271,7 +276,7 @@ def test_worldless_preview_preserves_real_official_domain_state(client, session)
     sections = {section['key']: section for section in preview.json()['sections']}
     assert sections['official_domain_state']['included']
     assert char['id'] in sections['official_domain_state']['content']
-    assert 'genre_mode' not in sections
+    assert 'Genre mode: battle' in sections['genre_mode']['content']
     assert session.get(Conversation, room_id).world_setting_id is None
 
 
@@ -280,8 +285,8 @@ def test_worldless_policy_scoping_never_rewrites_authored_settings():
     custom = {key: 'AUTHORED World Setting must survive' for key in (
         'source_priority_rules', 'compression_source_scope_rules', 'compression_scene_base',
         'chat_command_postprocess_source_priority', 'genre_mode_policy_scope')}
-    assert system_prompt_service.without_world_defaults(custom) == custom
+    assert system_prompt_service.scoped_prompt_defaults(custom, include_world=False, include_genre=False) == custom
     defaults = system_prompt_service.prompt_settings_map()
     before = dict(defaults)
-    assert 'World Setting' not in system_prompt_service.without_world_defaults(defaults)['compression_source_scope_rules']
+    assert 'World Setting' not in system_prompt_service.scoped_prompt_defaults(defaults, include_world=False, include_genre=False)['compression_source_scope_rules']
     assert defaults == before

@@ -15,7 +15,7 @@ import { formatBattleResult, formatBattleStanding, formatStoryArcLimit, type UiM
 
 type Character = { id?: string; name?: string; avatar_url?: string; [key: string]: unknown };
 type Participant = { id: string; type: string; role?: string | null };
-type Conversation = { id?: string; title?: string; genre_mode?: string };
+type Conversation = { id?: string; title?: string; genre_mode?: string | null };
 type BattleMatch = Record<string, unknown> & { match_order?: number | null; matchup_key?: string; participant_a_name?: string; participant_b_name?: string; winner_name?: string; loser_name?: string; result_status?: string; process_summary?: string; decisive_moment?: string };
 type BattleStanding = Record<string, unknown> & { character_id?: string; name?: string; wins?: number; losses?: number; points?: number; rank?: number | null };
 export type BattleState = { participants?: Character[]; active_match?: BattleMatch | null; recent_matches?: BattleMatch[]; standings?: BattleStanding[] };

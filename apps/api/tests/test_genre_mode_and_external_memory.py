@@ -18,6 +18,13 @@ def test_conversation_genre_mode_round_trips_through_api(client, session):
     assert patched["genre_mode"] == "slice_of_life"
     session.refresh(stored)
     assert stored.genre_mode == "slice_of_life"
+    url = f"/conversations/{room['id']}"
+    assert client.patch(url, json={"title": "Retitled"}).json()["genre_mode"] == "slice_of_life"
+    assert client.patch(url, json={"tts_enabled": None}).status_code == 422
+    assert client.patch(url, json={"genre_mode": None}).json()["genre_mode"] is None
+    session.refresh(stored)
+    assert stored.genre_mode is None
+    assert client.get(url).json()["genre_mode"] is None
 
 
 def test_prompt_genre_policy_is_available_in_context_preview(client):
@@ -64,6 +71,10 @@ def test_external_memory_default_noop_and_ledger_skip_metadata():
         genre_mode="romance",
     )
 
+    neutral = external_memory_service.explain_local_memory_sync(regular_memory, genre_mode=None)
+    assert neutral.should_sync and "genre_mode" not in neutral.metadata
+    filters = external_memory_service.build_search_filters(conversation_id="conv_1", character_id="char_1", genre_mode=None)
+    assert "genre_mode" not in filters and filters["conversation_id"] == "conv_1"
     assert metadata["app_id"] == "lorechat"
     assert metadata["conversation_id"] == "conv_1"
     assert metadata["character_id"] == "char_1"

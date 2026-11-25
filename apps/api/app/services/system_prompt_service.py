@@ -324,8 +324,8 @@ def default_prompt_settings_map() -> dict[str, str]:
     return prompt_settings_map()
 
 
-def without_world_defaults(settings: dict[str, str]) -> dict[str, str]:
-    """Scope known shipped policy to a character-only room, without editing data.
+def scoped_prompt_defaults(settings: dict[str, str], *, include_world: bool, include_genre: bool) -> dict[str, str]:
+    """Scope shipped policy independently to the room’s world and genre.
 
     Authored overrides remain byte-identical. This is not a prose/keyword filter
     over user notes, cards, commands, history or the rolling Arc.
@@ -335,13 +335,17 @@ def without_world_defaults(settings: dict[str, str]) -> dict[str, str]:
     for key in ("source_priority_rules", "compression_source_scope_rules"):
         if result.get(key) == defaults[key]:
             result[key] = "\n".join(line for line in defaults[key].splitlines()
-                                    if not line.startswith(("**World Setting**", "If **World Setting**", "**Genre Mode Policy**")))
+                                    if (include_world or not line.startswith(("**World Setting**", "If **World Setting**")))
+                                    and (include_genre or not line.startswith("**Genre Mode Policy**")))
     key = "chat_command_postprocess_source_priority"
-    if result.get(key) == defaults[key]:
+    if not include_world and result.get(key) == defaults[key]:
         result[key] = defaults[key].replace("**Stored SceneState** and **World Setting** are", "**Stored SceneState** is")
     key = "compression_scene_base"
     if result.get(key) == defaults[key]:
-        result[key] = defaults[key].replace("fixed world setting, ", "").replace("world/card exposition", "card exposition")
-    if result.get("genre_mode_policy_scope") == defaults["genre_mode_policy_scope"]:
+        if not include_genre:
+            result[key] = result[key].replace("genre policy, ", "")
+        if not include_world:
+            result[key] = result[key].replace("fixed world setting, ", "").replace("world/card exposition", "card exposition")
+    if not include_genre and result.get("genre_mode_policy_scope") == defaults["genre_mode_policy_scope"]:
         result["genre_mode_policy_scope"] = ""
     return result

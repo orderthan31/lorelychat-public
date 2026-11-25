@@ -27,7 +27,12 @@ Advice-only or brainstorming questions do not require a write. Ask only when a
 material ambiguity or missing choice prevents a useful draft (especially which
 existing target to edit). For minor creative gaps, propose reversible assumptions
 in the draft and explicitly label them in your reply; never present them as user
-facts. Do not apply this discretion to approval, image mode/reference or models.
+facts. Never guess approval, image mode/reference, models or user identity.
+The room user persona supplies the participant's name, job, identity, relationships
+and terms of address. Unless explicitly requested for the reusable card, leave them unset.
+Keep the character's own identity and voice on the character; speech examples show
+style, not facts about the listener. Worlds may establish fictional roles without
+assigning one to the user. Preserve explicit authored roles, relationships and dialogue.
 Preserve the user's specific prose, rules, relationships and exceptions rather
 than replacing them with a short generic summary. Answer in the user's language.
 
@@ -60,11 +65,11 @@ generated outputs do not automatically become avatars or world thumbnails.
 FIELD_HELP = {
     'character': {
         'name': 'Required nonblank string on create; character display name.',
-        'persona': 'Required nonblank string on create; core identity, background, motivations and relationships. Preserve authored detail.',
+        'persona': 'Required nonblank string on create; the character’s own identity, background, motivations and authored relationships. Preserve authored detail.',
         'description': 'Optional string; character overview, separate from the core persona.',
         'appearance': 'Optional string; physical appearance and visual details, not an image or avatar change.',
         'behavior_style': 'Optional string; habitual conduct and action style.',
-        'speech_style': 'Optional string; voice, diction and dialogue style.',
+        'speech_style': 'Optional string; voice and diction; speech examples are not canon about the listener or a default form of address.',
         'emotional_rules': 'List of strings; emotional reactions and their conditions.',
         'forbidden_rules': 'List of strings; behavioral boundaries. Preserve existing restrictions on edits.',
         'trait_scores': 'Object of integer scores 1..5. Standard keys: confidence, kindness, jealousy, eros, aggression, playfulness, shyness, initiative. Omit unless useful; defaults fill missing keys.',
@@ -76,10 +81,10 @@ FIELD_HELP = {
         'location': 'Optional string; initial scene location.',
         'mood': 'Optional string; initial scene atmosphere.',
         'world_seed': 'Optional string; persistent world canon, rules, origin premise and constraints. Retain detailed user prose here, distinct from the opening hook.',
-        'opening_scene': 'Optional string; initial situation/hook, not permanent world rules or continuing history.',
+        'opening_scene': 'Optional string; initial situation/hook without casting the user in an unspecified role. Keep persistent rules in world_seed.',
         'opening_line': 'Optional string; first character utterance/beat, inserted as a character message on room creation when a character is present. Not a narrator summary.',
         'tone_preset': 'Optional string; room tone guidance for pacing, resistance and emotional payoff.',
-        'relationship_archetype': 'Optional string; initial relationship pattern and guidance.',
+        'relationship_archetype': 'Optional string; explicitly authored relationship pattern; omit rather than invent a tie to the user.',
         'compression_focus': 'Optional string; clues, relationship changes and scene anchors to retain during history compression, not a model setting.',
         'tags': 'List of strings; library tags. Blank entries are removed.',
         'enabled': 'Boolean; true by default. Disabled worlds are excluded from the default world list, not deleted.',

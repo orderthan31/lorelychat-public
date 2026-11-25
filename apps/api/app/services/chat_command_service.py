@@ -835,9 +835,9 @@ async def apply_chat_command_postprocess(
             )
         settings = prompt_settings or {}
         conversation = session.get(Conversation, conversation_id)
-        if not conversation or not conversation.world_setting_id:
-            from app.services.system_prompt_service import without_world_defaults
-            settings = without_world_defaults(settings)
+        from app.services.system_prompt_service import scoped_prompt_defaults
+        settings = scoped_prompt_defaults(settings, include_world=bool(conversation and conversation.world_setting_id),
+                                         include_genre=bool(conversation and conversation.genre_mode))
         system_prompt = "\n\n".join(
             part.strip()
             for part in [

@@ -33,7 +33,9 @@ GENRE_MODE_POLICIES = {
 
 
 def build_genre_mode_policy(genre_mode: str | None) -> str:
-    key = (genre_mode or "battle").strip().lower().replace("-", "_")
+    if genre_mode is None:
+        return ""
+    key = genre_mode.strip().lower().replace("-", "_")
     return GENRE_MODE_POLICIES.get(key, GENRE_MODE_POLICIES["battle"])
 
 
@@ -625,9 +627,12 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
         output_rules += "\n" + prompt_setting(prompt_settings, "free_body_output_rules", free_body.DEFAULT_FREE_BODY_RULES)
         if min_output_tokens:
             output_rules += f"\nDesired prose richness: approximately {min_output_tokens} output tokens, within the existing output budget; no filler or forced bubble count."
-    if not include_world and base_rules in {DEFAULT_GENERATION_CORE_CONTRACT, free_body.DEFAULT_FREE_BODY_CORE}:
+    if base_rules in {DEFAULT_GENERATION_CORE_CONTRACT, free_body.DEFAULT_FREE_BODY_CORE}:
         # Only adapt shipped policy; never strip words from authored input.
-        base_rules = base_rules.replace("appearance, world, and room", "appearance and room").replace("World setting defines the stage. ", "").replace("appearance, genre policy, or background lore", "appearance or background")
+        if not genre_mode:
+            base_rules = base_rules.replace("appearance, genre policy, or background lore", "appearance or background lore")
+        if not include_world:
+            base_rules = base_rules.replace("appearance, world, and room", "appearance and room").replace("World setting defines the stage. ", "")
     from app.engine.command_overlay import instructions as overlay_instructions
     panel_instructions = overlay_instructions(command_overlay_plan, protocol, include_world=include_world)
     character_cards_budget = max(2600, approx_tokens(character_cards) + 100)
@@ -649,18 +654,19 @@ Use exact IDs and visible names; storytelling uses empty ID/name. Keep total rep
             max(1800, approx_tokens(history) + 1) if context_management_mode.strip().lower() == "automatic" else 1800,
             True,
         ),
-        PromptSection("official_domain_state", "Official domain state", official_domain_context or "none", "genre_domain.battle_ledger", f"genre_route:{genre_mode or 'battle'}", 520, bool(official_domain_context) or genre_mode == "battle"),
+        PromptSection("official_domain_state", "Official domain state", official_domain_context or "none", "genre_domain.battle_ledger", f"genre_route:{genre_mode}", 520, bool(official_domain_context) or genre_mode == "battle"),
         PromptSection("battle_control_hint", "Battle control hint", format_battle_control_hint(battle_control_context), "ui.battle_control_payload", "live_ui_override", 220, bool(battle_control_context)),
         PromptSection("user_description", "User persona", user_description_text, "scene_state.user_description", "room_user_persona", 320, bool(user_description_text)),
         PromptSection("room_cast_roles", "Cast roles", format_room_cast_roles(room_cast_roles, characters=characters), "conversation.participants.roles", "room_cast_role_contract", 260, bool(room_cast_roles)),
         PromptSection("room_memory", "Common room user notes", common_memory_context, "conversation.local_memory.__room__", "manual_room_memory", 360, bool(common_memory_context)),
         PromptSection("continuity_state_by_character", "Character-specific user notes", "\n\n".join(continuity_lines), "conversation.local_memory.character", "manual_character_memory", 520, bool(continuity_lines)),
         PromptSection("offstage_actor_recall", "Relevant offstage actor", offstage_actor_context or "", "domain_actor.offstage_recall", "router:offstage_actor_context", 320, False),
-        PromptSection("genre_mode", "Genre routing", build_genre_mode_policy(genre_mode), "conversation.genre_mode", f"genre_route:{genre_mode or 'battle'}", 120, False),
+        PromptSection("genre_mode", "Genre routing", build_genre_mode_policy(genre_mode), "conversation.genre_mode", f"genre_route:{genre_mode}", 120, False),
     ]
-    if not include_world:
-        sections = [section for section in sections if section.key != "genre_mode"
-                    and not (section.key == "official_domain_state" and not official_domain_context)]
+    if not genre_mode:
+        sections = [s for s in sections if s.key not in {"genre_mode", "official_domain_state", "battle_control_hint"}]
+    elif not include_world and not official_domain_context:
+        sections = [s for s in sections if s.key != "official_domain_state"]
     provider_section = provider_roleplay_rendering_section(
         provider_type=provider_type,
         prompt_settings=prompt_settings,
@@ -819,7 +825,7 @@ Keep the reply vivid, specific, and naturally paced."""
         PromptSection("scene_relevance_gate", "Scene relevance gate", scene_gate, "runtime.prompt_settings.scene_relevance_gate", "quality_guard", 160, False),
         PromptSection("appearance_reference_rules", "Appearance reference rules", appearance_rules, "runtime.prompt_settings.appearance_reference_rules", "quality_guard", 160, False),
         PromptSection("scene", "Scene", scene, "scene_state", "current_room_scene", 1800, True),
-        PromptSection("genre_mode", "Genre mode", build_genre_mode_policy(genre_mode), "conversation.genre_mode", f"genre_route:{genre_mode or 'battle'}", 180, True),
+        PromptSection("genre_mode", "Genre mode", build_genre_mode_policy(genre_mode), "conversation.genre_mode", f"genre_route:{genre_mode}", 180, True),
         PromptSection("genre_mode_policy_scope", "Genre Mode Policy Scope", prompt_setting(prompt_settings, "genre_mode_policy_scope"), "backend.system_prompt_registry.genre_mode_policy_scope", "genre_scope_contract", 320, True),
         PromptSection("offstage_actor_recall", "Offstage actor recall", offstage_actor_context or "", "domain_actor.offstage_recall", "router:offstage_actor_context", 360, False),
         PromptSection("continuity_state_by_character", "Continuity state", continuity_context or "", "conversation.local_memory", "router:legacy_continuity_context", 360, bool(continuity_context)),
@@ -843,6 +849,8 @@ Keep the reply vivid, specific, and naturally paced."""
     )
     if provider_section is not None and free_body.current_protocol() == "legacy_json":
         sections.append(provider_section)
+    if not genre_mode:
+        sections = [s for s in sections if s.key not in {"genre_mode", "genre_mode_policy_scope"}]
     return sections
 
 

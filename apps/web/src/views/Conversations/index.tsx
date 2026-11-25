@@ -88,7 +88,7 @@ function conversationSearchText(conversation: ConversationListItem, characterByI
     conversation.title,
     worldTitle,
     String(conversation.genre_mode || ''),
-    t(genreModeLabel(conversation.genre_mode) as UiMessageKey),
+    conversation.genre_mode ? t(genreModeLabel(conversation.genre_mode) as UiMessageKey) : '',
     participantNames,
   ].filter(Boolean).join(' ').toLowerCase();
 }
@@ -131,7 +131,7 @@ export function ConversationsListView({ conversations = [], busy = false, naviga
           title={<span className="flex min-w-0 items-center gap-2"><span className="truncate">{c.title || t('이름 없는 대화방')}</span>{!!c.has_unread && <b className="inline-flex h-5 w-5 flex-none items-center justify-center rounded-full bg-danger text-[11px] font-bold leading-none text-white" aria-label={formatUnreadCount(c.unread_count || 1, locale)}>{c.unread_count && c.unread_count > 9 ? '9+' : c.unread_count || ''}</b>}</span>}
           description={worldTitle ? `${t('세계관')} · ${worldTitle}` : t('연결된 세계관 없음')}
           descriptionLines={1}
-          meta={<span className="conversation-card-metadata"><span className="conversation-card-summary"><ParticipantProfiles participants={c.participants} characterById={characterById} /><span className="shrink-0">{formatUiCount(participantCount, 'people', locale)}</span></span><span className="conversation-card-genre">{t(genreModeLabel(c.genre_mode) as UiMessageKey)}</span></span>}
+          meta={<span className="conversation-card-metadata"><span className="conversation-card-summary"><ParticipantProfiles participants={c.participants} characterById={characterById} /><span className="shrink-0">{formatUiCount(participantCount, 'people', locale)}</span></span>{c.genre_mode ? <span className="conversation-card-genre">{t(genreModeLabel(c.genre_mode) as UiMessageKey)}</span> : null}</span>}
           media={<ConversationThumbnail conversation={c} />}
           actions={<><ResourceCardAction label={formatNamedAction(c.title || t('대화방'), 'edit', locale)} disabled={busy} onClick={() => navigate(`/conversations/${c.id}/edit`)}><Pencil aria-hidden="true" className="size-4" /></ResourceCardAction><ResourceCardAction label={formatNamedAction(c.title || t('대화방'), 'delete', locale)} variant="destructive" disabled={busy} onClick={(event) => deleteConversation(c.id, event)}><Trash2 aria-hidden="true" className="size-4" /></ResourceCardAction></>}
           openLabel={formatNamedAction(c.title || t('대화방'), 'open', locale)}

@@ -29,7 +29,7 @@ class SceneCreate(RequestModel):
 
 class ConversationCreate(RequestModel):
     mode: str
-    genre_mode: str = "slice_of_life"
+    genre_mode: str | None = None
     world_setting_id: str | None = None
     title: str | None = None
     thumbnail_url: str | None = None
@@ -40,7 +40,7 @@ class ConversationCreate(RequestModel):
 
 
 class ConversationUpdate(RequestModel):
-    nonnull_fields = frozenset(['genre_mode', 'tts_enabled'])
+    nonnull_fields = frozenset(['tts_enabled'])
     nonblank_fields = frozenset(['genre_mode'])
     title: str | None = Field(default=None, min_length=1, max_length=200)
     thumbnail_url: str | None = None
@@ -56,7 +56,7 @@ class ConversationRead(BaseModel):
     title: str | None
     thumbnail_url: str | None = None
     mode: str
-    genre_mode: str = "battle"
+    genre_mode: str | None = None
     world_setting_id: str | None = None
     auto_mode: bool
     created_at: datetime

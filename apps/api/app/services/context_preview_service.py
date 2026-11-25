@@ -211,7 +211,7 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
     full_history = comparison.context_policy == "full_history"
     runtime_setting = runtime_settings_service.get_effective_setting(session, conversation_id)
     conversation = session.get(Conversation, conversation_id)
-    genre_mode = conversation_service.normalize_genre_mode(getattr(conversation, "genre_mode", None))
+    genre_mode = conversation_service.normalize_conversation_genre(getattr(conversation, "genre_mode", None))
     messages = conversation_service.list_messages(session, conversation_id)
     participants = conversation_service.get_participants(session, conversation_id)
     character_participants = [p for p in participants if p.participant_type == "character"]
@@ -330,8 +330,8 @@ def build_context_preview(session: Session, conversation_id: str) -> Conversatio
             prompts.PromptSection("scene", "Scene", prompts.build_scene_text(scene,
                 include_world=bool(conversation and conversation.world_setting_id)), "scene_state", "current_room_scene", 360, True),
         ]
-        if conversation and conversation.world_setting_id:
-            raw_sections.append(prompts.PromptSection("genre_mode", "Genre mode", prompts.build_genre_mode_policy(genre_mode), "conversation.genre_mode", f"genre_route:{genre_mode or 'battle'}", 180, True))
+        if genre_mode:
+            raw_sections.append(prompts.PromptSection("genre_mode", "Genre mode", prompts.build_genre_mode_policy(genre_mode), "conversation.genre_mode", f"genre_route:{genre_mode}", 180, True))
         for domain_section in genre_domain_service.get_context_sections(session, conversation):
             if domain_section.included:
                 raw_sections.append(prompts.PromptSection(domain_section.key, domain_section.title, domain_section.content, "genre_domain.context_sections", f"genre_route:{genre_mode}", 320, False))

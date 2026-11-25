@@ -33,7 +33,7 @@ from app.services.conversation_queries import (
     list_visible_durable_memories_for_compression,
 )
 from app.services.genre_domain_service import (
-    DEFAULT_GENRE_MODE,
+    normalize_conversation_genre,
     normalize_genre_mode,
 )
 
@@ -834,6 +834,8 @@ async def summarize_scene_memory_with_llm(
     client = llm_client or LLMClient(profile="compression", purpose="scene_compression")
     strategy = normalize_compression_strategy(compression_strategy)
     settings = prompt_settings or system_prompt_service.default_prompt_settings_map()
+    if not genre_mode:
+        settings = system_prompt_service.scoped_prompt_defaults(settings, include_world=True, include_genre=False)
     base_system_prompt = "\n\n".join(
         part.strip()
         for part in [
@@ -1571,7 +1573,7 @@ async def update_scene_orchestration_summary(
         limit=MAX_CONTEXT_MEMORY_SCAN_ITEMS,
     )
     conversation = get_conversation(session, conversation_id)
-    genre_mode = normalize_genre_mode(getattr(conversation, "genre_mode", None)) if conversation else DEFAULT_GENRE_MODE
+    genre_mode = normalize_conversation_genre(getattr(conversation, "genre_mode", None))
     official_domain_context = genre_domain_service.get_official_context(session, conversation) if conversation else ""
     room_cast_roles = {
         participant.participant_id: participant.role
@@ -1579,10 +1581,8 @@ async def update_scene_orchestration_summary(
         if participant.participant_type == "character" and participant.role
     }
     prompt_settings = system_prompt_service.prompt_settings_map()
-    if not conversation or not conversation.world_setting_id:
-        prompt_settings = system_prompt_service.without_world_defaults(prompt_settings)
-        if not official_domain_context:
-            genre_mode = None
+    prompt_settings = system_prompt_service.scoped_prompt_defaults(prompt_settings,
+        include_world=bool(conversation and conversation.world_setting_id), include_genre=bool(genre_mode))
     # Capture each selected compressor's own metadata before ending the read
     # transaction. Fallback admission is recomputed for its actual stage inputs.
     from app.services.context_management_service import resolve_model_context_capacity

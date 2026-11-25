@@ -22,6 +22,7 @@ WORLD = {
     'world_seed': '항구는 기억을 종이에 보관한다. 야간에는 거래가 금지된다.\n예외: 등대지기는 잃어버린 이름을 찾는 사람만 돕는다.',
     'opening_scene': '새벽의 등대 앞에서 젖은 장부가 발견된다.',
     'opening_line': '이 이름을 어디서 보았죠?',
+    'relationship_archetype': '등대지기와 기록관은 오래된 동료다.',
     'compression_focus': '장부의 이름과 등대지기의 예외 규칙',
     'tags': ['항구', '기억'], 'enabled': True,
 }
@@ -132,6 +133,11 @@ def test_first_wire_has_primer_and_real_tools_stage_then_request_review(service,
         assert SYSTEM_PROMPT in prompt
         assert prompt.count(PRODUCT_PRIMER) == 1
         bound = {tool['function']['name']: tool['function'] for tool in tools}
+        # Check delivered instructions independently of help/registry equality.
+        assert 'room user persona' in prompt and 'leave them unset' in prompt
+        assert 'speech examples are not canon' in bound['lore_stage_character']['description']
+        assert 'without casting the user' in bound['lore_stage_world']['description']
+        assert not any(token in (prompt + str(bound)).casefold() for token in ('senior', '선배'))
         assert set(bound) == set(TOOL_SCHEMAS)
         assert bound[f'lore_stage_{kind}']['description'] == TOOL_SPECS[f'lore_stage_{kind}'].description
         if len(calls) == 1:

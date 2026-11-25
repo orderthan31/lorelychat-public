@@ -93,7 +93,7 @@ def generation_base_directive(prompt_settings: dict, *, scene_direction: bool) -
 
 def offstage_recall_query(*, genre_mode, scene, include_world: bool, full_history: bool, source_text: str) -> str:
     return "\n".join(filter(None, [
-        f"genre={genre_mode}",
+        f"genre={genre_mode}" if genre_mode else "",
         scene.world_seed if scene and include_world else "",
         scene.current_conflict if scene and not full_history else "",
         scene.summary if scene and not full_history else "",

@@ -34,10 +34,8 @@ class GenreDomainHandler:
     apply_events: Callable[[Session, Conversation | None, dict], list[object]]
 
 
-def _normalize_genre(conversation: Conversation | None) -> str:
-    raw = (getattr(conversation, "genre_mode", None) or DEFAULT_GENRE_MODE) if conversation else DEFAULT_GENRE_MODE
-    normalized = str(raw).strip().lower()
-    return normalized if normalized in VALID_GENRE_MODES else DEFAULT_GENRE_MODE
+def normalize_conversation_genre(value: str | None) -> str | None:
+    return None if value is None else normalize_genre_mode(value)
 
 
 def _apply_battle_payload(session: Session, conversation: Conversation | None, update: dict) -> list[object]:
@@ -65,7 +63,7 @@ HANDLERS: dict[str, GenreDomainHandler] = {
 
 
 def get_handler(conversation: Conversation | None) -> GenreDomainHandler | None:
-    return HANDLERS.get(_normalize_genre(conversation))
+    return HANDLERS.get(normalize_conversation_genre(getattr(conversation, "genre_mode", None)))
 
 
 def apply_genre_domain_update(session: Session, conversation: Conversation | None, update: dict) -> list[object]:

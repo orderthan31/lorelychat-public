@@ -32,7 +32,7 @@ try {
     await page.addInitScript(() => { localStorage.setItem('lorechat-language', 'ko'); localStorage.setItem('lorely-chat-theme', 'light'); });
     const characters = [{ id: 'c1', name: 'Synthetic cast', persona: 'Authored persona' }, { id: 'c2', name: 'Second cast', persona: 'Second persona' }];
     const worlds = [{ id: 'w1', title: 'Synthetic lore', world_seed: 'Authored world', genre_mode: 'romance', enabled: true }, { id: 'w2', title: 'Disabled lore', world_seed: 'Disabled world', enabled: false }];
-    let room = { id: 'created', title: 'Synthetic worldless room', mode: 'user_character', genre_mode: 'romance', world_setting_id: null, participants: [{ id: 'c1', type: 'character' }], tts_enabled: false };
+    let room = { id: 'created', title: 'Synthetic worldless room', mode: 'user_character', genre_mode: null, world_setting_id: null, participants: [{ id: 'c1', type: 'character' }], tts_enabled: false };
     const creates = [], patches = [];
     let release; let hold = new Promise(resolve => { release = resolve; });
     await page.route('**/*', async route => {
@@ -44,7 +44,7 @@ try {
       if (path.startsWith('/api/images/cache/')) return route.fulfill({ contentType: 'image/webp', body: readFileSync('public/brand/lorely-app-icon-light.webp') });
       if (path === '/api/conversations' && req.method() === 'POST') {
         const body = req.postDataJSON(); creates.push(body);
-        room = { ...room, ...body, genre_mode: worlds.find(world => world.id === body.world_setting_id)?.genre_mode ?? body.genre_mode ?? 'slice_of_life', title: body.title || 'Synthetic worldless room' };
+        room = { ...room, ...body, genre_mode: worlds.find(world => world.id === body.world_setting_id)?.genre_mode ?? body.genre_mode ?? null, title: body.title || 'Synthetic worldless room' };
         return json(room);
       }
       if (path === '/api/conversations/created' && req.method() === 'PATCH') { const body = req.postDataJSON(); patches.push(body); room = { ...room, ...body }; return json(room); }
@@ -119,7 +119,12 @@ try {
     await page.locator('textarea').fill('');
     await page.getByRole('button', { name: '저장', exact: true }).click();
     await expect.poll(() => patches.length).toBe(1); assert.equal(patches[0].world_setting_id, null);
+    assert.equal(patches[0].genre_mode, null, 'editing does not give a genre to a genreless room');
     assert.equal(patches[0].scene.user_description, '', 'explicitly clearing an existing persona persists the deletion');
+    await page.goto(origin + '/conversations');
+    const genrelessCard = page.locator('[data-resource-card]').filter({ hasText: 'Synthetic worldless room' });
+    await expect(genrelessCard).toBeVisible();
+    await expect(genrelessCard.locator('.conversation-card-genre')).toHaveCount(0);
     await page.goto(origin + '/world-settings');
     await expect(page.locator('[data-resource-card]')).toHaveCount(2);
     assert.equal(await page.locator('[data-resource-card]').getByText('활성', { exact: true }).count(), 0);

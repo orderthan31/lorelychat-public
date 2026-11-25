@@ -68,7 +68,6 @@ REQUIRED_LOCAL_MEMORY_METADATA_KEYS = (
     "workspace",
     "user_id",
     "conversation_id",
-    "genre_mode",
     "scope",
     "character_id",
     "memory_type",
@@ -282,14 +281,14 @@ def get_provider(settings: Settings | None = None) -> ExternalMemoryProvider:
         return NoopExternalMemoryProvider()
 
 
-def build_memory_metadata(memory: CharacterMemory, *, genre_mode: str = "battle", settings: Settings | None = None) -> dict:
+def build_memory_metadata(memory: CharacterMemory, *, genre_mode: str | None = None, settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     return {
         "app_id": settings.mem0_app_id,
         "workspace": settings.mem0_workspace,
         "user_id": settings.mem0_user_id,
         "conversation_id": memory.conversation_id,
-        "genre_mode": genre_mode,
+        **({"genre_mode": genre_mode} if genre_mode else {}),
         "scope": "room" if memory.character_id == "__room__" else "character",
         "character_id": memory.character_id,
         "memory_type": memory.memory_type,
@@ -310,7 +309,7 @@ def should_sync_memory_to_external(memory: CharacterMemory) -> bool:
     return explain_local_memory_sync(memory).should_sync
 
 
-def explain_local_memory_sync(memory: CharacterMemory, *, genre_mode: str = "battle", settings: Settings | None = None) -> ExternalMemorySyncDecision:
+def explain_local_memory_sync(memory: CharacterMemory, *, genre_mode: str | None = None, settings: Settings | None = None) -> ExternalMemorySyncDecision:
     content = memory.content or ""
     lowered = content.lower()
     metadata = build_memory_metadata(memory, genre_mode=genre_mode, settings=settings)
@@ -363,7 +362,7 @@ def build_message_window_recall_card(
     *,
     conversation: Conversation,
     messages: list[Message],
-    genre_mode: str,
+    genre_mode: str | None,
     settings: Settings | None = None,
     speaker_names: dict[str, str] | None = None,
 ) -> tuple[str, dict] | None:
@@ -376,11 +375,11 @@ def build_message_window_recall_card(
     lines = [
         "Conversation message-window recall card",
         f"conversation_id={conversation.id}",
-        f"genre_mode={genre_mode}",
+        *([f"genre_mode={genre_mode}"] if genre_mode else []),
         "memory_type=message_window_recall",
         f"time_range={start.created_at}..{end.created_at}",
         f"message_id_range={start.id}..{end.id}",
-        "source_note=auto-ingested from recent chat window; official battle results/standings come from local ledger, not this card.",
+        "source_note=auto-ingested from recent chat window" + ("; official battle results/standings come from local ledger, not this card." if genre_mode == "battle" else "."),
         "speakers=" + ", ".join(
             sorted({speaker_names.get(message.speaker_id, message.speaker_id) for message in selected})
         ) if speaker_names else "speakers=unknown",
@@ -393,7 +392,7 @@ def build_message_window_recall_card(
         "workspace": settings.mem0_workspace,
         "user_id": settings.mem0_user_id,
         "conversation_id": conversation.id,
-        "genre_mode": genre_mode,
+        **({"genre_mode": genre_mode} if genre_mode else {}),
         "scope": "room",
         "character_id": "__room__",
         "memory_type": "message_window_recall",
@@ -414,7 +413,7 @@ def sync_message_window_to_external(
     conversation: Conversation,
     messages: list[Message],
     *,
-    genre_mode: str,
+    genre_mode: str | None,
     settings: Settings | None = None,
 ) -> str | None:
     settings = settings or get_settings()
@@ -464,7 +463,7 @@ def build_external_memory_qc_report(session: Session, conversation: Conversation
     settings = get_settings()
     if conversation is None:
         return "[External memory QC]\nconversation=missing"
-    genre_mode = getattr(conversation, "genre_mode", None) or "battle"
+    genre_mode = getattr(conversation, "genre_mode", None)
     memories = list(session.exec(
         select(CharacterMemory)
         .where(CharacterMemory.conversation_id == conversation.id)
@@ -497,7 +496,7 @@ def build_external_memory_qc_report(session: Session, conversation: Conversation
         "purpose=diagnose mem0/local-memory sync health and stale/noisy recall risk; not story canon",
         "prompt_injection=no (diagnostic section only; generated replies should use external_memory after filtering)",
         f"provider={settings.memory_provider} mem0_enabled={settings.mem0_enabled} read={settings.mem0_read_enabled} write={settings.mem0_write_enabled}",
-        f"conversation_id={conversation.id} genre_mode={genre_mode}",
+        f"conversation_id={conversation.id}" + (f" genre_mode={genre_mode}" if genre_mode else ""),
         f"sampled_local_memories={len(memories)} syncable={len(syncable)} skipped={len(decisions) - len(syncable)}",
         f"recent_message_sample={len(recent_messages)} ingested_window_ends={len(recent_ingested)} messages_after_last_ingest={len(newer_than_last_ingest)}",
     ]
@@ -528,19 +527,19 @@ def build_external_memory_qc_report(session: Session, conversation: Conversation
     return "\n".join(lines)
 
 
-def build_search_filters(*, conversation_id: str, character_id: str, genre_mode: str, settings: Settings | None = None) -> dict:
+def build_search_filters(*, conversation_id: str, character_id: str, genre_mode: str | None, settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     return {
         "app_id": settings.mem0_app_id,
         "workspace": settings.mem0_workspace,
         "user_id": settings.mem0_user_id,
         "conversation_id": conversation_id,
-        "genre_mode": genre_mode,
+        **({"genre_mode": genre_mode} if genre_mode else {}),
         "character_id": ["__room__", character_id],
     }
 
 
-def filter_retrieved_items(items: list[ExternalMemoryItem], *, conversation_id: str, character_id: str, genre_mode: str, settings: Settings | None = None) -> list[ExternalMemoryItem]:
+def filter_retrieved_items(items: list[ExternalMemoryItem], *, conversation_id: str, character_id: str, genre_mode: str | None, settings: Settings | None = None) -> list[ExternalMemoryItem]:
     settings = settings or get_settings()
     allowed_character_ids = {"__room__", character_id}
     filtered: list[ExternalMemoryItem] = []
@@ -656,7 +655,7 @@ def is_prompt_injectable_external_memory(item: ExternalMemoryItem) -> bool:
     return bool(content)
 
 
-def sync_local_memory_to_external(memory: CharacterMemory, *, genre_mode: str = "battle", settings: Settings | None = None) -> str | None:
+def sync_local_memory_to_external(memory: CharacterMemory, *, genre_mode: str | None = None, settings: Settings | None = None) -> str | None:
     settings = settings or get_settings()
     if not (settings.mem0_enabled and settings.mem0_write_enabled and settings.memory_provider == "mem0"):
         return None
@@ -700,7 +699,7 @@ def search_external_continuity(
     *,
     conversation_id: str,
     character_id: str,
-    genre_mode: str,
+    genre_mode: str | None,
     query: str,
     settings: Settings | None = None,
 ) -> list[ExternalMemoryItem]:

@@ -149,7 +149,7 @@ from app.services.conversation_queries import (
     visible_memory_character_ids,
 )
 from app.services.genre_domain_service import (
-    DEFAULT_GENRE_MODE,
+    normalize_conversation_genre,
     VALID_GENRE_MODES,
     normalize_genre_mode,
 )
@@ -219,7 +219,7 @@ def create_conversation(session: Session, payload: ConversationCreate) -> Conver
     world_setting = session.get(WorldSetting, payload.world_setting_id) if payload.world_setting_id else None
     if payload.world_setting_id is not None and world_setting is None:
         raise ValueError("World setting not found")
-    effective_genre_mode = normalize_genre_mode(world_setting.genre_mode if world_setting else payload.genre_mode)
+    effective_genre_mode = normalize_conversation_genre(world_setting.genre_mode if world_setting else payload.genre_mode)
     scene_data = scene_payload_from_world_setting(world_setting, payload.scene)
     conversation = Conversation(
         id=f"conv_{uuid4().hex[:12]}",
@@ -362,8 +362,8 @@ def update_conversation(session: Session, conversation_id: str, payload: Convers
             conversation.title = title
     if "thumbnail_url" in data:
         conversation.thumbnail_url = (data.get("thumbnail_url") or "").strip() or None
-    if "genre_mode" in data and data["genre_mode"] is not None:
-        conversation.genre_mode = normalize_genre_mode(data["genre_mode"])
+    if "genre_mode" in data:
+        conversation.genre_mode = normalize_conversation_genre(data["genre_mode"])
     if "world_setting_id" in data:
         conversation.world_setting_id = data["world_setting_id"]
     if "tts_enabled" in data and data["tts_enabled"] is not None:
@@ -484,7 +484,7 @@ def build_live_scene_state(session: Session, conversation: Conversation, scene_s
 
     live_patch = build_structured_scene_patch(base, recent_messages)
     live_conflict = live_patch["current_conflict"]
-    active_match = _active_battle_match(session, conversation.id) if normalize_genre_mode(conversation.genre_mode) == "battle" else None
+    active_match = _active_battle_match(session, conversation.id) if normalize_conversation_genre(conversation.genre_mode) == "battle" else None
     if active_match:
         participant_a = _character_display_name(session, active_match.participant_a_id)
         participant_b = _character_display_name(session, active_match.participant_b_id)
@@ -588,7 +588,7 @@ def add_character_memory(
         session.add(conversation)
     session.commit()
     session.refresh(memory)
-    genre_mode = normalize_genre_mode(getattr(conversation, "genre_mode", None)) if conversation else DEFAULT_GENRE_MODE
+    genre_mode = normalize_conversation_genre(getattr(conversation, "genre_mode", None))
     external_memory_service.sync_local_memory_to_external(memory, genre_mode=genre_mode)
     return memory
 
@@ -624,7 +624,7 @@ def update_character_memory(
     session.add(memory)
     session.commit()
     session.refresh(memory)
-    genre_mode = normalize_genre_mode(getattr(conversation, "genre_mode", None)) if conversation else DEFAULT_GENRE_MODE
+    genre_mode = normalize_conversation_genre(getattr(conversation, "genre_mode", None))
     external_memory_service.sync_local_memory_to_external(memory, genre_mode=genre_mode)
     return memory
 
