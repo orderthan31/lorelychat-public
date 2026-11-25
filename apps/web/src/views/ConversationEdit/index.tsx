@@ -107,7 +107,7 @@ export function ConversationEditView({
 
     </div>
     <FormSection title={t('유저페르소나')}>
-      <Field label={t('설명')}><Textarea rows={4} value={roomEditDraft.user_description || ''} onChange={(e) => setRoomEditDraft({ ...roomEditDraft, user_description: e.target.value })} placeholder={t('예: 사용자는 개발자이고 캐릭터와 가까운 관계다.')} /></Field>
+      <Field label={t('설명')}><Textarea rows={4} value={roomEditDraft.user_description || ''} onChange={(e) => setRoomEditDraft({ ...roomEditDraft, user_description: e.target.value })} /></Field>
       <div className="preset-inline"><Select defaultValue="" onChange={(e) => { if (e.target.value) { applyRoomEditPreset('user_setting', e.target.value); e.target.value = ''; } }}><option value="">{t('유저페르소나 프리셋 불러오기')}</option>{USER_SETTING_PRESETS.map((preset) => <option key={preset.title} value={preset.content}>{t(preset.title as UiMessageKey)}</option>)}</Select></div>
     </FormSection>
   </section>;

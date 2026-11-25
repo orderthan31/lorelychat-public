@@ -67,7 +67,7 @@ import { pageCount } from '../utils/pagination';
 
 import { normalizeRuntimeSetting } from '../utils/runtimeSettings';
 
-import { CAST_ROLE_PRESETS, DEFAULT_GENRE_MODE, EMPTY_CHARACTER, EMPTY_PRESET, FALLBACK_TTS_MODELS, FALLBACK_TTS_VOICES, SYSTEM_ID, USER_ID } from '../constants/domain';
+import { CAST_ROLE_PRESETS, EMPTY_CHARACTER, EMPTY_PRESET, FALLBACK_TTS_MODELS, FALLBACK_TTS_VOICES, SYSTEM_ID, USER_ID } from '../constants/domain';
 
 const EMPTY_LIST: any[] = [];
 const Alert = withReactContent(Swal);
@@ -135,10 +135,9 @@ export function App() {
   const [presetPage, setPresetPage] = useState(1);
   const conversations = (bootstrap.conversations.data || EMPTY_LIST) as any[];
   const [draft, setDraft] = useState<any>(EMPTY_CHARACTER);
-  const [genreMode, setGenreMode] = useState(DEFAULT_GENRE_MODE);
   const [conversationTitle, setConversationTitle] = useState('');
   const [conversationThumbnailUrl, setConversationThumbnailUrl] = useState('');
-  const [userDescription, setUserDescription] = useState('사용자는 개발자이고, 캐릭터와 편하게 대화하는 사용자다.');
+  const [userDescription, setUserDescription] = useState('');
   const [roomEditDraft, setRoomEditDraft] = useState<any>({ title: '', world_setting_id: '', user_description: '', participants: [] });
   const [characterAId, setCharacterAId] = useState('');
   const [characterBId, setCharacterBId] = useState('');
@@ -162,7 +161,7 @@ export function App() {
   // Guard every completion, including setters passed an updater and late finally.
   // Independent operations use independent epochs; only the busy owner clears busy.
   function ownUI(operation: string) {
-    const setters = { navigate, setChatCommandDraft, setConversation, setConversationThumbnailUrl, setConversationTitle, setDraft, setHasOlderMessages, setMessages, setOlderPagingReady, setParticipants, setRoomEditDraft, setSelectedWorldSettingId, setWorldSettingDraft };
+    const setters = { navigate, setChatCommandDraft, setConversation, setConversationThumbnailUrl, setConversationTitle, setDraft, setHasOlderMessages, setMessages, setOlderPagingReady, setParticipants, setRoomEditDraft, setSelectedWorldSettingId, setUserDescription, setWorldSettingDraft };
     return guardUI(operation, setters);
   }
   useEffect(() => {
@@ -322,7 +321,7 @@ export function App() {
         world_setting_id: roomEditDraft.world_setting_id || null,
         genre_mode: normalizeGenreMode(worldSettings.find((world) => world.id === roomEditDraft.world_setting_id)?.genre_mode || roomEditDraft.genre_mode),
         participants: normalizedParticipants,
-        scene: { user_description: roomEditDraft.user_description || null },
+        scene: { user_description: roomEditDraft.user_description || '' },
       } }) as any;
       setConversation(updated);
       setStatus(t('대화방 수정 완료'));
@@ -561,7 +560,7 @@ export function App() {
   }
 
   async function startConversationRoom() {
-    const { setBusy, setStatus, setConversation, setConversationThumbnailUrl, setMessages, setConversationTitle, setSelectedWorldSettingId, setHasOlderMessages, setOlderPagingReady, setParticipants, navigate } = ownUI('startConversationRoom');
+    const { setBusy, setStatus, setConversation, setConversationThumbnailUrl, setMessages, setConversationTitle, setSelectedWorldSettingId, setHasOlderMessages, setOlderPagingReady, setParticipants, setUserDescription, navigate } = ownUI('startConversationRoom');
     setBusy(true);
     try {
       const selectedCharacters = multiCharacterIds
@@ -576,8 +575,8 @@ export function App() {
       const participants = selectedCharacters.length === 1
         ? [{ type: 'user', id: USER_ID, order_index: 0 }, { type: 'character', id: selectedCharacters[0].character.id, role: selectedCharacters[0].role, order_index: 1 }]
         : selectedCharacters.map(({ character, role }, index) => ({ type: 'character', id: character.id, role, order_index: index }));
-      const selectedWorld = worldSettings.find((world) => world.id === selectedWorldSettingId);
-      const conversation = await conversationMutations.createConversation.mutateAsync({ mode: createdRoomMode, genre_mode: normalizeGenreMode(selectedWorld?.genre_mode || genreMode), world_setting_id: selectedWorldSettingId || null, title: conversationTitle.trim() || null, thumbnail_url: null, participants, tts_enabled: !!scene.tts_enabled, scene: { user_description: userDescription || null } }) as any;
+      const conversation = await conversationMutations.createConversation.mutateAsync({ mode: createdRoomMode, world_setting_id: selectedWorldSettingId || null, title: conversationTitle.trim() || null, thumbnail_url: null, participants, tts_enabled: !!scene.tts_enabled, scene: { user_description: userDescription.trim() || null } }) as any;
+      setUserDescription(current => current === userDescription ? '' : current);
       setConversationTitle('');
       setConversationThumbnailUrl('');
       setSelectedWorldSettingId('');

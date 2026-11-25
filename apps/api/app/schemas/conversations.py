@@ -29,7 +29,7 @@ class SceneCreate(RequestModel):
 
 class ConversationCreate(RequestModel):
     mode: str
-    genre_mode: str = "battle"
+    genre_mode: str = "slice_of_life"
     world_setting_id: str | None = None
     title: str | None = None
     thumbnail_url: str | None = None

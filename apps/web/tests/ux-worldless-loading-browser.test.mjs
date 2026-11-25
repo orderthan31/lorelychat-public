@@ -42,7 +42,11 @@ try {
       const json = data => route.fulfill({ json: data });
       if (path === '/api/images/prepare') return json({ image_url: '/images/cache/synthetic/preview.webp' });
       if (path.startsWith('/api/images/cache/')) return route.fulfill({ contentType: 'image/webp', body: readFileSync('public/brand/lorely-app-icon-light.webp') });
-      if (path === '/api/conversations' && req.method() === 'POST') { const body = req.postDataJSON(); creates.push(body); room = { ...room, ...body, title: body.title || 'Synthetic worldless room' }; return json(room); }
+      if (path === '/api/conversations' && req.method() === 'POST') {
+        const body = req.postDataJSON(); creates.push(body);
+        room = { ...room, ...body, genre_mode: worlds.find(world => world.id === body.world_setting_id)?.genre_mode ?? body.genre_mode ?? 'slice_of_life', title: body.title || 'Synthetic worldless room' };
+        return json(room);
+      }
       if (path === '/api/conversations/created' && req.method() === 'PATCH') { const body = req.postDataJSON(); patches.push(body); room = { ...room, ...body }; return json(room); }
       if (path.endsWith('/read') && req.method() === 'POST') return json({});
       if (!['GET', 'HEAD'].includes(req.method())) { unexpected.push(path); return route.abort(); }
@@ -92,18 +96,30 @@ try {
     await cast.first().selectOption('c1');
     const start = page.locator('.app-actions').getByRole('button', { name: '대화 시작', exact: true });
     await expect(start).toBeEnabled();
-    await page.locator('.conversation-create textarea').fill('Authored user persona');
+    await expect(page.locator('.conversation-create textarea')).toHaveValue('');
     await start.click(); await expect.poll(() => creates.length).toBe(1);
     assert.equal(creates[0].world_setting_id, null);
     assert.equal(creates[0].participants.filter(p => p.type === 'character').length, 1);
-    assert.equal(creates[0].scene.user_description, 'Authored user persona');
+    assert.equal(creates[0].scene.user_description, null);
+    assert.ok(!('genre_mode' in creates[0]), 'creation uses the API genre policy');
     assert.ok(!('world_seed' in creates[0].scene));
     await expect(page).toHaveURL(/\/conversations\/created$/); await expect(page.locator('.chat-workspace')).toBeVisible();
+    // SPA navigation verifies a successful creation does not carry a previous persona draft.
+    await page.evaluate(() => { history.pushState(null, '', '/conversations/new'); dispatchEvent(new PopStateEvent('popstate')); });
+    await expect(page.locator('.conversation-create textarea')).toHaveValue('');
+    await page.locator('.conversation-create textarea').fill('Authored user persona');
+    await start.click(); await expect.poll(() => creates.length).toBe(2);
+    assert.equal(creates[1].scene.user_description, 'Authored user persona');
+    await expect(page).toHaveURL(/\/conversations\/created$/);
+    await page.evaluate(() => { history.pushState(null, '', '/conversations/new'); dispatchEvent(new PopStateEvent('popstate')); });
+    await expect(page.locator('.conversation-create textarea')).toHaveValue('');
     await page.goto(origin + '/conversations/created/edit');
     await expect(world).toHaveValue('');
     await world.selectOption('w1'); await world.selectOption('');
+    await page.locator('textarea').fill('');
     await page.getByRole('button', { name: '저장', exact: true }).click();
     await expect.poll(() => patches.length).toBe(1); assert.equal(patches[0].world_setting_id, null);
+    assert.equal(patches[0].scene.user_description, '', 'explicitly clearing an existing persona persists the deletion');
     await page.goto(origin + '/world-settings');
     await expect(page.locator('[data-resource-card]')).toHaveCount(2);
     assert.equal(await page.locator('[data-resource-card]').getByText('활성', { exact: true }).count(), 0);
@@ -116,7 +132,7 @@ try {
     await page.goto(origin + '/presets');
     await expect(page.locator('[data-resource-card]')).toHaveCount(2);
     assert.equal(await page.locator('[data-resource-card]').getByText('활성', { exact: true }).count(), 0);
-    cases.push({ width, height, reduced, loading: 'visible within viewport; real local SVG animates or stays static under reduced motion', worldless: 'real create and edit handlers send null, preserve persona, no seed', lists: 'no default active labels; disabled exception retained' });
+    cases.push({ width, height, reduced, loading: 'visible within viewport; real local SVG animates or stays static under reduced motion', worldless: 'worldless create omits genre, keeps persona optional, clears saved persona on request', lists: 'no default active labels; disabled exception retained' });
     await page.close();
   }
   assert.deepEqual(errors, []); assert.deepEqual(unexpected, []);

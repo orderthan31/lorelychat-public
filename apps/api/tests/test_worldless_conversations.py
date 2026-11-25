@@ -27,11 +27,22 @@ def test_character_only_create_persists_no_world(client, session, extra):
     assert response.status_code == 200, response.text
     room = response.json()
     assert room['world_setting_id'] is None
-    assert session.get(Conversation, room['id']).world_setting_id is None
+    stored = session.get(Conversation, room['id'])
+    assert stored.world_setting_id is None
+    assert room['genre_mode'] == stored.genre_mode == 'slice_of_life'
+    assert client.get(f"/conversations/{room['id']}/battle-state").status_code == 404
     scene = session.get(SceneState, room['id'])
-    assert scene is not None and not scene.world_seed
+    assert scene is not None and not scene.world_seed and scene.user_description is None
     assert not session.exec(select(WorldSetting)).all()
     assert client.get(f"/conversations/{room['id']}").json()['world_setting_id'] is None
+
+
+def test_explicit_room_genre_and_linked_world_are_preserved(client):
+    explicit, _ = create_room(client, genre_mode='battle')
+    assert explicit.status_code == 200 and explicit.json()['genre_mode'] == 'battle'
+    world = client.post('/world-settings', json={'title': 'Synthetic world', 'genre_mode': 'romance'}).json()
+    linked, _ = create_room(client, world_setting_id=world['id'], genre_mode='battle')
+    assert linked.status_code == 200 and linked.json()['genre_mode'] == 'romance'
 
 
 @pytest.mark.parametrize('world_id', ['missing-world', '', '   '])
@@ -251,7 +262,7 @@ def test_worldless_actual_compression_request_has_only_history_sources(client, s
 
 def test_worldless_preview_preserves_real_official_domain_state(client, session):
     from app.db.models import BattleStanding
-    response, char = create_room(client)
+    response, char = create_room(client, genre_mode='battle')
     room_id = response.json()['id']
     session.add(BattleStanding(conversation_id=room_id, character_id=char['id'], wins=2, points=6, rank=1))
     session.commit()
