@@ -105,6 +105,7 @@ class GoogleAuthRequest:
     def __init__(self, timeout):
         self.deadline = time.monotonic() + timeout
         self.token_sent = False
+        self.http_status = None
         self.calls = 0
         self.client = httpx.Client(transport=new_auth_transport(), trust_env=False, follow_redirects=False)
 
@@ -126,6 +127,7 @@ class GoogleAuthRequest:
             raise TimeoutError()
         with self.client.stream(method, url, content=body, headers=headers,
                                 timeout=min(remaining, float(timeout or remaining))) as response:
+            self.http_status = response.status_code
             if response.status_code == 429 or response.status_code >= 500:
                 # Preserve availability/retry semantics without retaining auth bodies.
                 safe = httpx.Response(response.status_code, request=httpx.Request(method, TOKEN_URI),
@@ -185,7 +187,8 @@ def _acquire_token(route, timeout):
         raise httpx.ConnectError('Vertex authentication transport failed') from None
     except Exception:
         from app.engine.llm_error_types import LLMAuthenticationError
-        raise LLMAuthenticationError('Vertex credential acquisition failed') from None
+        raise LLMAuthenticationError('Vertex credential acquisition failed',
+                                     http_status=request.http_status if request is not None else None) from None
     finally:
         if request is not None:
             request.close()

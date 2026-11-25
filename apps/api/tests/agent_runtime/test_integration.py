@@ -69,6 +69,24 @@ def test_actual_run_receipt_graph_tools_reopen_and_no_recharge(service, monkeypa
     assert 'tool_calls' not in json.dumps(service.get_session(session['id'], OWNER))
 
 
+def test_model_http_rejection_is_safe_in_session_receipt_and_log(service, monkeypatch, caplog):
+    calls = []
+    def wire(request):
+        calls.append(1)
+        return httpx.Response(429, json={'error': {'message': 'private-provider-response', 'type': 'rate_limit_error'}})
+    monkeypatch.setattr(transport, 'new_http_transport', lambda: httpx.MockTransport(wire))
+    monkeypatch.setattr(service, 'resolve_llm_route', lambda p:
+        transport.Route('openai', 'openai', 'gpt-4o', 'https://api.openai.com/v1', 'fixture-private-key'))
+    sid = service.create_session(OWNER, 'new-session')['id']
+    view = asyncio.run(run_agent_turn(service, OWNER, sid, 'rejected-model', 'private-user-input', []))
+    receipt = service.get_operation('rejected-model', OWNER)
+    assert view['last_error'] == receipt['error'] == 'MODEL_REQUEST_HTTP_ERROR · HTTP 429'
+    assert receipt['status'] == 'failed' and calls == [1]
+    assert 'request_id=rejected-model' in caplog.text and 'http_status=429' in caplog.text
+    assert 'exception=RateLimitError' in caplog.text
+    assert not any(value in caplog.text for value in ('private-provider-response', 'private-user-input', 'fixture-private-key'))
+
+
 def test_actual_retained_image_outputs_and_replay(service, monkeypatch):
     with Session(service.engine) as db:
         db.add(Character(id='fixture-character', name='Fixture', persona='Fixture', avatar_url=None))

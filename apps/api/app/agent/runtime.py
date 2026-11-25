@@ -13,6 +13,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langsmith import tracing_context
 
 from app.agent.chat_model import LoreAgentChatModel
+from app.agent.diagnostics import Failure, failure, record
 from app.agent.knowledge import PRODUCT_PRIMER
 from app.agent.progress import AgentProgressCallback
 
@@ -138,6 +139,8 @@ async def run_agent_turn(service, principal, session_id, request_id, content, co
                         if human is None or human.id not in failed or failed[human.id] != human.content:
                             # No proof these pending nodes belong to the terminal
                             # history. Hold the claim; never dispatch or resume it.
+                            record(Failure('AGENT_CHECKPOINT_HELD', 'CheckpointMismatch'),
+                                   request_id=request_id, session_id=session_id)
                             return service.get_session(session_id, principal)
                     messages = []
                     if failed:
@@ -152,9 +155,9 @@ async def run_agent_turn(service, principal, session_id, request_id, content, co
                     final = last.content
         return service.complete_run(principal, session_id, request_id, content=final)
     except asyncio.CancelledError:
-        service.complete_run(principal, session_id, request_id,
-                           error='Agent interrupted; accepted request will not be retried')
+        error = record(Failure('AGENT_INTERRUPTED', 'CancelledError'), request_id=request_id, session_id=session_id)
+        service.complete_run(principal, session_id, request_id, error=error)
         raise
-    except Exception:
-        return service.complete_run(principal, session_id, request_id,
-                                   error='Agent run failed; accepted request will not be retried')
+    except Exception as exc:
+        error = record(failure('AGENT_RUN', exc), request_id=request_id, session_id=session_id)
+        return service.complete_run(principal, session_id, request_id, error=error)

@@ -172,6 +172,7 @@ def test_no_inference_retry_redirect_or_fallback(monkeypatch, accounts, provider
     with warnings.catch_warnings(record=True) as seen, pytest.raises(images.ImagePlanError) as error:
         asyncio.run(images.image_completion(route, plan, reference=ref if mode == 'reference' else None, before_send=lambda: None))
     assert len(sends) == 1 and len(auth) == (1 if provider == 'vertex_ai' else 0)
+    assert str(error.value) == f'IMAGE_REQUEST_HTTP_ERROR · HTTP {status}'
     output = capsys.readouterr()
     observed = output.out + output.err + caplog.text + str(error.value) + str([str(w.message) for w in seen])
     assert 'private-prompt-sentinel' not in observed and 'private-key-sentinel' not in observed
@@ -216,8 +217,11 @@ def test_output_rejected_without_url_fetch(monkeypatch, bad):
     sends = []
     def wire(request): sends.append(1); return httpx.Response(200, json=body)
     monkeypatch.setattr(transport, 'new_http_transport', lambda: httpx.MockTransport(wire))
-    with pytest.raises(images.ImagePlanError):
+    with pytest.raises(images.ImagePlanError) as error:
         asyncio.run(images.image_completion(route, plan, reference=None, before_send=lambda: None))
+    code = {'noimage': 'IMAGE_NO_OUTPUT', 'blocked': 'IMAGE_POLICY_BLOCKED',
+            'oversize': 'IMAGE_REQUEST_INVALID_RESPONSE'}.get(bad, 'IMAGE_INVALID_RESPONSE')
+    assert str(error.value) == f'{code} · HTTP 200'
     assert sends == [1]
 
 
@@ -227,8 +231,9 @@ def test_auth_failure_bounded_separate_no_inference(monkeypatch, accounts, statu
     auth = []
     token_wire(monkeypatch, auth, status=status, payload={'error': 'synthetic-auth-secret'})
     monkeypatch.setattr(transport, 'new_http_transport', lambda: pytest.fail('Inference after failed auth'))
-    with pytest.raises(images.ImagePlanError):
+    with pytest.raises(images.ImagePlanError) as error:
         asyncio.run(images.image_completion(route, plan, reference=ref, before_send=lambda: None))
+    assert str(error.value) == f'IMAGE_AUTH_HTTP_ERROR · HTTP {status}'
     assert len(auth) == 1
 
 

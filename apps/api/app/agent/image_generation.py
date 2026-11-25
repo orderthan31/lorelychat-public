@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 from PIL import Image
 
+from app.agent.diagnostics import Failure, failure, record
 from app.engine import litellm_transport as transport
 
 # Explicit admission: official image API + pinned SDK metadata + synthetic wire.
@@ -242,6 +243,7 @@ async def image_completion(route, plan, *, before_send, reference=None):
     # One base64 image can be larger than the text response cap, but remains bounded.
     guard.max_response_bytes = MAX_IMAGE_BYTES * 4 // 3 * plan['count'] + 65536
     client = None
+    stage = 'IMAGE_DISPATCH'
     try:
         async with asyncio.timeout(90):
             # Both admitted image drivers use the maintained OpenAI SDK client;
@@ -267,11 +269,12 @@ async def image_completion(route, plan, *, before_send, reference=None):
                 )
             if not guard.sent or guard.denied or guard.error is not None:
                 raise ImagePlanError('Image dispatch did not complete')
+            stage = 'IMAGE_RESPONSE'
             return verified_outputs(result, plan['count'])
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        raise ImagePlanError('Image dispatch outcome unknown; do not regenerate automatically') from None
+    except Exception as exc:
+        if stage == 'IMAGE_DISPATCH' and guard.sent:
+            stage = 'IMAGE_REQUEST'
+        raise failure(stage, exc, guard).wrap(ImagePlanError) from None
     finally:
         if client is not None:
             await transport.close_owned(client.close)
@@ -285,25 +288,30 @@ async def execute_image_plan(service, principal, draft_id, request_id, expected_
     if not claim['claimed']:
         return claim['operation']
     plan, job_id = claim['plan'], claim['job_id']
+
+    def end(detail, status='unknown'):
+        error = record(detail, request_id=request_id, job_id=job_id,
+                       provider=plan.get('provider_type'), model=plan.get('model_id'))
+        return service.complete_image_job(principal, job_id, [], status=status, error=error)
+
     try:
         service.require_enabled(principal, 'lore:image:generate')
         route = service.resolve_image_route(principal, plan['provider_account_id'], plan['model_id'])
         validate_plan(plan, route)
         reference = service.load_image_reference(principal, plan)
         verified_reference(plan, reference)
-    except Exception:
-        return service.complete_image_job(principal, job_id, [], status='failed',
-                                              error='Image plan rejected before dispatch')
+    except Exception as exc:
+        return end(failure('IMAGE_PREFLIGHT', exc), status='failed')
+    stage = 'IMAGE_DISPATCH'
     try:
         outputs = await image_completion(route, plan, reference=reference, before_send=lambda:
             service.require_enabled(principal, 'lore:image:generate'))
         # The core owns retained output paths/ownership and atomic image-job
         # completion. This does not register assets or change any avatar.
+        stage = 'IMAGE_STORAGE'
         return service.complete_image_job(principal, job_id, outputs)
     except asyncio.CancelledError:
-        service.complete_image_job(principal, job_id, [], status='unknown',
-                                      error='Image dispatch interrupted; do not regenerate automatically')
+        end(Failure('IMAGE_INTERRUPTED', 'CancelledError'))
         raise
-    except Exception:
-        return service.complete_image_job(principal, job_id, [], status='unknown',
-                                              error='Image outcome unknown; do not regenerate automatically')
+    except Exception as exc:
+        return end(failure(stage, exc))

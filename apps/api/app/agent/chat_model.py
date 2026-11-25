@@ -19,6 +19,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import PrivateAttr
 
+from app.agent.diagnostics import failure
 from app.engine import litellm_transport as transport
 
 
@@ -107,7 +108,10 @@ async def vertex_tool_completion(route, *, messages, parameters, client, timeout
     sdk = transport.load_sdk()
     optional = VertexGeminiConfig().map_openai_params(
         deepcopy(parameters), {}, route.model, drop_params=False)
-    token = await vertex_auth.acquire_token(route, timeout)
+    try:
+        token = await vertex_auth.acquire_token(route, timeout)
+    except Exception as exc:
+        raise failure('MODEL_AUTH', exc).wrap(AgentModelError) from None
 
     class OwnedVertex(VertexLLM):
         async def _ensure_access_token_async(self, **kwargs):
@@ -167,9 +171,8 @@ async def native_tool_completion(route, *, messages, tools, timeout=45.0,
             return response
     except asyncio.CancelledError:
         raise
-    except Exception:
-        # Never attach a provider exception (may contain key/prompt/response).
-        raise AgentModelError('Provider request failed; no automatic retry') from None
+    except Exception as exc:
+        raise failure('MODEL_REQUEST' if guard.sent else 'MODEL_DISPATCH', exc, guard).wrap(AgentModelError) from None
     finally:
         if client is not None:
             await transport.close_owned(client.close)
@@ -203,15 +206,17 @@ class LoreAgentChatModel(BaseChatModel):
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         if stop or set(kwargs) - {'tools'}:
             raise AgentModelError('Unsupported model request option')
+        stage = 'MODEL_SETUP'
         try:
             self._before_dispatch()
             route = self._resolve_route()
             tools = kwargs.get('tools') or []
-            response = await self._dispatch(route, messages=wire_messages(messages), tools=tools,
+            wire = wire_messages(messages)
+            stage = 'MODEL_REQUEST'
+            response = await self._dispatch(route, messages=wire, tools=tools,
                                             before_send=self._before_dispatch)
+            stage = 'MODEL_RESPONSE'
             message = response_message(response, {tool['function']['name'] for tool in tools})
             return ChatResult(generations=[ChatGeneration(message=message)])
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            raise AgentModelError('Agent model request failed; no automatic retry') from None
+        except Exception as exc:
+            raise failure(stage, exc).wrap(AgentModelError) from None

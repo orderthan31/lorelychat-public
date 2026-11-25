@@ -88,7 +88,7 @@ async function setup(width, height, locale = 'en') {
         assert.deepEqual(body.context, state.expectedContext || [], 'only explicitly selected fields are attached');
         if (state.failTurn) {
           state.failTurn = false;
-          const error = 'Agent run failed; accepted request will not be retried';
+          const error = 'MODEL_REQUEST_HTTP_ERROR · HTTP 429';
           state.sessions[0].messages.push({ id: `u-${body.request_id}`, role: 'user', content: body.content, request_id: body.request_id });
           state.sessions[0].last_error = error;
           state.operations[body.request_id] = { request_id: body.request_id, status: 'failed', kind: 'agent_turn', result: { session_id: 's1' }, error };
@@ -362,7 +362,7 @@ async function verifyPendingRecovery() {
   state.inFlightContext = null;
   state.failTurn = true;
   await input.fill('Accepted but no reply'); await send.click();
-  await expect(composer.getByText(t('agent.turnFailed'))).toBeVisible();
+  await expect(composer.getByText(t('agent.turnFailed'))).toContainText('MODEL_REQUEST_HTTP_ERROR · HTTP 429');
   await expect(panel.locator('.agent-messages').getByText('Accepted but no reply', { exact: true })).toHaveCount(1);
   await input.fill('New turn in the same conversation'); await send.click();
   await expect(panel.getByText('Synthetic preview, not applied.', { exact: true })).toBeVisible();
@@ -392,12 +392,12 @@ async function verifyRecoveryNavigation(width, height, locale) {
   plan.after.image_context = { has_existing_images: true, requires_choice: true, candidates: Array.from({ length: 4 }, (_, i) => ({ id: i ? `asset-${i}` : 'avatar', label: `Synthetic reference ${i}`, kind: 'asset', available: true })) };
   state.holdThumbnails = true;
   state.drafts[plan.id] = plan;
-  state.jobs['recovery-job'] = { id: 'recovery-job', plan: plan.after, status: 'unknown', outputs: [], error: 'Raw provider uncertainty' };
+  state.jobs['recovery-job'] = { id: 'recovery-job', plan: plan.after, status: 'unknown', outputs: [], error: 'IMAGE_NO_OUTPUT · HTTP 200' };
   // A trailing completed result prevents a false pass from merely going to bottom.
   state.drafts.trailing = { ...plan, id: 'trailing', result: { job_id: 'trailing-job' } };
   state.jobs['trailing-job'] = { id: 'trailing-job', plan: plan.after, status: 'completed', outputs: Array.from({ length: 4 }, (_, i) => ({ id: `trailing-${i}` })), error: null };
   const journal = [{ request_id: 'recovery-request', kind: 'commit', draft_id: plan.id, ...(width === 390 ? {} : { session_id: 's1' }) }];
-  state.operations['recovery-request'] = { request_id: 'recovery-request', kind: 'image_generation', status: 'unknown', result: { draft_id: plan.id, job_id: 'recovery-job' }, error: 'Raw provider uncertainty' };
+  state.operations['recovery-request'] = { request_id: 'recovery-request', kind: 'image_generation', status: 'unknown', result: { draft_id: plan.id, job_id: 'recovery-job' }, error: 'IMAGE_NO_OUTPUT · HTTP 200' };
   await page.addInitScript(journal => sessionStorage.setItem('lore-agent-request-recovery-v1', JSON.stringify(journal)), journal);
   await page.goto(origin + '/settings'); await page.locator('.agent-launcher').click();
   const panel = page.locator('.agent-surface'), notice = panel.locator('.agent-recovery-notice'), transcript = panel.locator('.agent-transcript');
@@ -420,7 +420,7 @@ async function verifyRecoveryNavigation(width, height, locale) {
   await expect(job).toBeFocused(); await expect(job.locator('h3')).toBeInViewport();
   await expect(panel.locator('[data-agent-draft=recovery-plan] h3')).toContainText(local['agent.imageRequestSubmitted']);
   await expect(panel.locator('[data-agent-draft=recovery-plan] h3')).not.toContainText(local['agent.status.committed']);
-  await expect(job).toContainText(local['agent.imageRequestNoOutput']); await expect(job.locator('img')).toHaveCount(0);
+  await expect(job.getByRole('alert')).toHaveText('IMAGE_NO_OUTPUT · HTTP 200'); await expect(job.locator('img')).toHaveCount(0);
   await expect(panel.getByText('Raw provider uncertainty', { exact: true })).toHaveCount(0);
   await expect(input).toHaveValue('Keep my unsent composer');
   await expect(history).toHaveValue('s1');

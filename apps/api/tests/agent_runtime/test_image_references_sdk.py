@@ -237,7 +237,7 @@ def test_load_reference_rejected_before_sdk(monkeypatch, failure):
     async def forbidden(*args, **kwargs): pytest.fail('SDK reached')
     monkeypatch.setattr(images, 'image_completion', forbidden)
     result = asyncio.run(images.execute_image_plan(Service(), None, 'd', 'r', 1, 'h'))
-    assert result == {'status': 'failed', 'error': 'Image plan rejected before dispatch'}
+    assert result == {'status': 'failed', 'error': 'IMAGE_PREFLIGHT_FAILED'}
 
 
 def test_legacy_no_mode_new_generation_and_xai_exact_route(monkeypatch):

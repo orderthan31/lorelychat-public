@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import httpx
 
+from app.agent.diagnostics import Failure, exception_name, failure
 from app.engine import litellm_transport as transport, vertex_auth
 
 PROVIDERS = frozenset({'google', 'gemini', 'vertex_ai'})
@@ -128,13 +129,22 @@ def _native_outputs(response, count):
     from app.agent.image_generation import ImagePlanError, verified_outputs
     try:
         body = response.json()
-        if not isinstance(body, dict) or body.get('promptFeedback', {}).get('blockReason'):
+        if not isinstance(body, dict):
             raise ValueError()
+        if body.get('promptFeedback', {}).get('blockReason'):
+            raise Failure('IMAGE_POLICY_BLOCKED', 'ImagePlanError', 200).wrap(ImagePlanError)
         candidates = body.get('candidates')
         if not isinstance(candidates, list) or len(candidates) != 1:
             raise ValueError()
         candidate = candidates[0]
-        if not isinstance(candidate, dict) or candidate.get('finishReason') != 'STOP':
+        if not isinstance(candidate, dict):
+            raise ValueError()
+        finish = candidate.get('finishReason')
+        if finish in ('SAFETY', 'IMAGE_SAFETY', 'PROHIBITED_CONTENT', 'IMAGE_PROHIBITED_CONTENT'):
+            raise Failure('IMAGE_POLICY_BLOCKED', 'ImagePlanError', 200).wrap(ImagePlanError)
+        if finish == 'NO_IMAGE':
+            raise Failure('IMAGE_NO_OUTPUT', 'ImagePlanError', 200).wrap(ImagePlanError)
+        if finish != 'STOP':
             raise ValueError()
         parts = candidate['content']['parts']
         if not isinstance(parts, list) or not 1 <= len(parts) <= 32:
@@ -154,11 +164,15 @@ def _native_outputs(response, count):
                     raise ValueError()
                 if not part.get('thought', False):
                     safe.append({'inlineData': {'mimeType': output['mime_type'], 'data': inline['data']}})
+        if not safe:
+            raise Failure('IMAGE_NO_OUTPUT', 'ImagePlanError', 200).wrap(ImagePlanError)
         if len(safe) != count:
             raise ValueError()
         return {'candidates': [{'content': {'role': 'model', 'parts': safe}, 'finishReason': 'STOP'}]}
-    except Exception:
-        raise ImagePlanError('Invalid Google inline image response') from None
+    except Exception as exc:
+        if isinstance(getattr(exc, 'agent_failure', None), Failure):
+            raise
+        raise Failure('IMAGE_INVALID_RESPONSE', exception_name(exc), 200).wrap(ImagePlanError) from None
 
 
 class GoogleImageSendTransport(transport.SingleSendTransport):
@@ -193,14 +207,19 @@ class GoogleImageSendTransport(transport.SingleSendTransport):
             raise ImagePlanError('Google image request evidence mismatch')
         try:
             response = await super().handle_async_request(request)
-        except (httpx.ConnectError, httpx.RemoteProtocolError):
+        except (httpx.ConnectError, httpx.RemoteProtocolError) as exc:
             # The pinned AsyncHTTPHandler has a connection-error retry path
             # independent of num_retries. Withhold that signal; never create
             # another client or dispatch even after an ambiguous network error.
-            raise ImagePlanError('Google image transport failed') from None
+            raise failure('IMAGE_REQUEST', exc, self).wrap(ImagePlanError) from None
         if response.status_code != 200:
-            raise ImagePlanError('Google image request rejected')
-        safe = _native_outputs(response, self.plan['count'])
+            self.error = Failure('IMAGE_REQUEST_HTTP_ERROR', 'ImagePlanError', response.status_code).wrap(ImagePlanError)
+            raise self.error
+        try:
+            safe = _native_outputs(response, self.plan['count'])
+        except ImagePlanError as exc:
+            self.error = exc  # Preserve safe evidence even if the SDK wraps the exception.
+            raise
         return httpx.Response(200, json=safe, request=request)
 
 
@@ -223,6 +242,7 @@ async def completion(route, plan, *, before_send, reference):
     from litellm.types.router import GenericLiteLLMParams
 
     guard = raw = None
+    stage = 'IMAGE_DISPATCH'
     try:
         async with asyncio.timeout(90):
             headers = {'Content-Type': 'application/json', 'Accept-Encoding': 'identity'}
@@ -230,7 +250,9 @@ async def completion(route, plan, *, before_send, reference):
                 # Existing request-owned OAuth implementation: fresh uploaded
                 # service-account credentials, fixed bounded token POST. No ADC.
                 before_send()
+                stage = 'IMAGE_AUTH'
                 token = await vertex_auth.acquire_token(route, 20)
+                stage = 'IMAGE_DISPATCH'
                 headers['Authorization'] = f'Bearer {token}'
                 params = {'vertex_project': route.vertex_project, 'vertex_location': route.vertex_location}
                 endpoint = VertexAIGeminiImageGenerationConfig().get_complete_url(
@@ -277,11 +299,12 @@ async def completion(route, plan, *, before_send, reference):
                     logging_obj=log, timeout=65, client=client)
             if not guard.sent or guard.denied or guard.error is not None:
                 raise ImagePlanError('Google image dispatch did not complete')
+            stage = 'IMAGE_RESPONSE'
             return verified_outputs(result, plan['count'])
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        raise ImagePlanError('Image dispatch outcome unknown; do not regenerate automatically') from None
+    except Exception as exc:
+        if stage == 'IMAGE_DISPATCH' and guard is not None and guard.sent:
+            stage = 'IMAGE_REQUEST'
+        raise failure(stage, exc, guard).wrap(ImagePlanError) from None
     finally:
         if raw is not None:
             await transport.close_owned(raw.aclose)

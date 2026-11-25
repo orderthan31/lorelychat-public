@@ -16,6 +16,7 @@ export function ImageResults({ job }: { job: ImageJob }) {
   const targetLabel = useAgentStore(s => s.resources.find(r => r.kind === targetKind && r.id === targetId)?.label);
   const validTarget = !!targetId && (targetKind === 'character' || targetKind === 'world');
   const completed = job.status === 'completed';
+  const jobError = job.status !== 'unknown' || job.error?.startsWith('IMAGE_') ? job.error : null;
   const world = targetKind === 'world';
   const selected = (selection?.selected || []).filter(id => job.outputs.some(output => output.id === id));
   const label = selection?.label || '';
@@ -33,8 +34,8 @@ export function ImageResults({ job }: { job: ImageJob }) {
   }
   return <section className="agent-image-results" data-agent-image-job={job.id} tabIndex={-1} aria-labelledby={`agent-job-heading-${job.id}`}>
     <h3 id={`agent-job-heading-${job.id}`}>{t(job.status === 'unknown' ? 'agent.imageRequestUnknown' : 'agent.images')}{job.status !== 'unknown' && ` · ${t(`agent.status.${job.status}` as UiMessageKey)}`}</h3>
-    {job.status === 'unknown' && <p>{t(job.outputs.length ? 'agent.imageRequestUnresolved' : 'agent.imageRequestNoOutput')}</p>}
-    <AgentError value={error || (job.status !== 'unknown' ? job.error || '' : '')} />
+    {job.status === 'unknown' && !jobError && <p>{t(job.outputs.length ? 'agent.imageRequestUnresolved' : 'agent.imageRequestNoOutput')}</p>}
+    <AgentError value={error || jobError || ''} />
     {(!completed || error || !validTarget) && <button type="button" disabled={refreshing} onClick={() => void refresh()}>{t('agent.refresh')}</button>}
     <div className="agent-image-grid">{job.outputs.map(output => completed && validTarget ? <label key={output.id}>
       <AgentImage id={output.id} /><span><input type="checkbox" checked={selected.includes(output.id)} onChange={event => update({ selected: event.target.checked ? (world ? [output.id] : [...selected, output.id]) : selected.filter(id => id !== output.id) })} />{t('agent.selectImage')}</span>

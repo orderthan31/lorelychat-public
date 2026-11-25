@@ -91,6 +91,7 @@ export function AgentPanel() {
   const uncertain = sendBlock === 'agent.uncertain';
   const failed = (!sendBlock || sendBlock === 'agent.needMessage') && (turn?.phase === 'failed' || (!turn && session?.last_error && !session.busy));
   const unsent = !!failed && !!turn && !messages.some(m => m.role === 'user' && m.request_id === turn.id);
+  const turnError = !unsent && !session?.busy ? session?.last_error : null;
   const hasRecovery = s.pending.some(p => p.request_id !== s.activeMessage && p.request_id !== s.activeCreation);
   const [draftId, setDraftId] = useState('');
   const transcript = useRef<HTMLDivElement>(null);
@@ -158,7 +159,6 @@ export function AgentPanel() {
     <button disabled={s.refreshing} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button>
     <details><summary>{t('agent.history')}</summary><label>{t('agent.sessions')}<select value={s.selected} onChange={e => agentActions.selectSession(e.target.value)}><option value="">{t('agent.newSession')}</option>{Object.values(s.sessions).map(item => <option value={item.id} key={item.id}>{(item.title && item.title !== 'Lore Agent' && item.title !== item.id ? item.title : item.messages.find(message => message.role === 'user')?.content || t('agent.untitledConversation')).slice(0, 80)}</option>)}</select></label></details>
     <details><summary>{t('agent.advancedRecovery')}</summary><label>{t('agent.draftId')}<input value={draftId} onChange={e => setDraftId(e.target.value)} /></label><button disabled={s.working || !draftId.trim()} onClick={() => void agentActions.refreshDraft(draftId.trim())}>{t('agent.openDraft')}</button></details>
-    {session?.last_error && <details><summary>{t('agent.status.failed')}</summary><p>{session.last_error}</p></details>}
     <ContextPicker />
     </details>
     </div>
@@ -191,7 +191,7 @@ export function AgentPanel() {
     <form className="agent-composer" onSubmit={event => { event.preventDefault(); void agentActions.send(); }}>
       <label><span className="sr-only">{t('agent.message')}</span><textarea rows={2} placeholder={t('agent.needMessage')} value={s.input} onChange={e => useAgentStore.setState({ input: e.target.value })} /></label>
       <div className="agent-composer-actions">
-      {failed && <p className="agent-turn-error" role="alert">{t(unsent ? 'agent.sendFailed' : 'agent.turnFailed')}</p>}
+      {failed && <p className="agent-turn-error" role="alert">{t(unsent ? 'agent.sendFailed' : 'agent.turnFailed')}{turnError?.match(/^(AGENT|MODEL)_/) ? ` · ${turnError}` : ''}</p>}
       {sendBlock && sendBlock !== 'agent.needMessage' && <p id="agent-send-status" role="status">{sendBlock === 'agent.working' ? <><AgentMark size={20} active /><span className={progress ? "agent-progress" : "agent-progress sr-only"} data-agent-progress={progress?.stage}>{t(progress ? `agent.progress.${progress.stage}` as UiMessageKey : sendBlock)}</span></> : t(uncertain ? 'agent.checkTurn' : sendBlock)}</p>}
       {hasRecovery && <button type="button" disabled={s.refreshing} onClick={() => void agentActions.refresh()}>{t('agent.refresh')}</button>}
       <button aria-describedby={sendBlock && sendBlock !== 'agent.needMessage' ? 'agent-send-status' : undefined} disabled={!!sendBlock} type="submit">{t('전송')}</button>
