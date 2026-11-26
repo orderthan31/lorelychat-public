@@ -31,7 +31,7 @@ export function TextareaWithExpand({ label, value, onChange, rows = 3, placehold
     <ExpandedTextDialog open={expanded} onOpenChange={setExpanded} title={editorTitle || label}
       closeAction={<Button type="button" variant="ghost" onClick={() => setExpanded(false)}>{t('닫기')}</Button>}>
       <TextArea isLabelHidden label={`${label} · ${t('전체 화면 편집')}`} hasAutoFocus={expanded} value={text} onChange={change} placeholder={placeholder}
-        width="100%" containerClassName="focus-editor-input" controlClassName="focus-editor-control" />
+        width="100%" statusVariant="detached" containerClassName="focus-editor-input" controlClassName="focus-editor-control" />
     </ExpandedTextDialog>
   </div>;
 }

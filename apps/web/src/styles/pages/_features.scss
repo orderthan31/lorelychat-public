@@ -78,8 +78,8 @@
 .expanded-text-layout h2 { margin: 0; font-size: 1rem; color: var(--foreground); }
 .expanded-text-layout textarea.text-editor-textarea { min-height: 44px; height: clamp(44px, calc(var(--editor-viewport, 100dvh) - 144px), 22rem); width: 100%; resize: none; overflow: auto; font-size: 16px; font-weight: 400; }
 .focus-editor { grid-template-rows: auto minmax(0, 1fr); min-height: 0; height: min(42rem, calc(var(--editor-viewport, 100dvh) - 44px)); }
-.focus-editor-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 8px; }
-.focus-editor-header h2 { min-width: 0; overflow-wrap: anywhere; }
+.focus-editor-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 8px; }
+.focus-editor-toolbar h2 { min-width: 0; overflow-wrap: anywhere; }
 .focus-editor-input, .focus-editor-control { height: 100%; min-height: 0; }
 .focus-editor-control > textarea { height: 100%; min-height: 0; padding: 12px; resize: none; font-size: 16px; line-height: 1.6; }
 /* Fullscreen follows the visible viewport when the software keyboard pan/resizes it. */

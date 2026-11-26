@@ -35,7 +35,7 @@ export function ExpandedTextDialog({ open, onOpenChange, title, children, action
     style={viewport ? { '--editor-viewport': `${viewport.height}px`, '--editor-offset': `${viewport.top}px` } as CSSProperties : undefined}>
     <div className={focusMode ? 'expanded-text-layout focus-editor' : 'expanded-text-layout'}>
       {focusMode ? <LayoutHeader padding={0} hasDivider className="focus-editor-header">
-        <h2>{title}</h2>{closeAction}
+        <div className="focus-editor-toolbar"><h2>{title}</h2>{closeAction}</div>
       </LayoutHeader> : <h2>{title}</h2>}
       {children}
       {!focusMode && <footer className="text-editor-foot">{actions}</footer>}

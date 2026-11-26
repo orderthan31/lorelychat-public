@@ -50,7 +50,7 @@ try {
  const origin='http://127.0.0.1:'+server.httpServer.address().port;
  let cases=0;
  for(const [width,height] of [[320,568],[390,844],[820,1180],[1024,768],[1440,1000]]){
-  const page=await browser.newPage({viewport:{width,height}}); const errors=[];
+  const page=await browser.newPage({viewport:{width,height}, reducedMotion:'reduce'}); const errors=[];
   page.on('pageerror',e=>{errors.push(e.message); console.error('fixture error',e.message);});
   await page.addInitScript(()=>localStorage.setItem('lorechat-language','ko'));
   await page.route('**/*',route=>{const u=new URL(route.request().url());return u.origin!==origin||u.pathname.startsWith('/api/')?route.abort():route.continue();});
@@ -90,7 +90,19 @@ try {
       await expect(editor).toBeFocused();
       assert.equal(await input.evaluate(node => node === document.activeElement), true, 'editor stays mounted across mode change');
       await page.setViewportSize({width,height});
-      await expect(dialog.getByRole('button',{name:'닫기',exact:true})).toBeInViewport();
+      const close = dialog.getByRole('button',{name:'닫기',exact:true});
+      await expect(close).toBeInViewport();
+      const writingArea = await editor.boundingBox();
+      const toolbar = await close.boundingBox();
+      assert.ok(writingArea.height >= height * .6 && toolbar.y + toolbar.height <= writingArea.y,
+        'writing area fills the dialog below its toolbar, not just the default textarea rows');
+      if (width === 320) {
+        await page.setViewportSize({width:690,height:285});
+        await expect.poll(async () => Math.round((await dialog.boundingBox()).height)).toBe(285);
+        await expect(close).toBeInViewport();
+        assert.ok((await editor.boundingBox()).height >= 160, 'short landscape keeps room for writing');
+        await page.setViewportSize({width,height});
+      }
       await expect(editor).toHaveValue('Changed authored persona');
       await editor.fill('확대해서 쓴 한글 초안');
       await page.keyboard.press('Escape');
