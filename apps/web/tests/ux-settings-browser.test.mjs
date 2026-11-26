@@ -37,6 +37,10 @@ try {
           return route.fulfill({ json: accounts });
         }
         if (url.pathname.endsWith('/manual')) { if (failManual) { failManual = false; return route.fulfill({ status: 400, json: { detail: 'Synthetic manual failure' } }); } const data = req.postDataJSON(); const option = { ...data, id: 'manual', key: 'manual', display_label: data.label, enabled: true, source: 'manual', provider_type: 'google' }; options.unshift(option); return route.fulfill({ json: option }); }
+        if (req.method() === 'PATCH' && url.pathname === '/api/model-options/model-0') {
+          options[0] = {...options[0], ...req.postDataJSON()};
+          return route.fulfill({json:options[0]});
+        }
         if (url.pathname === '/api/model-options') return route.fulfill({ json: options });
         if (url.pathname.startsWith('/api/runtime-settings')) { if (req.method() !== 'GET') runtimeValue = { ...runtimeValue, ...req.postDataJSON() }; return route.fulfill({ json: runtimeValue }); }
         if (req.method() === 'GET') return route.fulfill({ json: url.pathname === '/api/health' || url.pathname === '/api/ready' ? { status: 'ok' } : [] });
@@ -68,6 +72,16 @@ try {
     const filterToggle = page.locator('[data-model-filter-toggle]');
     if (await filterToggle.isVisible()) await filterToggle.click();
     await page.locator('[data-model-filter-fields] select').first().selectOption('');
+    await expect(page.locator('[data-model-row]')).toHaveCount(10);
+    const search = page.getByRole('searchbox',{name:t('검색'),exact:true});
+    await search.fill('synthetic-0');
+    await expect(page.locator('[data-model-row]')).toHaveCount(1);
+    const enable = page.locator('[data-model-row]').getByRole('switch');
+    await expect(enable).toBeChecked();
+    await enable.focus(); await page.keyboard.press('Space');
+    await expect(enable).not.toBeChecked();
+    assert.deepEqual(writes.at(-1).body, { enabled:false });
+    await search.fill('');
     await expect(page.locator('[data-model-row]')).toHaveCount(10);
     await page.evaluate(() => scrollTo(0,0));
     const manual = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: t('수동 추가') }) });

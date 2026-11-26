@@ -78,12 +78,19 @@ try {
    if(kind==='character'){
     const inline = page.getByRole('textbox',{name:'페르소나',exact:true});
     await inline.fill('Changed authored persona');
-    if (width === 320) {
+    if (width === 320 || width === 1440) {
       const expand = page.getByRole('button', {name:'페르소나 · 크게 쓰기',exact:true});
       await expand.click();
       const dialog = page.getByRole('dialog', {name:'페르소나',exact:true});
       const editor = dialog.getByRole('textbox');
       await expect(editor).toBeFocused();
+      await expect.poll(async () => Math.round((await dialog.boundingBox()).width)).toBe(width === 320 ? width : 720);
+      const input = await editor.elementHandle();
+      await page.setViewportSize({width: width === 320 ? 820 : 690, height});
+      await expect(editor).toBeFocused();
+      assert.equal(await input.evaluate(node => node === document.activeElement), true, 'editor stays mounted across mode change');
+      await page.setViewportSize({width,height});
+      await expect(dialog.getByRole('button',{name:'닫기',exact:true})).toBeInViewport();
       await expect(editor).toHaveValue('Changed authored persona');
       await editor.fill('확대해서 쓴 한글 초안');
       await page.keyboard.press('Escape');

@@ -76,8 +76,15 @@
 .text-editor-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .expanded-text-layout { display: grid; gap: 10px; }
 .expanded-text-layout h2 { margin: 0; font-size: 1rem; color: var(--foreground); }
-.expanded-text-layout textarea.text-editor-textarea, .expanded-text-layout .text-editor-textarea > textarea { min-height: 44px; height: clamp(44px, calc(var(--editor-viewport, 100dvh) - 144px), var(--editor-max-text-height, 22rem)); width: 100%; resize: none; overflow: auto; font-size: 16px; font-weight: 400; }
-.expanded-text-layout--roomy { --editor-max-text-height: 38rem; }
+.expanded-text-layout textarea.text-editor-textarea { min-height: 44px; height: clamp(44px, calc(var(--editor-viewport, 100dvh) - 144px), 22rem); width: 100%; resize: none; overflow: auto; font-size: 16px; font-weight: 400; }
+.focus-editor { grid-template-rows: auto minmax(0, 1fr); min-height: 0; height: min(42rem, calc(var(--editor-viewport, 100dvh) - 44px)); }
+.focus-editor-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 8px; }
+.focus-editor-header h2 { min-width: 0; overflow-wrap: anywhere; }
+.focus-editor-input, .focus-editor-control { height: 100%; min-height: 0; }
+.focus-editor-control > textarea { height: 100%; min-height: 0; padding: 12px; resize: none; font-size: 16px; line-height: 1.6; }
+/* Fullscreen follows the visible viewport when the software keyboard pan/resizes it. */
+.focus-editor-fullscreen { inset: var(--editor-offset, 0px) 0 auto; height: var(--editor-viewport, 100dvh); max-height: var(--editor-viewport, 100dvh); }
+.focus-editor-fullscreen .focus-editor { flex: 1; height: auto; }
 
 .battle-control-dock {
   position: relative;

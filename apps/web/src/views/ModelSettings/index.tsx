@@ -1,12 +1,13 @@
 import './settings-ux.scss';
+import { Switch, TextInput } from '@astryxdesign/core';
 import { useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { PageHeaderAction, PageHeaderTarget } from '../../components/molecules/PageHeaderActions';
 import { VertexFields, VertexAccountEditor } from './VertexFields';
 import { validVertexConfiguration, vertexPayload, type VertexDraft } from './vertex';
-import { ChevronDown, ChevronLeft, ChevronRight, Plus, PlugZap, RefreshCw, Save, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Plus, PlugZap, RefreshCw, Save, Search, Trash2 } from 'lucide-react';
 import Swal from 'sweetalert2';
 import { modelProviderApi, type ModelOption, type ProviderAccount, type ProviderType } from '../../api/resources';
-import { Badge, Button, Input, Select, Switch } from '../../components/atoms';
+import { Badge, Button, Input, Select } from '../../components/atoms';
 import { Field } from '../../components/molecules';
 import { RuntimeSettingsPanel, type RuntimeSettingValue } from '../../components/organisms';
 import { DecisionCapabilityHint } from '../../components/organisms/RuntimeSettings';
@@ -370,12 +371,13 @@ export function ModelSettingsView({ section = 'runtime', runtimeDefaultSetting, 
     }
   }
 
-  async function toggleModelOption(option: ModelOption, decisionCapability = false) {
+  async function toggleModelOption(option: ModelOption, checked: boolean, decisionCapability = false) {
+    if (loading) return;
     setLoading(true);
     try {
       await modelProviderApi.updateOption(option.id, decisionCapability
-        ? { supports_decision: !option.supports_decision }
-        : { enabled: !option.enabled });
+        ? { supports_decision: checked }
+        : { enabled: checked });
       await refreshModelProviderAndRuntimeState();
     } catch (error: any) {
       setMessage(`${t('모델 활성화 변경 실패 ·')} ${error.message}`);
@@ -521,13 +523,13 @@ export function ModelSettingsView({ section = 'runtime', runtimeDefaultSetting, 
             <Field label={t('Provider 계정')}><Select value={selectedAccountId} onChange={(e) => { setSelectedAccountId(e.target.value); setManualCapability('chat'); }}><option value="">{t('계정 선택')}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.alias}</option>)}</Select></Field>
             <Field label={t('용도')}><Select value={manualCapability} onChange={(e) => setManualCapability(e.target.value as typeof manualCapability)}><option value="chat">{t('채팅')} · {t('압축')}</option>{accounts.find(account => account.id === selectedAccountId)?.provider_type !== 'vertex_ai' && <option value="decision">{t('의사결정')}</option>}</Select></Field>
             {manualCapability === 'decision' && <CapabilityEditor modalities={manualInputs} mimes={manualMimes} disabled={loading} onChange={(m, f) => { setManualInputs(m); setManualMimes(f); setManualInputsEdited(true); }} />}
-            <Field label={t('모델 ID')}><Input value={manualModel} placeholder="gemma-local" onChange={(e) => setManualModel(e.target.value)} /></Field>
-            <Field label={t('표시명')}><Input value={manualLabel} placeholder="Local Gemma" onChange={(e) => setManualLabel(e.target.value)} /></Field>
+            <TextInput label={t('모델 ID')} value={manualModel} placeholder="gemma-local" onChange={setManualModel} width="100%" controlClassName="model-text-control" />
+            <TextInput label={t('표시명')} value={manualLabel} placeholder="Local Gemma" onChange={setManualLabel} width="100%" controlClassName="model-text-control" />
             <Button type="button" variant="secondary" disabled={loading || (manualCapability === 'decision' && manualInputsEdited && accounts.find((account) => account.id === selectedAccountId)?.provider_type !== 'openrouter' && !!manualInputs?.includes('image') && !manualMimes?.length)} onClick={createManualModel}><Plus className="size-4" aria-hidden="true" />{t('수동 추가')}</Button>
           </div>
         </details>
         <div className="model-search-toolbar">
-          <Field label={t('검색')}><Input value={modelQuery} placeholder={t('모델명, provider, 계정')} onChange={(e) => setModelQuery(e.target.value)} /></Field>
+          <TextInput type="search" label={t('검색')} startIcon={<Search size={16} aria-hidden="true" />} value={modelQuery} placeholder={t('모델명, provider, 계정')} onChange={setModelQuery} width="100%" controlClassName="model-text-control" />
           {!wideFilters && <Button type="button" variant="ghost" data-model-filter-toggle aria-expanded={filtersOpen} aria-controls="model-filter-fields" onClick={() => setFiltersOpen(open => !open)}>{t('필터')}</Button>}
         </div>
         <div className="model-filter-fields" id="model-filter-fields" data-model-filter-fields hidden={!wideFilters && !filtersOpen}>
@@ -537,7 +539,7 @@ export function ModelSettingsView({ section = 'runtime', runtimeDefaultSetting, 
 
         </div>
         <div className="divide-y divide-border border-y border-border">
-          {visibleModelOptions.length ? visibleModelOptions.map((option) => <div key={option.id} className="grid min-h-[72px] grid-cols-[minmax(0,1fr)_48px] items-center gap-2 py-2" data-model-row>
+          {visibleModelOptions.length ? visibleModelOptions.map((option) => <div key={option.id} className="model-catalog-row" data-model-row>
             <div className="min-w-0">
               <div className="grid min-w-0 gap-0.5">
                 <h3 className="m-0 min-w-0 truncate text-sm font-bold leading-5 text-foreground" title={option.label}>{option.label}</h3>
@@ -547,8 +549,9 @@ export function ModelSettingsView({ section = 'runtime', runtimeDefaultSetting, 
                 {option.supports_decision && <details className="model-help"><summary>{t('이미지 지원 정보')}</summary><DecisionCapabilityHint option={option} /><ManualCapabilityEditor option={option} disabled={loading} save={(m, f) => saveCapabilities(option, m, f)} /></details>}
               </div>
             </div>
-            {option.source === 'manual' && ['google', 'openrouter', 'openai', 'openai_compatible'].includes(option.provider_type) ? <Switch compact checked={!!option.supports_decision} disabled={loading} label={t('의사결정')} onChange={() => toggleModelOption(option, true)} /> : null}
-            <Switch compact checked={!!option.enabled} disabled={loading} aria-label={`${option.display_label} ${t(option.enabled ? '비활성화' : '활성화')}`} title={t(option.enabled ? '비활성화' : '활성화')} onChange={() => toggleModelOption(option)} />
+            <Switch className="model-enable-switch" size="sm" label={`${option.display_label || option.label} · ${t('활성화')}`} isLabelHidden value={!!option.enabled} isDisabled={loading} onChange={checked => void toggleModelOption(option, checked)} />
+            {option.source === 'manual' && ['google', 'openrouter', 'openai', 'openai_compatible'].includes(option.provider_type) &&
+              <Switch className="model-decision-switch" size="sm" label={t('의사결정')} value={!!option.supports_decision} isDisabled={loading} onChange={checked => void toggleModelOption(option, checked, true)} />}
           </div>) : <div className="py-8 text-center text-sm text-muted-foreground">{t(modelOptions.length ? '조건에 맞는 모델이 없습니다.' : 'Provider 계정을 저장한 뒤 모델 목록을 불러오면 여기에 표시됩니다.')}</div>}
         </div>
         <div className="model-page-size"><Field label={t('표시 개수')}><Select value={String(modelPageSize)} onChange={(e) => setModelPageSize(Number(e.target.value))}>{MODEL_PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{formatUiCount(size, 'items', locale)}</option>)}</Select></Field></div>
