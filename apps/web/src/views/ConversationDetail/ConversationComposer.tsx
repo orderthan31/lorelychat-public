@@ -1,6 +1,9 @@
+import { Maximize2, Settings2 } from 'lucide-react';
 import { useLayoutEffect } from 'react';
 import { ChatSettingsBubble } from '../../components/organisms';
-import { Button, Card, Select, Textarea } from '../../components/atoms';
+import { Button, Select, Textarea } from '../../components/atoms';
+import { ExpandedTextDialog } from '../../components/molecules/ExpandedTextDialog';
+import { formatTextMetrics } from '../../i18n/core';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { ChatCommandItem } from '../../types/chatCommands';
 import type { ConversationComposerProps } from './contracts';
@@ -14,7 +17,7 @@ export function ConversationComposer({
   composerTextareaRef, compose, setCompose, resizeComposerTextarea,
   handleComposerKeyDown, composeExpanded, setComposeExpanded, chatCommands = [],
 }: ConversationComposerProps) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   // Selection temporarily unmounts the form, not its draft. Restore multiline
   // height even when the text did not change while the toolbar was visible.
   useLayoutEffect(() => { resizeComposerTextarea(); }, [resizeComposerTextarea]);
@@ -51,11 +54,7 @@ export function ConversationComposer({
       data-modernized="채팅 컴포저 design-system primitive marker"
       onSubmit={(event) => { event.preventDefault(); sendConversationMessage(); }}
     >
-      <Select aria-label={t('메시지 작성자')} value={speakerId} onChange={(event) => setSpeakerId(event.target.value)}>
-        {speakerOptions.map((id) => <option key={id} value={id}>{participantName(id)}</option>)}
-      </Select>
       <div className="composer-input-wrap">
-        <button type="button" className="chat-settings-button" aria-label={t('채팅 설정')} title={t('채팅 설정')} onClick={() => onOpenPanelSettings ? onOpenPanelSettings() : setChatSettingsOpen((open) => !open)}>⚙</button>
         {!onOpenPanelSettings && <ChatSettingsBubble
           open={chatSettingsOpen}
           setting={conversationRuntimeSetting}
@@ -91,25 +90,24 @@ export function ConversationComposer({
           onKeyDown={handleComposerKeyDown}
           placeholder={t('*액션묘사* 대사')}
         />
-        {composeExpanded && (
-          <div className="text-editor-modal composer-editor-modal" role="dialog" aria-modal="true">
-            <button type="button" className="text-editor-backdrop" aria-label={t('닫기')} onClick={() => setComposeExpanded(false)} />
-            <Card className="text-editor-card composer-editor-card">
-              <header className="text-editor-head">
-                <div><strong>{t('메시지 크게 쓰기')}</strong><small>{t('하단 키보드에 가리지 않도록 위쪽에서 작성합니다.')}</small></div>
-                <Button type="button" variant="ghost" size="sm" onClick={() => setComposeExpanded(false)}>{t('접기')}</Button>
-              </header>
-              <Textarea className="text-editor-textarea" autoFocus value={compose} onChange={(event) => setCompose(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder={t('*액션묘사* 대사')} />
-              <footer className="text-editor-foot">
-                <span>{compose.length}자 · {Math.max(1, compose.split('\n').length)}줄</span>
-                <Button type="button" disabled={!compose.trim() || busy} onClick={sendConversationMessage}>{t(busy ? '전송 중…' : '전송')}</Button>
-              </footer>
-            </Card>
-          </div>
-        )}
       </div>
-      <Button type="button" variant="ghost" size="icon" className="composer-expand-trigger" aria-label={t('메시지 크게 쓰기')} title={t('메시지 크게 쓰기')} onClick={() => setComposeExpanded(true)}>↗</Button>
-      <Button type="submit" disabled={!compose.trim() || busy}>{t(busy ? '생성 중…' : '전송')}</Button>
+      <Select className="composer-speaker" aria-label={t('메시지 작성자')} value={speakerId} onChange={(event) => setSpeakerId(event.target.value)}>
+        {speakerOptions.map((id) => <option key={id} value={id}>{participantName(id)}</option>)}
+      </Select>
+      <div className="composer-tools">
+        <Button type="button" variant="ghost" size="icon" className="chat-settings-button" aria-label={t('채팅 설정')} title={t('채팅 설정')} onClick={() => onOpenPanelSettings ? onOpenPanelSettings() : setChatSettingsOpen((open) => !open)}><Settings2 size={18} /></Button>
+        <Button type="button" variant="ghost" size="icon" className="composer-expand-trigger" aria-label={t('메시지 크게 쓰기')} title={t('메시지 크게 쓰기')} onClick={() => setComposeExpanded(true)}><Maximize2 size={17} /></Button>
+      </div>
+      <Button className="composer-send" type="submit" disabled={!compose.trim() || busy}>{t(busy ? '생성 중…' : '전송')}</Button>
+      <ExpandedTextDialog open={composeExpanded} onOpenChange={setComposeExpanded} title={t('메시지 크게 쓰기')} actions={<>
+        <span>{formatTextMetrics(compose.length, Math.max(1, compose.split('\n').length), locale)}</span>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="ghost" onClick={() => setComposeExpanded(false)}>{t('접기')}</Button>
+          <Button type="button" disabled={!compose.trim() || busy} onClick={sendConversationMessage}>{t(busy ? '전송 중…' : '전송')}</Button>
+        </div>
+      </>}>
+        <Textarea className="text-editor-textarea" data-autofocus="true" value={compose} onChange={(event) => setCompose(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder={t('*액션묘사* 대사')} aria-label={t('메시지 크게 쓰기')} />
+      </ExpandedTextDialog>
     </form>
   );
 }

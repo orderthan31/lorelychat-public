@@ -1,5 +1,9 @@
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+@layer reset, theme, base, astryx-base, astryx-theme, components, utilities;
 @import "tailwindcss";
+@import "@astryxdesign/core/reset.css";
+@import "@astryxdesign/core/astryx.css";
+@import "@astryxdesign/theme-neutral/theme.css";
 @import "tw-animate-css";
 @custom-variant dark (&:where(.theme-dark, .theme-dark *));
 
@@ -15,7 +19,6 @@
   --color-card-foreground: var(--foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
-  --color-accent: var(--accent-2);
   --color-muted-foreground: var(--muted-foreground);
   --color-danger: var(--danger);
   --color-success: var(--success);
@@ -23,6 +26,9 @@
   --color-destructive: var(--danger);
   --radius-card: .875rem;
 }
+
+/* Tailwind's existing secondary accent must not alias Astryx's primary action. */
+@theme inline { --color-accent: var(--accent-2); }
 
 @import "./styles/base/_tokens.scss";
 @import "./styles/base/_reset.scss";

@@ -3,6 +3,7 @@
 .chat-workspace.has-docked-panel { grid-template-columns: minmax(0, 1fr) var(--chat-panel-width, 320px); }
 .chat-workspace > .chat-shell { width: 100%; max-width: var(--chat-max-width, 960px); margin-inline: auto; height: 100%; border: 0; }
 .chat-footer { min-width: 0; position: relative; }
+.chat-shell { container-type: inline-size; }
 .chat-workspace .composer { position: relative; bottom: auto; width: 100%; min-width: 0; padding-bottom: max(8px, env(safe-area-inset-bottom, 0px)); }
 .chat-workspace .chat-header-actions { max-width: min(46vw, 260px); flex-wrap: wrap; }
 .chat-workspace .chat-header { min-height: 56px; }
@@ -109,15 +110,17 @@ html.theme-dark .jump-to-latest-button { background: rgba(15,23,42,.95); color: 
 .avatar-character-info section { display: grid; gap: 4px; padding: 10px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.045); }
 .avatar-character-info h3 { margin: 0; font-size: 13px; color: #bdf8e8; }
 .avatar-character-info p { margin: 0; color: var(--text); font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
-.composer { position: sticky; bottom: 0; z-index: 85; display: grid; grid-template-columns: 88px minmax(0, 1fr) 44px auto; gap: 6px; align-items: end; padding: 6px 8px 8px; border-top: 1px solid var(--line); background: rgba(12,17,32,.98); }
-.composer > select, .composer > button { position: relative; z-index: 86; min-height: 44px; height: 44px; border-radius: 999px; }
-.composer > select { padding: 0 8px; font-size: 13px; }
-.composer textarea { position: relative; z-index: 86; min-height: 48px; max-height: 118px; padding: 12px 12px 10px 52px; resize: none; overflow-y: auto; line-height: 1.28; border-radius: 24px; }
-.composer > button { padding: 0 14px; }
-.composer > .composer-expand-trigger { width: 44px; min-width: 44px; min-height: 44px; padding: 0; display: inline-grid; place-items: center; border: 1px solid var(--line); }
-.composer-input-wrap { position: relative; z-index: 86; min-width: 0; }
-.composer-input-wrap textarea { display: block; width: 100%; height: auto; }
-.composer .chat-settings-button { position: absolute; z-index: 89; top: 2px; left: 2px; width: 44px; min-height: 44px !important; height: 44px !important; padding: 0 !important; display: inline-grid; place-items: center; border-radius: 999px; background: rgba(255,255,255,.1); color: var(--text); border: 1px solid var(--line); }
+.composer { position: sticky; bottom: 0; z-index: 85; display: grid; grid-template-columns: 104px minmax(0, 1fr) auto auto; grid-template-areas: "speaker input tools send"; gap: 6px; align-items: end; padding: 6px 8px 8px; border-top: 1px solid var(--line); background: var(--card); }
+.composer-speaker { grid-area: speaker; height: 44px; min-width: 0; }
+.composer-input-wrap { grid-area: input; position: relative; z-index: 86; min-width: 0; }
+.composer-input-wrap > textarea { display: block; width: 100%; height: auto; min-height: 44px; max-height: 112px; padding: 10px 12px; resize: none; overflow-y: auto; line-height: 1.35; }
+.composer-tools { grid-area: tools; display: flex; align-items: center; gap: 4px; }
+.composer-send { grid-area: send; }
+@container (max-width: 559px) {
+  .composer { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "input input input" "speaker tools send"; }
+  .composer-speaker { width: min(100%, 150px); }
+  .composer-input-wrap > textarea { font-size: 16px; }
+}
 .chat-settings-popover { position: absolute; left: 0; bottom: calc(100% + 10px); z-index: 65; width: min(calc(100vw - 20px), 340px); max-height: min(68dvh, 440px); overflow: auto; display: grid; gap: 9px; padding: 10px; border: 1px solid rgba(155,140,255,.38); border-radius: 18px 18px 18px 8px; background: rgba(16,23,43,.98); box-shadow: 0 20px 60px rgba(0,0,0,.46); overscroll-behavior: contain; }
 .chat-settings-popover::after { content: ''; position: absolute; left: 18px; bottom: -8px; width: 16px; height: 16px; background: rgba(16,23,43,.98); border-right: 1px solid rgba(155,140,255,.38); border-bottom: 1px solid rgba(155,140,255,.38); transform: rotate(45deg); }
 
@@ -131,7 +134,6 @@ html.theme-dark .jump-to-latest-button { background: rgba(15,23,42,.95); color: 
   .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid.three { grid-template-columns: 2fr 2fr 1fr; }
   .card-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .composer { grid-template-columns: 104px minmax(0, 1fr) 44px auto; align-items: end; }
 }
 @media (min-width: 600px) and (max-width: 1039px) {
   .chat-thread { padding-inline: clamp(12px, 3vw, 24px); }

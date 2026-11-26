@@ -55,7 +55,7 @@ export function AgentSurface() {
     // their own focus and Escape behavior. Closed surfaces install no handler.
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
-      const otherDialog = Array.from(document.querySelectorAll('[role="dialog"]:not(.agent-surface), [role="alertdialog"]')).some(node => node.getClientRects().length > 0);
+      const otherDialog = Array.from(document.querySelectorAll('dialog:modal, [role="dialog"]:not(.agent-surface), [role="alertdialog"]')).some(node => node.getClientRects().length > 0);
       if (otherDialog) return;
       event.preventDefault(); close();
     };

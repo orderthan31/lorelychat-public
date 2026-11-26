@@ -123,3 +123,12 @@
 .agent-layout:has(> [data-surface=sheet]) { display: block; }
 /* Runtime-confirmed progress; no timer-driven stages or percentages. */
 .agent-progress { min-width: 0; line-height: 1.4; overflow-wrap: anywhere; }
+
+/* Keep the composer reachable when a phone opens the Agent in landscape. */
+@media (max-height: 400px) {
+  .agent-modal .agent-toolbar { max-height: 26%; padding-inline: 12px; }
+  .agent-modal .agent-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+  .agent-modal .agent-composer textarea { min-height: 44px; max-height: 56px; }
+  .agent-modal .agent-composer-actions { margin: 0; flex-wrap: wrap; max-width: 42vw; }
+  .agent-modal .agent-composer-actions p { margin: 0; }
+}

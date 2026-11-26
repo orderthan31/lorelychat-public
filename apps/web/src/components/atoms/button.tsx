@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { Button as AstryxButton } from '@astryxdesign/core';
 import { Slot } from '@radix-ui/react-slot';
 import { cn } from '../../lib/utils';
 
@@ -23,7 +24,32 @@ const buttonSizes = {
   icon: 'size-11 min-h-11 min-w-11 p-0 aspect-square',
 } as const;
 
-export function Button({ asChild = false, variant = 'default', size = 'default', className, ...props }: ButtonProps) {
-  const Comp = asChild ? Slot : 'button';
-  return <Comp className={cn('inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg font-semibold leading-none tracking-[-0.01em] transition duration-150 hover:-translate-y-px disabled:pointer-events-none disabled:translate-y-0 disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground focus-visible:ring-offset-2 focus-visible:ring-offset-background', buttonVariants[variant], buttonSizes[size], className)} {...props} />;
+function childText(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(childText).join(' ');
+  if (React.isValidElement<{ children?: React.ReactNode; 'aria-hidden'?: boolean | string }>(node)) {
+    return node.props['aria-hidden'] === true || node.props['aria-hidden'] === 'true' ? '' : childText(node.props.children);
+  }
+  return '';
+}
+
+export function Button({ asChild = false, variant = 'default', size = 'default', className, children, ...props }: ButtonProps) {
+  const label = props['aria-label'] || childText(children).trim() || props.title || '';
+  // Keep native element composition and controls with externally authored names.
+  if (asChild || !label || props['aria-labelledby']) {
+    const Comp = asChild ? Slot : 'button';
+    return <Comp className={cn('inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg font-semibold leading-none disabled:opacity-55 focus-visible:ring-2 focus-visible:ring-foreground', buttonVariants[variant], buttonSizes[size], className)} {...props}>{children}</Comp>;
+  }
+  const iconOnly = size === 'icon';
+  return <AstryxButton
+    {...props}
+    type={props.type ?? 'submit'}
+    isDisabled={props.disabled}
+    label={label}
+    variant={variant === 'default' ? 'primary' : variant}
+    size={size === 'sm' ? 'sm' : 'md'}
+    isIconOnly={iconOnly}
+    icon={iconOnly ? children : undefined}
+    className={cn('shrink-0', size === 'icon' ? 'h-11 w-11 min-w-11' : size === 'sm' ? 'min-h-9' : 'min-h-11', className)}
+  >{iconOnly ? undefined : children}</AstryxButton>;
 }

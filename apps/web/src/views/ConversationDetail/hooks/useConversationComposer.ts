@@ -19,6 +19,7 @@ export function useConversationComposer({ compose, composerTextareaRef, sendConv
   }, [composerTextareaRef]);
 
   const handleComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       sendConversationMessage();

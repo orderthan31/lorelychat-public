@@ -1,3 +1,4 @@
+import { Drawer as AstryxDrawer } from '@astryxdesign/core';
 import { WebpImage } from '../atoms/WebpImage';
 import { BarChart3, Command, Cpu, Globe2, Home, MessageSquare, Moon, Server, Settings, SlidersHorizontal, Sun, UserRound, X } from 'lucide-react';
 import type { RoutePage } from '../../types/domain';
@@ -50,13 +51,11 @@ export function Drawer({ route, open, navigate, close, backendOnline }: DrawerPr
   const { t } = useI18n();
   const active = (page: string) => route.page === page || isManagementRoute(route.page, page) || (page === 'characters' && route.page.startsWith('character')) || (page === 'conversations' && route.page.startsWith('conversation')) || (page === 'worldSettings' && route.page.startsWith('worldSetting'));
   const go = (path: string) => { navigate(path); close(); };
-  if (!open) return null;
-  return <>
-    <button type="button" aria-label={t('메뉴 닫기')} className="drawer-backdrop fixed inset-0 z-40 min-h-screen w-full rounded-none bg-foreground/30 p-0" onClick={close}></button>
-    <aside className="side-drawer open fixed left-0 top-0 z-50 grid h-dvh w-[min(82vw,288px)] translate-x-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-3 border-r border-border bg-card p-3 text-foreground shadow-xl transition-transform duration-150" data-modernized="메뉴 드로어 design-system primitive marker">
+  return <AstryxDrawer isOpen={open} onOpenChange={next => { if (!next) close(); }} label={t('주요 메뉴')} side="start" width={288} padding={0}>
+    <div className="side-drawer grid h-dvh max-h-full grid-rows-[auto_minmax(0,1fr)_auto] gap-3 bg-card p-3 text-foreground" data-modernized="메뉴 드로어 design-system primitive marker">
       <div className="drawer-head flex items-center justify-between gap-2.5">
         <div className="drawer-brand min-w-0 flex-1"><WebpImage className="brand-logo-horizontal" src={lorelyHorizontalLogoUrlForTheme(theme)} alt="Lorely Chat" /></div>
-        <Button type="button" variant="ghost" size="icon" className="drawer-close" onClick={close} aria-label={t('메뉴 닫기')}><X size={18} /></Button>
+        <Button type="button" variant="ghost" size="icon" className="drawer-close" data-autofocus="true" onClick={close} aria-label={t('메뉴 닫기')}><X size={18} /></Button>
       </div>
       <nav className="drawer-nav grid min-h-0 content-start gap-1 overflow-y-auto overscroll-contain" aria-label={t('주요 메뉴')}>
         {navItems.filter(item => route.page === 'home' || !MANAGEMENT_NAV_ITEMS.some(management => management.path === item.path)).map(({ page, path, label, icon: Icon }) => <Button key={path} type="button" variant={active(page) ? 'secondary' : 'ghost'} aria-current={active(page) ? 'page' : undefined} className={`w-full justify-self-stretch justify-start text-left min-h-11 px-3 py-2 ${active(page) ? 'active border-transparent bg-surface-muted text-foreground' : 'border-transparent bg-transparent text-muted-foreground'}`} onClick={() => go(path)}><Icon size={17} />{t(label)}</Button>)}
@@ -67,6 +66,6 @@ export function Drawer({ route, open, navigate, close, backendOnline }: DrawerPr
           <BackendHealth online={backendOnline} />
         </div>
       </div>
-    </aside>
-  </>;
+    </div>
+  </AstryxDrawer>;
 }

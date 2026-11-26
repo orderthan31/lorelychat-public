@@ -81,12 +81,35 @@ try {
   }
   const input = page => page.getByRole('textbox', { name: '메시지 입력 · Enter 줄바꿈 · Ctrl+Enter 전송', exact: true });
   const overflow = async page => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0);
-  for (const [width, height] of [[320, 568], [390, 844], [820, 1180], [1024, 768], [1180, 820], [1440, 1000], [1920, 1080], [2560, 1440]]) {
+  for (const [width, height] of [[320, 568], [390, 844], [690, 285], [820, 1180], [1024, 768], [1180, 820], [1440, 1000], [1920, 1080], [2560, 1440]]) {
     const { page, state } = await makePage(width, height, width === 1024 ? 'dark' : 'light');
     state.initialDelay = 600;
     await page.goto(origin + '/conversations/A');
     await expect(page.locator('[data-chat-loading]')).toBeVisible();
     await expect(input(page)).toBeVisible();
+    if (width === 320 || width === 390) {
+      const usableWidth = await input(page).evaluate(node => {
+        const style = getComputedStyle(node);
+        return node.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      });
+      assert.ok(usableWidth >= width - 65, `narrow composer preserves typing space: ${usableWidth}px`);
+      const expand = page.locator('.composer-expand-trigger');
+      await expand.click();
+      const editor = page.getByRole('dialog', { name: t('메시지 크게 쓰기') });
+      const expandedInput = editor.getByRole('textbox');
+      await expect(expandedInput).toBeFocused();
+      await expandedInput.fill('한글 초안');
+      await expandedInput.evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, isComposing: true, bubbles: true })));
+      for (let i = 0; i < 6; i++) {
+        await page.keyboard.press('Tab');
+        assert.ok(await editor.evaluate(dialog => dialog.contains(document.activeElement) || document.activeElement === document.body));
+      }
+      await page.keyboard.press('Escape');
+      await expect(editor).toBeHidden();
+      await expect(expand).toBeFocused();
+      await expect(input(page)).toHaveValue('한글 초안');
+      checks.push({ case: 'narrow typing width, modal focus and unsent Korean draft', width, usableWidth });
+    }
     let original = await input(page).elementHandle();
     await input(page).fill('Unsent draft retained across controls and resize');
     const geometry = await page.locator('.chat-workspace').evaluate(node => ({ width: node.getBoundingClientRect().width, docked: node.classList.contains('has-docked-panel') }));
@@ -112,7 +135,7 @@ try {
     await expect.poll(() => state.patches).toBe(1);
     await expect(save).toBeEnabled();
     await expect(page.locator('.ux-operation-toast')).toHaveCount(0);
-    if (geometry.docked) await page.locator('.drawer-close').click();
+    if (geometry.docked) await page.locator('.context-drawer .drawer-close').click();
     else {
       await expect(page.locator('.context-drawer')).toHaveAttribute('aria-modal', 'true');
       await page.keyboard.press('Escape');
