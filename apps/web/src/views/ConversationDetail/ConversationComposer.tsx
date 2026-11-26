@@ -48,7 +48,7 @@ export function ConversationComposer({
     requestAnimationFrame(() => composerTextareaRef.current?.focus());
   }
 
-  return (
+  return (<>
     <form
       className="composer"
       data-modernized="채팅 컴포저 design-system primitive marker"
@@ -99,7 +99,8 @@ export function ConversationComposer({
         <Button type="button" variant="ghost" size="icon" className="composer-expand-trigger" aria-label={t('메시지 크게 쓰기')} title={t('메시지 크게 쓰기')} onClick={() => setComposeExpanded(true)}><Maximize2 size={17} /></Button>
       </div>
       <Button className="composer-send" type="submit" disabled={!compose.trim() || busy}>{t(busy ? '생성 중…' : '전송')}</Button>
-      <ExpandedTextDialog open={composeExpanded} onOpenChange={setComposeExpanded} title={t('메시지 크게 쓰기')} actions={<>
+    </form>
+    <ExpandedTextDialog open={composeExpanded} onOpenChange={setComposeExpanded} title={t('메시지 크게 쓰기')} actions={<>
         <span>{formatTextMetrics(compose.length, Math.max(1, compose.split('\n').length), locale)}</span>
         <div className="flex items-center gap-2">
           <Button type="button" variant="ghost" onClick={() => setComposeExpanded(false)}>{t('접기')}</Button>
@@ -107,7 +108,6 @@ export function ConversationComposer({
         </div>
       </>}>
         <Textarea className="text-editor-textarea" data-autofocus="true" value={compose} onChange={(event) => setCompose(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder={t('*액션묘사* 대사')} aria-label={t('메시지 크게 쓰기')} />
-      </ExpandedTextDialog>
-    </form>
-  );
+    </ExpandedTextDialog>
+  </>);
 }
