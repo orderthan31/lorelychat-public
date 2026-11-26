@@ -41,6 +41,7 @@ export function Button({ asChild = false, variant = 'default', size = 'default',
     return <Comp className={cn('inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg font-semibold leading-none disabled:opacity-55 focus-visible:ring-2 focus-visible:ring-foreground', buttonVariants[variant], buttonSizes[size], className)} {...props}>{children}</Comp>;
   }
   const iconOnly = size === 'icon';
+  const mixedContent = React.Children.count(children) > 1 && React.Children.toArray(children).some(React.isValidElement);
   return <AstryxButton
     {...props}
     type={props.type ?? 'submit'}
@@ -51,5 +52,5 @@ export function Button({ asChild = false, variant = 'default', size = 'default',
     isIconOnly={iconOnly}
     icon={iconOnly ? children : undefined}
     className={cn('shrink-0', size === 'icon' ? 'h-11 w-11 min-w-11' : size === 'sm' ? 'min-h-9' : 'min-h-11', className)}
-  >{iconOnly ? undefined : children}</AstryxButton>;
+  >{iconOnly ? undefined : mixedContent ? <span className="lore-button-content">{children}</span> : children}</AstryxButton>;
 }

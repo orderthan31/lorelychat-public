@@ -1,12 +1,13 @@
 import { Dialog } from '@astryxdesign/core';
 import { useLayoutEffect, useState, type CSSProperties, type ReactNode } from 'react';
 
-export function ExpandedTextDialog({ open, onOpenChange, title, children, actions }: {
+export function ExpandedTextDialog({ open, onOpenChange, title, children, actions, roomy = false }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   children: ReactNode;
   actions: ReactNode;
+  roomy?: boolean;
 }) {
   const [visibleHeight, setVisibleHeight] = useState<number>();
   useLayoutEffect(() => {
@@ -20,7 +21,7 @@ export function ExpandedTextDialog({ open, onOpenChange, title, children, action
   return <Dialog isOpen={open} onOpenChange={onOpenChange} aria-label={title} width={720}
     position={{ top: 'max(8px, env(safe-area-inset-top))' }} maxHeight={visibleHeight ? Math.max(1, visibleHeight - 16) : 'calc(100dvh - 16px)'} padding={3}
     style={visibleHeight ? { '--editor-viewport': `${visibleHeight}px` } as CSSProperties : undefined}>
-    <div className="expanded-text-layout">
+    <div className={roomy ? 'expanded-text-layout expanded-text-layout--roomy' : 'expanded-text-layout'}>
       <h2>{title}</h2>
       {children}
       <footer className="text-editor-foot">{actions}</footer>

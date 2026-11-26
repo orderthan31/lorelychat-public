@@ -76,7 +76,22 @@ try {
    await page.evaluate(()=>window.setBusy(true)); await expect(primary).toBeDisabled();
    await page.evaluate(()=>window.setBusy(false)); await expect(primary).toBeEnabled();
    if(kind==='character'){
-    await page.getByRole('textbox',{name:'페르소나',exact:true}).fill('Changed authored persona');
+    const inline = page.getByRole('textbox',{name:'페르소나',exact:true});
+    await inline.fill('Changed authored persona');
+    if (width === 320) {
+      const expand = page.getByRole('button', {name:'페르소나 · 크게 쓰기',exact:true});
+      await expand.click();
+      const dialog = page.getByRole('dialog', {name:'페르소나',exact:true});
+      const editor = dialog.getByRole('textbox');
+      await expect(editor).toBeFocused();
+      await expect(editor).toHaveValue('Changed authored persona');
+      await editor.fill('확대해서 쓴 한글 초안');
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(expand).toBeFocused();
+      await expect(inline).toHaveValue('확대해서 쓴 한글 초안');
+      await inline.fill('Changed authored persona');
+    }
     await page.getByRole('button',{name:'기본',exact:true}).click();
     await page.getByRole('button',{name:'프롬프트',exact:true}).click();
     await expect(page.getByRole('textbox',{name:'페르소나',exact:true})).toHaveValue('Changed authored persona');

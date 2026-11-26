@@ -85,7 +85,6 @@ html.theme-dark .server-health.ok {
   border-color: var(--line);
   box-shadow: none;
 }
-html.theme-dark .side-drawer,
 html.theme-dark .context-drawer,
 html.theme-dark .avatar-preview-card,
 html.theme-dark .card-preview-modal,
@@ -108,12 +107,10 @@ html.theme-dark .danger-confirm-popup {
   box-shadow: 0 24px 80px rgba(0,0,0,.42);
 }
 html.theme-dark .drawer-brand,
-html.theme-dark .drawer-nav button,
 html.theme-dark .theme-toggle {
   color: var(--text);
 }
 html.theme-dark .drawer-close,
-html.theme-dark .drawer-nav button,
 html.theme-dark .drawer-tab-bar button,
 html.theme-dark .chat-header-button,
 html.theme-dark .composer .chat-settings-button,
@@ -125,14 +122,12 @@ html.theme-dark .message-select-toggle {
   box-shadow: none;
 }
 html.theme-dark .drawer-close:hover,
-html.theme-dark .drawer-nav button:hover,
 html.theme-dark .drawer-tab-bar button:hover,
 html.theme-dark .chat-header-button:hover {
   background: rgba(69,214,181,.12);
   color: #e8fff8;
   border-color: rgba(69,214,181,.28);
 }
-html.theme-dark .drawer-nav button.active,
 html.theme-dark .category-tabs button.active,
 html.theme-dark .drawer-tab-bar button.active,
 html.theme-dark .battle-control-fab.active,

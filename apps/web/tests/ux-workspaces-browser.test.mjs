@@ -67,7 +67,12 @@ try{
  }
  if(!listsOnly) for(const width of [320,390,820,1440]) {
   const page=await pageFor(width,width===320?568:1000,'assets');
-  await page.locator('.asset-grid button').first().click();
+  const tile=page.locator('.asset-tile').first();
+  const image=tile.locator('img');
+  await expect(image).toHaveAttribute('data-image-state','ready');
+  const mediaBox=await image.boundingBox(), captionBox=await tile.locator('.asset-tile-caption').boundingBox(), tileBox=await tile.boundingBox();
+  assert.ok(Math.abs(mediaBox.width-mediaBox.height)<1 && mediaBox.width>=tileBox.width-3 && captionBox.y>=mediaBox.y+mediaBox.height-1, 'thumbnail fills a square with caption below');
+  await tile.click();
   if(width>=1100){await expect(page.locator('.asset-inspector')).toBeVisible();await expect(page.locator('[role="dialog"]')).toHaveCount(0);}
   else {await expect(page.locator('[role="dialog"]')).toBeVisible();assert.equal(await page.evaluate(()=>document.documentElement.style.overflow),'hidden');}
   const save=page.locator('.asset-save-action');await expect(save).toBeInViewport();

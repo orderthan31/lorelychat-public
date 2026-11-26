@@ -1,10 +1,10 @@
+import { Badge as AstryxBadge, Switch as AstryxSwitch, TextInput } from '@astryxdesign/core';
 import { parseAssetTags } from '../../utils/assetTags';
 import { WebpImage } from '../atoms/WebpImage';
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { useMediaMatch } from '../../hooks/useMediaMatch';
 import { Field, FormSection } from '../molecules';
 import { imageUrlFor } from '../../utils/assets';
-import { Badge } from '../atoms';
 import { Button } from '../atoms';
 import { Card } from '../atoms';
 import { Input } from '../atoms';
@@ -156,10 +156,15 @@ export function CharacterAssetsPanel({ character, assets = [], loading = false, 
         <Field label={t('파일 업로드')}><Input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={saving} onChange={async (e) => { await onUpload?.(e.target.files?.[0] || undefined); e.target.value = ''; }} /></Field>
       </div>}
     </FormSection>
-    <div className="asset-grid grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">{assets.map((asset) => <Button type="button" variant="ghost" className="group relative aspect-square min-h-0 w-full overflow-hidden !rounded-none border border-border bg-white/[.055] p-0 shadow-[0_10px_24px_rgba(0,0,0,.2)]" key={asset.id} onClick={(event) => { returnFocus.current = event.currentTarget; openAsset(asset); }}>
-      <WebpImage className="block h-full w-full !rounded-none object-cover transition-transform duration-200 group-hover:scale-[1.04]" src={imageUrlFor(asset.thumbnail_url || asset.image_url)} alt={asset.label || t('캐릭터 에셋')} />
-      <span className="absolute inset-x-0 bottom-0 overflow-hidden text-ellipsis whitespace-nowrap bg-[linear-gradient(180deg,transparent,rgba(5,8,16,.82))] px-2 pb-2 pt-5 text-left text-xs leading-tight text-white [text-shadow:0_1px_8px_rgba(0,0,0,.8)]">{asset.label}{asset.is_default ? ` · ${t('기본')}` : ''}</span>
-    </Button>)}</div>
+    <div className="asset-grid" aria-busy={loading}>{assets.map((asset) => {
+      const label = asset.label || t('캐릭터 에셋');
+      return <button type="button" className="asset-tile" key={asset.id} aria-label={label}
+        aria-haspopup={wideInspector ? undefined : 'dialog'} data-selected={selected?.id === asset.id ? 'true' : undefined}
+        onClick={(event) => { returnFocus.current = event.currentTarget; openAsset(asset); }}>
+        <WebpImage className="asset-tile-media" src={imageUrlFor(asset.thumbnail_url || asset.image_url)} alt="" loading="lazy" />
+        <span className="asset-tile-caption"><span className="asset-tile-label">{label}</span>{asset.is_default && <AstryxBadge label={t('기본')} />}</span>
+      </button>;
+    })}</div>
     {selected && <div ref={dialogRef} className={wideInspector ? 'asset-inspector' : 'fixed inset-0 z-[90] grid place-items-center p-4'} role={wideInspector ? 'region' : 'dialog'} aria-label={selected.label || t('캐릭터 에셋')} aria-modal={wideInspector ? undefined : true}>
       {!wideInspector && <div className="fixed inset-0 bg-black/70 backdrop-blur-[10px]" aria-hidden="true" onClick={() => setSelectedAsset(null)} />}
       <Card className={wideInspector ? 'asset-inspector-card' : 'asset-dialog-card'}>
@@ -169,10 +174,10 @@ export function CharacterAssetsPanel({ character, assets = [], loading = false, 
           <h3 className="m-0 text-[22px]">{selected.label}{selected.is_default ? ` · ${t('기본')}` : ''}</h3>
           {!editDraft && <p className="m-0 leading-snug text-muted">{selected.description || selected.image_url}</p>}
           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground"><span>{t('우선순위')} {selected.priority}</span><span>{selected.metadata?.asset_selection_v2?.scope || t('미분류')}</span></div>
-          <div className="flex flex-wrap gap-1.5">{selectedTags.length ? selectedTags.map((tag, index) => <Badge key={`${tag}-${index}`}>{tag}</Badge>) : <Badge>{t('태그 없음')}</Badge>}</div>
+          <div className="flex flex-wrap gap-1.5">{selectedTags.map((tag, index) => <AstryxBadge key={`${tag}-${index}`} label={tag} />)}</div>
           {editDraft && <div className="asset-editor-fields grid gap-2">
-            <Field label={t('라벨')}><Input value={editDraft.label} onChange={(e) => updateEdit('label', e.target.value)} /></Field>
-            <Field label={t('설명')}><Input value={editDraft.description} onChange={(e) => updateEdit('description', e.target.value)} /></Field>
+            <TextInput label={t('라벨')} width="100%" value={editDraft.label} onChange={value => updateEdit('label', value)} />
+            <TextInput label={t('설명')} width="100%" value={editDraft.description} onChange={value => updateEdit('description', value)} />
             <Field label={t('일반 태그')}><Input value={editDraft.tags} onChange={(e) => updateEdit('tags', e.target.value)} placeholder="profile, realistic" /></Field>
             <Field label={t('감정 태그')}><Input value={editDraft.mood_tags} onChange={(e) => updateEdit('mood_tags', e.target.value)} placeholder="happy, relaxed, confident" /></Field>
             <Field label={t('장면 태그')}><Input value={editDraft.scene_tags} onChange={(e) => updateEdit('scene_tags', e.target.value)} placeholder="indoor, cafe, beach" /></Field>
@@ -182,7 +187,7 @@ export function CharacterAssetsPanel({ character, assets = [], loading = false, 
             <Field label={t('우선순위')}><Input type="number" min="0" max="100" value={editDraft.priority} onChange={(e) => updateEdit('priority', Number(e.target.value || 50))} /></Field>
 
           </div>}
-          <div className="asset-management-actions"><Switch label={t('활성')} checked={!!selected.enabled} disabled={saving} onChange={() => onPatch?.(selected.id, { enabled: !selected.enabled })}/><Button type="button" variant="ghost" size="sm" disabled={saving || selected.is_default} onClick={() => onDefault?.(selected.id)}>{t('기본 이미지')}</Button><Button type="button" variant="destructive" size="sm" disabled={saving} onClick={() => { onDelete?.(selected.id); setSelectedAsset(null); setEditDraft(null); }}>{t('삭제')}</Button></div>
+          <div className="asset-management-actions"><AstryxSwitch label={t('활성')} value={!!selected.enabled} isDisabled={saving} onChange={enabled => onPatch?.(selected.id, { enabled })} /><Button type="button" variant="ghost" size="sm" disabled={saving || selected.is_default} onClick={() => onDefault?.(selected.id)}>{t('기본 이미지')}</Button><Button type="button" variant="destructive" size="sm" disabled={saving} onClick={() => { onDelete?.(selected.id); setSelectedAsset(null); setEditDraft(null); }}>{t('삭제')}</Button></div>
         </div>
         {editDraft && <div className="asset-save-bar"><Button type="button" className="asset-save-action" disabled={saving || !editDraft.label.trim()} onClick={saveSelected}>{t('태그와 정보 저장')}</Button></div>}
       </Card>

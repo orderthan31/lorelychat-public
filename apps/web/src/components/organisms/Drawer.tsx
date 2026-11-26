@@ -1,4 +1,4 @@
-import { Drawer as AstryxDrawer } from '@astryxdesign/core';
+import { Drawer as AstryxDrawer, SideNav, SideNavItem } from '@astryxdesign/core';
 import { WebpImage } from '../atoms/WebpImage';
 import { BarChart3, Command, Cpu, Globe2, Home, MessageSquare, Moon, Server, Settings, SlidersHorizontal, Sun, UserRound, X } from 'lucide-react';
 import type { RoutePage } from '../../types/domain';
@@ -52,20 +52,21 @@ export function Drawer({ route, open, navigate, close, backendOnline }: DrawerPr
   const active = (page: string) => route.page === page || isManagementRoute(route.page, page) || (page === 'characters' && route.page.startsWith('character')) || (page === 'conversations' && route.page.startsWith('conversation')) || (page === 'worldSettings' && route.page.startsWith('worldSetting'));
   const go = (path: string) => { navigate(path); close(); };
   return <AstryxDrawer isOpen={open} onOpenChange={next => { if (!next) close(); }} label={t('주요 메뉴')} side="start" width={288} padding={0}>
-    <div className="side-drawer grid h-dvh max-h-full grid-rows-[auto_minmax(0,1fr)_auto] gap-3 bg-card p-3 text-foreground" data-modernized="메뉴 드로어 design-system primitive marker">
-      <div className="drawer-head flex items-center justify-between gap-2.5">
+    <SideNav className="lore-side-nav" aria-label={t('주요 메뉴')} data-modernized="메뉴 드로어 design-system primitive marker"
+      header={<div className="drawer-head flex items-center justify-between gap-2.5">
         <div className="drawer-brand min-w-0 flex-1"><WebpImage className="brand-logo-horizontal" src={lorelyHorizontalLogoUrlForTheme(theme)} alt="Lorely Chat" /></div>
         <Button type="button" variant="ghost" size="icon" className="drawer-close" data-autofocus="true" onClick={close} aria-label={t('메뉴 닫기')}><X size={18} /></Button>
-      </div>
-      <nav className="drawer-nav grid min-h-0 content-start gap-1 overflow-y-auto overscroll-contain" aria-label={t('주요 메뉴')}>
-        {navItems.filter(item => route.page === 'home' || !MANAGEMENT_NAV_ITEMS.some(management => management.path === item.path)).map(({ page, path, label, icon: Icon }) => <Button key={path} type="button" variant={active(page) ? 'secondary' : 'ghost'} aria-current={active(page) ? 'page' : undefined} className={`w-full justify-self-stretch justify-start text-left min-h-11 px-3 py-2 ${active(page) ? 'active border-transparent bg-surface-muted text-foreground' : 'border-transparent bg-transparent text-muted-foreground'}`} onClick={() => go(path)}><Icon size={17} />{t(label)}</Button>)}
-      </nav>
-      <div className="drawer-footer grid gap-2 border-t border-border pt-3" aria-label={t('앱 상태와 테마')}>
+      </div>}
+      footer={<div className="drawer-footer border-t border-border pt-2">
         <div className="drawer-status-controls flex items-center gap-2" aria-label={t('앱 상태와 테마')}>
           <ThemeToggle />
           <BackendHealth online={backendOnline} />
         </div>
-      </div>
-    </div>
+      </div>}>
+      {navItems.filter(item => route.page === 'home' || !MANAGEMENT_NAV_ITEMS.some(management => management.path === item.path)).map(({ page, path, label, icon: Icon }) => <SideNavItem key={path} className="lore-side-nav-item" href={path} isSelected={active(page)} label={t(label)} icon={<Icon size={17} aria-hidden="true" />} onClick={event => {
+        if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault(); go(path);
+      }} />)}
+    </SideNav>
   </AstryxDrawer>;
 }

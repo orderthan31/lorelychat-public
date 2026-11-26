@@ -69,11 +69,16 @@
 .tts-heading small { display: block; line-height: 1.4; white-space: normal; }
 .tts-sample-action-row { display: flex; justify-content: flex-end; margin-top: -2px; }
 .tts-sample-action-row button { width: auto; }
-.expandable-field > textarea { max-height: 32dvh; }
-.textarea-meta, .text-editor-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.expandable-field-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.expandable-field-label { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.expandable-field-trigger { width: 44px; min-width: 44px; height: 44px; }
+.expandable-inline-control > textarea { max-height: max(72px, 32dvh); }
+.text-editor-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .expanded-text-layout { display: grid; gap: 10px; }
 .expanded-text-layout h2 { margin: 0; font-size: 1rem; color: var(--foreground); }
-.expanded-text-layout .text-editor-textarea { min-height: 44px; height: clamp(44px, calc(var(--editor-viewport, 100dvh) - 144px), 22rem); width: 100%; resize: none; overflow: auto; font-size: 16px; font-weight: 400; }
+.expanded-text-layout textarea.text-editor-textarea, .expanded-text-layout .text-editor-textarea > textarea { min-height: 44px; height: clamp(44px, calc(var(--editor-viewport, 100dvh) - 144px), var(--editor-max-text-height, 22rem)); width: 100%; resize: none; overflow: auto; font-size: 16px; font-weight: 400; }
+.expanded-text-layout--roomy { --editor-max-text-height: 38rem; }
+
 .battle-control-dock {
   position: relative;
   display: flex;

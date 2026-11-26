@@ -3,3 +3,7 @@
   button { width: auto; border: 0; background: transparent; color: inherit; font-family: inherit; cursor: pointer; white-space: nowrap; }
   button:disabled { opacity: .72; cursor: not-allowed; }
 }
+
+/* Astryx owns the outer button; keep legacy icon + label children on one line inside its label slot. */
+.lore-button-content { display: inline-flex; min-width: 0; max-width: 100%; align-items: center; gap: .375rem; vertical-align: middle; }
+.lore-button-content > svg { flex: none; }
